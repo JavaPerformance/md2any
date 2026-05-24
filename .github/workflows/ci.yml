@@ -70,7 +70,7 @@ jobs:
             if (-not (Test-Path $output)) { throw "missing $fmt" }
             $size = (Get-Item $output).Length
             if ($size -eq 0) { throw "empty $fmt" }
-            Write-Host "ok $fmt: $size bytes"
+            Write-Host "ok ${fmt}: $size bytes"
           }
 
   fmt:
