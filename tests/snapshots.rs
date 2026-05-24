@@ -45,13 +45,17 @@ fn run_case(stem: &str) {
     }
 
     let expected = fs::read_to_string(&snap_path).expect("read snapshot");
-    if actual != expected {
+    // Normalise CRLF → LF on both sides so Windows checkouts with
+    // autocrlf=true (the default) don't trip the comparison.
+    let actual_norm = actual.replace("\r\n", "\n");
+    let expected_norm = expected.replace("\r\n", "\n");
+    if actual_norm != expected_norm {
         let diff_path = dir.join(format!("{stem}.actual.snap"));
         fs::write(&diff_path, &actual).ok();
         panic!(
             "snapshot mismatch for {stem}.\n\
-             expected:\n{expected}\n\
-             actual:\n{actual}\n\
+             expected:\n{expected_norm}\n\
+             actual:\n{actual_norm}\n\
              actual written to {}\n\
              rerun with UPDATE_SNAPSHOTS=1 cargo test to accept.",
             diff_path.display(),

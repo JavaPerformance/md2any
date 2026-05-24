@@ -1,0 +1,22 @@
+# Force LF line endings on text fixtures so Windows checkouts with
+# autocrlf=true don't break snapshot tests or markdown parsing.
+*.snap text eol=lf
+*.md   text eol=lf
+*.rs   text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.svg  text eol=lf
+
+# Binary assets — never normalise.
+*.ttf binary
+*.ttc binary
+*.otf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.pdf binary
+*.pptx binary
+*.odp binary
+*.docx binary
+*.odt binary
