@@ -24,7 +24,10 @@ jobs:
             archive: tar.gz
             cross: true
           - target: x86_64-apple-darwin
-            os: macos-13
+            # Cross-compile from Apple Silicon — the macos-14 runner's
+            # Xcode SDK ships the x86_64 toolchain, and GitHub's macos-13
+            # Intel pool is unreliable (queues can stall for hours).
+            os: macos-14
             archive: tar.gz
           - target: aarch64-apple-darwin
             os: macos-14
@@ -90,7 +93,10 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ env.ASSET }}
-          generate_release_notes: true
+          # generate_release_notes intentionally off — we attach the
+          # CHANGELOG.md [x.y.z] section manually so re-runs don't
+          # clobber human-curated notes with auto-generated ones.
+          generate_release_notes: false
 
   publish-crate:
     name: Publish to crates.io
