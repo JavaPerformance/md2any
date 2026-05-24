@@ -1,0 +1,24 @@
+=== slide 1 [Title(subtitle=None, author=None, date=None)] ===
+title: Tables & Columns
+
+=== slide 2 [Section] ===
+title: Metrics
+
+=== slide 3 [Content] ===
+title: Metrics
+Table(cols=3, rows=2):
+  H: op | rate | p99
+  R: read | 1200 | 18
+  R: write | 600 | 42
+
+=== slide 4 [Section] ===
+title: Two columns
+
+=== slide 5 [Content] ===
+title: Two columns
+Columns:
+  Left:
+    P: Left side text.
+  Right:
+    P: Right side text.
+

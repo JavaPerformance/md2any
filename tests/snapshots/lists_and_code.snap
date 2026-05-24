@@ -1,0 +1,34 @@
+=== slide 1 [Title(subtitle=None, author=None, date=None)] ===
+title: Lists & Code
+
+=== slide 2 [Section] ===
+title: Setup
+
+=== slide 3 [Content] ===
+title: Setup
+Code(lang=Some("rust"), title=Some("src/main.rs"), lines=3, nums=false):
+  | fn main() {
+  |     println!("hello");
+  | }
+
+=== slide 4 [Section] ===
+title: Nested
+
+=== slide 5 [Content] ===
+title: Nested
+List:
+  - top
+    - mid
+      - leaf
+  - another
+
+=== slide 6 [Section] ===
+title: Ordered
+
+=== slide 7 [Content] ===
+title: Ordered
+List:
+  1. first
+  1. second
+  1. third
+

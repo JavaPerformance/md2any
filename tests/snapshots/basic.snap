@@ -1,0 +1,21 @@
+=== slide 1 [Title(subtitle=None, author=Some("tester"), date=None)] ===
+title: Basic
+
+=== slide 2 [Section] ===
+title: Section One
+
+=== slide 3 [Content] ===
+title: Section One
+P: Some intro text with [B]bold and [I]italic.
+List:
+  - one
+  - two
+  - three
+
+=== slide 4 [Section] ===
+title: Section Two
+
+=== slide 5 [Content] ===
+title: Section Two
+P: A second section with [L]a link.
+

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Light cone diagram. Authored for md2any examples — CC0 / public domain. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="480" viewBox="0 0 640 480">
+  <rect width="640" height="480" fill="#fafafa"/>
+
+  <!-- Future cone -->
+  <polygon points="320,240 100,40 540,40" fill="#fff7ed" stroke="#fb923c" stroke-width="2"/>
+  <!-- Past cone -->
+  <polygon points="320,240 100,440 540,440" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/>
+
+  <!-- Axes -->
+  <line x1="40"  y1="240" x2="600" y2="240" stroke="#334155" stroke-width="1.5"/>
+  <line x1="320" y1="20"  x2="320" y2="460" stroke="#334155" stroke-width="1.5"/>
+
+  <!-- Light worldlines -->
+  <line x1="320" y1="240" x2="100" y2="40"  stroke="#dc2626" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <line x1="320" y1="240" x2="540" y2="40"  stroke="#dc2626" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <line x1="320" y1="240" x2="100" y2="440" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <line x1="320" y1="240" x2="540" y2="440" stroke="#dc2626" stroke-width="1.5" stroke-dasharray="6 4"/>
+
+  <!-- Labels -->
+  <text x="320" y="14"  font-family="DejaVu Sans" font-size="14" text-anchor="middle" fill="#0f172a">time (ct)</text>
+  <text x="612" y="244" font-family="DejaVu Sans" font-size="14" fill="#0f172a">space (x)</text>
+  <text x="330" y="252" font-family="DejaVu Sans" font-size="13" fill="#0f172a">here-now</text>
+
+  <text x="320" y="80"  font-family="DejaVu Sans" font-size="16" font-weight="bold" text-anchor="middle" fill="#9a3412">FUTURE</text>
+  <text x="320" y="100" font-family="DejaVu Sans" font-size="12" text-anchor="middle" fill="#9a3412">reachable from here-now</text>
+
+  <text x="320" y="412" font-family="DejaVu Sans" font-size="16" font-weight="bold" text-anchor="middle" fill="#1e40af">PAST</text>
+  <text x="320" y="430" font-family="DejaVu Sans" font-size="12" text-anchor="middle" fill="#1e40af">events that can influence us</text>
+
+  <text x="100" y="240" font-family="DejaVu Sans" font-size="12" text-anchor="end" fill="#475569">elsewhere</text>
+  <text x="540" y="240" font-family="DejaVu Sans" font-size="12" fill="#475569">elsewhere</text>
+
+  <!-- Caption -->
+  <text x="320" y="476" font-family="DejaVu Sans" font-size="11" text-anchor="middle" fill="#64748b">
+    Light worldlines (dashed) bound the cones. Nothing inside a worldline can travel faster than light.
+  </text>
+</svg>

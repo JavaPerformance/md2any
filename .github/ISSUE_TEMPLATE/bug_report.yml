@@ -1,0 +1,70 @@
+name: Bug report
+description: Something is broken or doesn't work the way the docs say it should.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug! Please fill in as much as
+        you can — small reproductions and exact commands make fixes faster.
+
+  - type: input
+    id: version
+    attributes:
+      label: md2any version
+      description: Output of `md2any --version`.
+      placeholder: "md2any 0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: OS, architecture, and (if installed from cargo) Rust version.
+      placeholder: "macOS 14 / aarch64 / Rust 1.78"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: format
+    attributes:
+      label: Output format
+      description: Which output format(s) reproduce the issue?
+      multiple: true
+      options:
+        - pptx
+        - odp
+        - pdf
+        - docx
+        - odt
+        - "n/a (parser, lint, watch, serve, etc.)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: |
+        Paste the smallest markdown snippet that triggers the bug, plus the
+        exact command line you ran.
+      render: markdown
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What actually happened?
+      description: Include the error message or screenshot.
+    validations:
+      required: true

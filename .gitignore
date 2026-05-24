@@ -1,0 +1,45 @@
+# Rust
+/target
+Cargo.lock.bak
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.iml
+
+# LibreOffice lock files (created when opening a doc for testing)
+.~lock.*#
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# md2any build outputs
+/dist/
+
+# Snapshot test failure artefacts
+/tests/snapshots/*.actual.snap
+
+# Diagram render caches (per-deck-stem temp dirs)
+/tmp/md2any-diagrams-*
+
+# Generated output samples (avoid committing accidentally)
+*.pptx
+*.odp
+*.docx
+*.odt
+*.pdf
+!docs/**/*.pdf
+!docs/**/*.pptx
+!docs/**/*.odp
+!docs/**/*.docx
+!docs/**/*.odt
+!examples/expected/**
+# Demo bundle — small, generated, useful for new users to inspect output.
+!examples/demo.*
+
+# Local dev scratch
+/scratch/
+/tmp/

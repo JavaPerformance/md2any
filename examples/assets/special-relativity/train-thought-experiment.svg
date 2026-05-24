@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Einstein's train + platform thought experiment for simultaneity.
+     Authored for md2any examples — CC0 / public domain. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="360" viewBox="0 0 720 360">
+  <rect width="720" height="360" fill="#fafafa"/>
+
+  <!-- Platform -->
+  <rect x="20" y="240" width="680" height="14" fill="#94a3b8"/>
+  <text x="40" y="280" font-family="DejaVu Sans" font-size="13" fill="#0f172a">Platform observer (M)</text>
+  <circle cx="360" cy="300" r="14" fill="#1e40af"/>
+  <text x="360" y="304" font-family="DejaVu Sans" font-size="13" text-anchor="middle" fill="#ffffff">M</text>
+  <text x="360" y="334" font-family="DejaVu Sans" font-size="11" text-anchor="middle" fill="#475569">sees A and B flash simultaneously</text>
+
+  <!-- Train -->
+  <rect x="160" y="100" width="400" height="100" fill="#bfdbfe" stroke="#1e40af" stroke-width="2" rx="6"/>
+  <text x="360" y="218" font-family="DejaVu Sans" font-size="13" text-anchor="middle" fill="#0f172a">moving train (velocity v →)</text>
+
+  <!-- Flashes -->
+  <circle cx="180" cy="150" r="10" fill="#fbbf24" stroke="#92400e" stroke-width="2"/>
+  <text x="180" y="92" font-family="DejaVu Sans" font-size="14" text-anchor="middle" fill="#92400e">A</text>
+  <circle cx="540" cy="150" r="10" fill="#fbbf24" stroke="#92400e" stroke-width="2"/>
+  <text x="540" y="92" font-family="DejaVu Sans" font-size="14" text-anchor="middle" fill="#92400e">B</text>
+
+  <!-- Train observer M' (centre of the carriage) -->
+  <circle cx="360" cy="150" r="14" fill="#dc2626"/>
+  <text x="360" y="154" font-family="DejaVu Sans" font-size="13" text-anchor="middle" fill="#ffffff">M′</text>
+
+  <!-- Velocity arrow -->
+  <line x1="580" y1="80" x2="640" y2="80" stroke="#0f172a" stroke-width="2"/>
+  <polygon points="640,80 632,76 632,84" fill="#0f172a"/>
+  <text x="610" y="72" font-family="DejaVu Sans" font-size="13" text-anchor="middle" fill="#0f172a">v</text>
+
+  <!-- Caption -->
+  <text x="360" y="356" font-family="DejaVu Sans" font-size="11" text-anchor="middle" fill="#64748b">
+    To M the flashes are simultaneous. To M′ (moving toward B) the B flash arrives first — simultaneity is relative.
+  </text>
+</svg>

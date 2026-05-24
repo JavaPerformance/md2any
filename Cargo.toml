@@ -1,0 +1,82 @@
+[package]
+name = "md2any"
+version = "0.2.0"
+edition = "2021"
+rust-version = "1.74"
+description = "Markdown → PowerPoint, OpenDocument Impress, PDF, Word, and LibreOffice Writer. One markdown source, five document formats, one small Rust binary."
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/javaperformance/md2any"
+homepage = "https://github.com/javaperformance/md2any"
+documentation = "https://docs.rs/md2any"
+keywords = ["markdown", "presentation", "powerpoint", "pptx", "pdf"]
+categories = ["command-line-utilities", "text-processing"]
+authors = ["javaperformance"]
+exclude = [
+    "/.github",
+    "/scripts",
+    "/tests/snapshots/*.actual.snap",
+    "/target",
+    "/examples/*.pptx",
+    "/examples/*.pdf",
+    "/examples/*.odp",
+    "/examples/*.docx",
+    "/examples/*.odt",
+]
+
+[[bin]]
+name = "md2any"
+path = "src/main.rs"
+
+[lib]
+name = "md2any"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+pulldown-cmark = "0.10"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+flate2 = "1"
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+# TTF parser — pure Rust, no_std, used to extract cmap + glyph widths from
+# the DejaVu fonts we embed in the PDF output.
+ttf-parser = { version = "0.21", default-features = false, features = ["std"] }
+# Typst's tiny TTF subsetter. We use it to ship only the glyphs each PDF
+# actually references — turns a 21 MB PDF (full Noto CJK) into ~200 KB.
+subsetter = "0.2"
+# Tiny synchronous HTTP client (rustls TLS). Used to fetch remote image URLs
+# referenced in markdown at build time. Disable with `--no-default-features`
+# if you don't need HTTP image fetching.
+ureq = { version = "2.10", default-features = false, features = ["tls"], optional = true }
+# SVG rasterisation. Pure Rust. Used to convert `<svg>` images into PNG at
+# build time so they can be embedded in PDF / OOXML / ODF outputs which
+# don't natively understand vector graphics. Optional — disable for a
+# smaller binary if you only embed raster images.
+resvg = { version = "0.42", default-features = false, features = ["text"], optional = true }
+usvg = { version = "0.42", default-features = false, features = ["text"], optional = true }
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "png-format"], optional = true }
+
+[features]
+default = ["remote-images", "svg"]
+# Bring in ureq + rustls so markdown `![alt](https://…/x.png)` references
+# work. Drop this feature for a smaller binary if you only use local images.
+remote-images = ["ureq"]
+# Bring in resvg + usvg + tiny-skia so markdown can reference `*.svg`
+# image files. They're rasterised to PNG at build time and embedded the
+# same way as a regular raster image.
+svg = ["resvg", "usvg", "tiny-skia"]
+
+[dev-dependencies]
+# Renderer tests open the produced PPTX/ODP/DOCX/ODT archives to assert
+# structural invariants. zip is already a runtime dep — re-listed here to
+# make the dev-only usage explicit.
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

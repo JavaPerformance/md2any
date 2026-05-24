@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Light-clock illustration of time dilation.
+     Authored for md2any examples — CC0 / public domain. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="380" viewBox="0 0 720 380">
+  <rect width="720" height="380" fill="#fafafa"/>
+
+  <!-- Rest-frame clock (left) -->
+  <text x="180" y="34" font-family="DejaVu Sans" font-size="14" font-weight="bold" text-anchor="middle" fill="#0f172a">Rest frame</text>
+  <rect x="80" y="60" width="200" height="240" fill="#ecfeff" stroke="#0891b2" stroke-width="2" rx="6"/>
+  <!-- Mirrors -->
+  <line x1="100" y1="90"  x2="260" y2="90"  stroke="#0891b2" stroke-width="3"/>
+  <line x1="100" y1="270" x2="260" y2="270" stroke="#0891b2" stroke-width="3"/>
+  <!-- Light path -->
+  <line x1="180" y1="90" x2="180" y2="270" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
+  <polygon points="180,265 175,255 185,255" fill="#dc2626"/>
+  <text x="180" y="180" font-family="DejaVu Sans" font-size="14" text-anchor="middle" fill="#0f172a" dx="10">L</text>
+  <text x="180" y="328" font-family="DejaVu Sans" font-size="13" text-anchor="middle" fill="#0f172a">tick: Δt₀ = 2L/c</text>
+
+  <!-- Moving-frame clock (right) -->
+  <text x="540" y="34" font-family="DejaVu Sans" font-size="14" font-weight="bold" text-anchor="middle" fill="#0f172a">Moving frame (velocity v →)</text>
+  <rect x="400" y="60" width="280" height="240" fill="#fef3c7" stroke="#d97706" stroke-width="2" rx="6"/>
+  <!-- Mirrors at angle showing motion -->
+  <line x1="420" y1="90"  x2="540" y2="90"  stroke="#d97706" stroke-width="3"/>
+  <line x1="540" y1="270" x2="660" y2="270" stroke="#d97706" stroke-width="3"/>
+  <!-- Diagonal light path -->
+  <line x1="480" y1="90"  x2="600" y2="270" stroke="#dc2626" stroke-width="2" stroke-dasharray="6 4"/>
+  <polygon points="600,265 590,260 595,270" fill="#dc2626"/>
+  <text x="555" y="178" font-family="DejaVu Sans" font-size="13" fill="#0f172a">longer path</text>
+  <text x="540" y="328" font-family="DejaVu Sans" font-size="13" text-anchor="middle" fill="#0f172a">tick: Δt = γ Δt₀</text>
+
+  <!-- Caption -->
+  <text x="360" y="368" font-family="DejaVu Sans" font-size="11" text-anchor="middle" fill="#64748b">
+    Light travels at c in both frames. The diagonal path is longer, so the moving clock takes longer per tick.
+  </text>
+</svg>

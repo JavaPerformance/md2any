@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      - name: cargo build (release)
+        run: cargo build --release
+
+      - name: cargo test (release)
+        run: cargo test --release
+
+      - name: smoke test (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BIN=./target/release/md2any
+          $BIN --version
+          $BIN --help-md > /dev/null
+          OUT="$(mktemp -d)"
+          printf -- '---\ntitle: CI\nauthor: ci\n---\n# Hello\n\n- one\n- two\n\n## Code\n\n```rust\nfn main(){println!("hi");}\n```\n' > "$OUT/ci.md"
+          for fmt in pptx odp pdf docx odt; do
+            $BIN "$OUT/ci.md" -o "$OUT/ci.$fmt"
+            test -s "$OUT/ci.$fmt" || (echo "empty $fmt"; exit 1)
+            echo "ok $fmt: $(wc -c < "$OUT/ci.$fmt") bytes"
+          done
+
+      - name: smoke test (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = ".\target\release\md2any.exe"
+          & $bin --version
+          & $bin --help-md > $null
+          $out = New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\smoke" -Force
+          $md = Join-Path $out "ci.md"
+          @"
+          ---
+          title: CI
+          author: ci
+          ---
+          # Hello
+          - one
+          - two
+          "@ | Set-Content $md
+          foreach ($fmt in @("pptx", "odp", "pdf", "docx", "odt")) {
+            $output = Join-Path $out "ci.$fmt"
+            & $bin $md -o $output
+            if (-not (Test-Path $output)) { throw "missing $fmt" }
+            $size = (Get-Item $output).Length
+            if ($size -eq 0) { throw "empty $fmt" }
+            Write-Host "ok $fmt: $size bytes"
+          }
+
+  fmt:
+    name: Format (required)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  lints:
+    name: Lints (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy
+        run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: true
+      - name: cargo doc
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps

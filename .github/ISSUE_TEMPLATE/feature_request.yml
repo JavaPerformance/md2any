@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest a new feature or improvement.
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: |
+        Describe the use case. "I want to do X but currently have to do Y."
+        Real motivations make better features than abstract ones.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: How would the feature work? Markdown syntax / CLI flag / front-matter key, etc.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Other ways to solve the same problem, and why they don't fit.
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Output formats this affects
+      options:
+        - label: PPTX
+        - label: ODP
+        - label: PDF
+        - label: DOCX
+        - label: ODT
+        - label: All
+        - label: None (parser / CLI / workflow only)

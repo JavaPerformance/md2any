@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/javaperformance/md2any/discussions
+    about: Have a question, idea, or want to share what you built? Open a discussion.
+  - name: Security report
+    url: https://github.com/javaperformance/md2any/security/advisories/new
+    about: Please report security issues privately, not in public issues.

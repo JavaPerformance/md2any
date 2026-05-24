@@ -1,0 +1,20 @@
+=== slide 1 [Title(subtitle=None, author=None, date=None)] ===
+title: Footnotes
+
+=== slide 2 [Section] ===
+title: Citations
+
+=== slide 3 [Content] ===
+title: Citations
+P: A claim¹ and another².
+Footnotes:
+  • 1. First source.
+  • 2. Second source.
+
+=== slide 4 [Section] ===
+title: Clean
+
+=== slide 5 [Content] ===
+title: Clean
+P: No footnotes here.
+
