@@ -3,7 +3,7 @@ name = "md2any"
 version = "0.2.0"
 edition = "2021"
 rust-version = "1.74"
-description = "Markdown → PowerPoint, OpenDocument Impress, PDF, Word, and LibreOffice Writer. One markdown source, five document formats, one small Rust binary."
+description = "Markdown → PowerPoint, OpenDocument Impress, PDF, Word, Writer, HTML, SVG, and PNG. One markdown source, one small Rust binary."
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/javaperformance/md2any"
@@ -40,6 +40,7 @@ flate2 = "1"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+serde_json = "1"
 # TTF parser — pure Rust, no_std, used to extract cmap + glyph widths from
 # the DejaVu fonts we embed in the PDF output.
 ttf-parser = { version = "0.21", default-features = false, features = ["std"] }
@@ -54,7 +55,7 @@ ureq = { version = "2.10", default-features = false, features = ["tls"], optiona
 # build time so they can be embedded in PDF / OOXML / ODF outputs which
 # don't natively understand vector graphics. Optional — disable for a
 # smaller binary if you only embed raster images.
-resvg = { version = "0.42", default-features = false, features = ["text"], optional = true }
+resvg = { version = "0.42", default-features = false, features = ["text", "raster-images"], optional = true }
 usvg = { version = "0.42", default-features = false, features = ["text"], optional = true }
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "png-format"], optional = true }
 

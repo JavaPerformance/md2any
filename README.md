@@ -5,9 +5,9 @@
 [![docs.rs](https://docs.rs/md2any/badge.svg)](https://docs.rs/md2any)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-**One markdown source → five document formats.** A single self-contained Rust
+**One markdown source → eight output formats.** A single self-contained Rust
 binary that converts markdown into editable PowerPoint, OpenDocument Impress,
-PDF, Word, and LibreOffice Writer files.
+PDF, Word, LibreOffice Writer, standalone HTML, and per-slide SVG/PNG files.
 
 ```bash
 md2any talk.md                    # → talk.pptx     (PowerPoint)
@@ -15,6 +15,9 @@ md2any talk.md -o talk.odp        # → talk.odp      (LibreOffice Impress)
 md2any talk.md -o talk.pdf        # → talk.pdf      (PDF 1.7)
 md2any talk.md -o talk.docx       # → talk.docx     (Microsoft Word)
 md2any talk.md -o talk.odt        # → talk.odt      (LibreOffice Writer)
+md2any talk.md -o talk.html       # → talk.html     (browser deck)
+md2any talk.md --format svg -o talk-svg/  # → slide-001.svg, slide-002.svg, ...
+md2any talk.md --format png -o talk-png/  # → slide-001.png, slide-002.png, ...
 ```
 
 No Office install. No headless Chromium. No LaTeX. No Node. No Python. One ~5 MB binary.
@@ -100,7 +103,7 @@ A subtitle for the title slide.
 
 | Feature | Status |
 |---------|--------|
-| Five output formats | ✅ |
+| Eight output formats | ✅ |
 | Syntax-highlighted code | ✅ |
 | Math, diagrams, footnotes | ✅ |
 
@@ -111,6 +114,10 @@ fn main() {
     println!("hello, md2any");
 }
 ```
+
+Code blocks longer than five lines get line numbers automatically. If a block
+splits across continuation slides, numbering continues from the original source
+line.
 
 # Q & A
 ```
@@ -131,9 +138,9 @@ md2any hello.md --serve         # live preview at http://localhost:8421
 | **Themes** | Light + dark built-in, full custom palettes via YAML overlay |
 | **Layouts** | Clean / studio / frame / bold |
 | **Aspect ratios** | 16:9, 4:3, 9:16, A3/A4/A5, Letter, Legal, Tabloid + landscape variants + custom `WxH[unit]` |
-| **Markdown** | Lists (9 deep nesting), tables, code blocks (20 languages incl. mainframe), block quotes, footnotes, links (clickable), strike, inline code |
-| **Layout extras** | Side-by-side columns (`:::`), per-slide background (`<!-- bg: -->`), TOC injection, hand-tuned pagination with widow/orphan control |
-| **Math** | `$inline$` and `$$display$$` LaTeX subset → Unicode |
+| **Markdown** | Lists (9 deep nesting), tables, dark-by-default code blocks (40+ tags incl. mainframe/IBM i, Haskell/BCPL, web/API/config, and `bf`), block quotes, footnotes, links (clickable), strike, inline code |
+| **Layout extras** | Side-by-side columns (`:::`), landscape code two-up (`--code-columns` / `columns=2`), image/text full-page hints, per-slide background (`<!-- bg: -->`), TOC injection, hand-tuned pagination with widow/orphan control |
+| **Math** | `$inline$` and `$$display$$` LaTeX subset -> Unicode, including accents/text/math alphabets; `--math source` preserves source; `--math svg` uses a built-in box layout for display fractions, radicals, scripts, matrices/cases/arrays, scalable delimiters, and aligned equations |
 | **Diagrams** | Embedded `dot`, `mermaid`, `plantuml` (shells out if installed) |
 | **Speaker notes** | `<!-- notes: -->` HTML comments |
 | **Transitions** | `fade`, `push`, `wipe`, `cover`, `split` (PPTX/ODP/PDF) |
@@ -153,12 +160,26 @@ Full reference: `md2any --help-md` writes the embedded user manual to stdout, or
 md2any <INPUT...> [OPTIONS]
 md2any new <PATH>                           Write a starter deck
 
-  -o, --output <PATH>      Output file
-      --format <NAME>      pptx | odp | pdf | docx | odt
+  -o, --output <PATH>      Output file, or directory for svg/png
+      --format <NAME>      pptx | odp | pdf | docx | odt | html | svg | png
+      --doc-style <STYLE>  plain | report | handout | speaker-notes
+                           DOCX/ODT profile (default report)
       --theme <NAME>       light | dark
       --aspect <RATIO>     preset (16:9, 4:3, 9:16, a4[-landscape], a3, a5,
                            letter[-landscape], legal, tabloid) or custom WxH[unit]
       --layout <NAME>      clean | studio | frame | bold
+      --break-mode <MODE>  smart | simple | off
+      --break-fill <PCT>   Fill target before breaking, 50-120 (default 100)
+      --table-fit <MODE>   auto | split | transpose | off
+      --code-theme <MODE>  dark | light | match (default: dark)
+      --code-columns <MODE>
+                           single | auto | two-up (default: single)
+      --math <MODE>        unicode | source | svg (default: unicode)
+      --math-scale <N>     Scale generated display math, 0.35-3.0
+      --math-block-align <ALIGN>
+                           left | center | right for generated display math
+      --math-max-height <PX>
+                           Max generated display math height
       --theme-file <PATH>  YAML colour/font overrides
       --logo <PATH>        Footer logo image
       --remote-image-cache <PATH>
@@ -166,10 +187,28 @@ md2any new <PATH>                           Write a starter deck
       --no-remote-image-cache
                            Fetch remote images every time
       --handout <N>        2/4/6 slides per A4 portrait page (PDF only)
+      --with-notes         Presenter notes PDF, one page per slide
+      --notes-page-size <SIZE>
+                           slide | a4 (default: slide)
+      --notes-layout <LAYOUT>
+                           auto | below | side-by-side (default: auto)
+      --speaker-package <DIR>
+                           deck + notes PDF + handout PDF + manifest
+      --pdf-font <PATH>    PDF sans/body font (TTF/OTF)
+      --pdf-mono-font <PATH>
+                           PDF mono/code font (TTF/OTF)
+      --font-fallback <PATH[,PATH...]>
+                           PDF fallback fonts for missing glyphs
+      --font-audit         Report PDF glyph coverage, no output file
       --watch              Rebuild on file change
       --serve [--port N]   Live preview HTTP server
+      --serve-format <FMT> pdf | html | svg | png (default pdf)
       --check              Lint mode (warnings → exit 2)
-      --help-{pptx,odp,pdf,docx,odt,md}     User manual in any format
+      --emit-ir <PATH>     Post-pagination IR JSON
+      --emit-plan <PATH>   Estimated render-plan JSON
+      --trace-layout       Print render-plan summary to stderr
+      --help-{pptx,odp,pdf,docx,odt,html,svg,png,md}
+                           User manual in any format
 ```
 
 ## Pagination rules
@@ -181,9 +220,58 @@ md2any new <PATH>                           Write a starter deck
 - `:::` on its own line → side-by-side columns
 - Lists with > 12 items → auto two-column layout
 - Long content auto-paginates into `(cont.)` slides
+- Default `--break-mode smart` splits overlong paragraphs, lists, code, tables,
+  and columns at readable boundaries. Use `simple` for conservative block-level
+  splitting, or `off` to disable automatic continuation splitting.
+- `--break-fill PCT` controls density before a break: lower than 100 creates
+  more, airier slides; higher values pack tighter.
+- `--table-fit auto` reshapes wide tables before pagination: compact portrait
+  tables transpose, very wide tables split into column groups, and split tables
+  repeat the first column as the key column. Use `split`, `transpose`, or `off`
+  to force a specific strategy.
 
-For DOCX/ODT output, pagination is replaced with flowing text — H1 becomes a
-page-break heading, H2 stays inline, the rest flows continuously.
+Code fences can include source files while preserving real line numbers:
+
+````markdown
+```rust file=src/main.rs#L20-L80 title="CLI parsing"
+```
+````
+
+Landscape decks can flow a long code block left/right with `--code-columns two-up`, or one fence can opt in with `columns=2`:
+
+````markdown
+```rust columns=2 title="one method"
+fn parse(input: &str) {
+    // line numbers continue in the right column
+}
+```
+````
+
+For DOCX/ODT output, pagination is replaced with flowing text. The default
+`--doc-style report` adds a title page, contents, native headers/footers, themed
+tables/code, captions, and section page breaks. Use `plain` for the older
+minimal flow, `handout` for slide labels, or `speaker-notes` to append slide
+speaker notes to the document.
+
+## Diagnostics
+
+Use `--emit-ir PATH` to write the post-parse/post-pagination slide tree as
+JSON. Use `--emit-plan PATH` to write the estimated render plan: page geometry,
+content box, pagination budget, block weights, continuation flags, and line
+metadata. `--trace-layout` prints the same plan as a compact stderr summary.
+`--check` also reports deck-doctor issues such as missing image alt text,
+duplicated titles, dense slides, weak theme contrast, oversized tables,
+incomplete speaker notes, and math constructs that the default Unicode
+translator cannot render faithfully. Use `--math svg` for deterministic
+built-in display math layout, including stacked fractions, radical bars,
+positioned scripts, scalable `\left...\right` delimiters, multi-line blocks,
+and simple matrix/cases/array/aligned environments. Use `--math-scale`,
+`--math-block-align`, and `--math-max-height` to tune generated display math.
+
+```bash
+md2any talk.md --emit-ir /tmp/talk.ir.json --emit-plan /tmp/talk.plan.json
+md2any talk.md --trace-layout --check
+```
 
 ## Front-matter
 
@@ -196,6 +284,18 @@ date: auto              # or 2026-05-23, or "today"
 theme: light            # light | dark
 aspect: 16:9            # see aspect ratios above
 layout: clean           # clean | studio | frame | bold
+math: unicode           # unicode | source | svg
+math_scale: 1.0         # generated SVG display math scale
+math_block_align: center # left | center | right
+math_max_height: 180    # generated display math height cap
+math_macros:
+  '\RR': '\mathbb{R}'   # exact math substitutions before rendering
+doc_style: report       # plain | report | handout | speaker-notes
+break_mode: smart       # smart | simple | off
+break_fill: 100         # 50-120; lower breaks earlier, higher packs tighter
+table_fit: auto         # auto | split | transpose | off
+code_theme: dark        # dark | light | match; code blocks default dark
+code_columns: single    # single | auto | two-up
 font: Inter             # any installed font (PPTX/ODP/DOCX/ODT)
 logo: brand.png         # rendered in slide footer
 toc: true               # inject a Contents slide after the title
@@ -244,10 +344,17 @@ let (front, body) = md2any::front_matter::extract(&md);
 let theme = md2any::theme::Theme::resolve("light", "16:9", None)?;
 let layout = md2any::layout::Layout::resolve("clean")?;
 let slides = md2any::parser::parse(&body, &front, "talk");
-let slides = md2any::paginate::paginate(slides, &theme);
+let options = md2any::paginate::PaginationOptions {
+    break_mode: md2any::paginate::BreakMode::Smart,
+    fill: 0.9,
+};
+let slides = md2any::paginate::paginate_for_layout_with_options(
+    slides, &theme, &layout, options,
+);
 let bytes = md2any::pdf::write(
     &slides, &theme, &layout, "talk", "Author",
-    std::path::Path::new("."), None, None, None, 0.4, None,
+    std::path::Path::new("."), None, None, None, 0.4, None, false,
+    md2any::pdf::NotesPageSize::Slide, md2any::pdf::NotesLayout::Auto, None,
 )?;
 std::fs::write("talk.pdf", bytes)?;
 ```
@@ -259,12 +366,15 @@ std::fs::write("talk.pdf", bytes)?;
 - PNG, JPEG, and SVG images are supported; GIF and WebP are not.
 - Remote `http(s)` images are supported when the default `remote-images`
   feature is enabled, with successful downloads cached between renders.
-- PDF uses DejaVu Sans + DejaVu Sans Mono embedded in the binary; no other
-  font families ship — `--font` only affects PPTX/ODP/DOCX/ODT
-- DejaVu does not include CJK glyphs; for PDF Chinese/Japanese/Korean
-  decks, export PPTX with `--font "Noto Sans CJK SC"` and convert via the
-  viewer
-- Speaker notes appear in PPTX / ODP only
+- PDF uses embedded DejaVu Sans + DejaVu Sans Mono by default, and can use
+  user-supplied TTF/OTF files via `--pdf-font`, `--pdf-mono-font`, and
+  `--font-fallback`
+- DejaVu does not include CJK glyphs; for PDF Chinese/Japanese/Korean decks,
+  pass `--cjk PATH` or include a CJK face in `--font-fallback`
+- Speaker notes attach natively in PPTX / ODP, can be emitted as a PDF
+  companion with `--with-notes`, can be appended to DOCX/ODT via
+  `--doc-style speaker-notes`, and can be bundled with deck + handout via
+  `--speaker-package DIR`
 
 See [HELP.md](HELP.md) for the embedded user manual, or run
 `md2any --help-md` to print it.

@@ -12,7 +12,7 @@
 
 use crate::syntax::TokenKind;
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use std::path::Path;
 
 /// Slide renderers cap each image at this fraction of the slide height so
@@ -52,6 +52,10 @@ pub struct ThemeOverride {
     pub title_font: Option<String>,
     pub body_font: Option<String>,
     pub mono_font: Option<String>,
+    pub pdf_font: Option<String>,
+    pub pdf_mono_font: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_font_fallback")]
+    pub font_fallback: Vec<String>,
 
     pub title_size: Option<u32>,
     pub body_size: Option<u32>,
@@ -99,11 +103,68 @@ fn normalize_hex(s: &str, field: &str) -> Result<String> {
     Ok(expanded.to_ascii_uppercase())
 }
 
+fn hex_luma(s: &str) -> Option<f32> {
+    let trimmed = s.trim().trim_start_matches('#');
+    if trimmed.len() != 6 || !trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let r = u8::from_str_radix(&trimmed[0..2], 16).ok()? as f32 / 255.0;
+    let g = u8::from_str_radix(&trimmed[2..4], 16).ok()? as f32 / 255.0;
+    let b = u8::from_str_radix(&trimmed[4..6], 16).ok()? as f32 / 255.0;
+    Some(0.2126 * r + 0.7152 * g + 0.0722 * b)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum FontFallbackYaml {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn deserialize_font_fallback<'de, D>(deserializer: D) -> std::result::Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<FontFallbackYaml>::deserialize(deserializer)? else {
+        return Ok(Vec::new());
+    };
+    let out = match value {
+        FontFallbackYaml::One(value) => split_font_fallbacks(&value),
+        FontFallbackYaml::Many(values) => values
+            .into_iter()
+            .flat_map(|value| split_font_fallbacks(&value))
+            .collect(),
+    };
+    Ok(out)
+}
+
+pub fn split_font_fallbacks(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 pub struct SyntaxStyle {
     pub color: String,
     pub italic: bool,
     pub bold: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeTheme {
+    Dark,
+    Light,
+    Match,
+}
+
+impl Default for CodeTheme {
+    fn default() -> Self {
+        CodeTheme::Dark
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -136,6 +197,9 @@ pub struct Theme {
     pub title_font: String,
     pub body_font: String,
     pub mono_font: String,
+    pub pdf_font: Option<String>,
+    pub pdf_mono_font: Option<String>,
+    pub font_fallback: Vec<String>,
 
     pub syntax_keyword: String,
     pub syntax_string: String,
@@ -147,6 +211,14 @@ pub struct Theme {
 }
 
 impl Theme {
+    pub fn table_band_bg(&self) -> String {
+        if hex_luma(&self.bg).unwrap_or(if self.name == "dark" { 0.0 } else { 1.0 }) > 0.45 {
+            "F8FAFC".into()
+        } else {
+            "111827".into()
+        }
+    }
+
     pub fn syntax_style(&self, kind: TokenKind) -> SyntaxStyle {
         match kind {
             TokenKind::Keyword => SyntaxStyle {
@@ -224,7 +296,7 @@ impl Theme {
             .map(|s| s.to_string())
             .unwrap_or_else(|| "Calibri Light".into());
 
-        let theme = match name.to_lowercase().as_str() {
+        let mut theme = match name.to_lowercase().as_str() {
             "light" | "default" => Theme {
                 name: "light",
                 slide_w,
@@ -252,6 +324,9 @@ impl Theme {
                 title_font,
                 body_font,
                 mono_font: "Consolas".into(),
+                pdf_font: None,
+                pdf_mono_font: None,
+                font_fallback: Vec::new(),
                 syntax_keyword: "9333EA".into(),
                 syntax_string: "16A34A".into(),
                 syntax_number: "C2410C".into(),
@@ -287,6 +362,9 @@ impl Theme {
                 title_font,
                 body_font,
                 mono_font: "Consolas".into(),
+                pdf_font: None,
+                pdf_mono_font: None,
+                font_fallback: Vec::new(),
                 syntax_keyword: "C792EA".into(),
                 syntax_string: "C3E88D".into(),
                 syntax_number: "FFCB6B".into(),
@@ -298,7 +376,42 @@ impl Theme {
             other => bail!("unknown theme: {} (try light or dark)", other),
         };
 
+        theme.apply_code_theme(CodeTheme::default());
         Ok(theme)
+    }
+
+    pub fn apply_code_theme(&mut self, code_theme: CodeTheme) {
+        let target = match code_theme {
+            CodeTheme::Dark => "dark",
+            CodeTheme::Light => "light",
+            CodeTheme::Match => self.name,
+        };
+        match target {
+            "dark" => {
+                self.code_bg = "111A2E".into();
+                self.code_text = "E2E8F0".into();
+                self.code_accent = "7DD3FC".into();
+                self.syntax_keyword = "C792EA".into();
+                self.syntax_string = "C3E88D".into();
+                self.syntax_number = "FFCB6B".into();
+                self.syntax_comment = "6B7B8E".into();
+                self.syntax_function = "82AAFF".into();
+                self.syntax_type = "FFC777".into();
+                self.syntax_attribute = "F78C6C".into();
+            }
+            _ => {
+                self.code_bg = "F1F5F9".into();
+                self.code_text = "1E293B".into();
+                self.code_accent = "0369A1".into();
+                self.syntax_keyword = "9333EA".into();
+                self.syntax_string = "16A34A".into();
+                self.syntax_number = "C2410C".into();
+                self.syntax_comment = "94A3B8".into();
+                self.syntax_function = "2563EB".into();
+                self.syntax_type = "0891B2".into();
+                self.syntax_attribute = "DC2626".into();
+            }
+        }
     }
 
     pub fn apply_override(&mut self, ov: &ThemeOverride) -> Result<()> {
@@ -332,6 +445,15 @@ impl Theme {
         }
         if let Some(v) = &ov.mono_font {
             self.mono_font = v.clone();
+        }
+        if let Some(v) = &ov.pdf_font {
+            self.pdf_font = Some(v.clone());
+        }
+        if let Some(v) = &ov.pdf_mono_font {
+            self.pdf_mono_font = Some(v.clone());
+        }
+        if !ov.font_fallback.is_empty() {
+            self.font_fallback = ov.font_fallback.clone();
         }
 
         if let Some(v) = ov.title_size {

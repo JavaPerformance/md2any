@@ -9,6 +9,7 @@
 //! pictures embedded under `Pictures/`. We do *not* paginate ourselves; ODT
 //! lets the consumer (LibreOffice / Word with import) handle pagination.
 
+use crate::document::{DocumentOptions, DocumentStyle};
 use crate::image::{self, ImageMeta};
 use crate::ir::*;
 use crate::theme::Theme;
@@ -38,6 +39,28 @@ pub fn write(
     base_dir: &Path,
     logo: Option<&Path>,
     direction: Option<&str>,
+) -> Result<Vec<u8>> {
+    write_with_options(
+        slides,
+        theme,
+        deck_title,
+        author,
+        base_dir,
+        logo,
+        direction,
+        &DocumentOptions::default(),
+    )
+}
+
+pub fn write_with_options(
+    slides: &[Slide],
+    theme: &Theme,
+    deck_title: &str,
+    author: &str,
+    base_dir: &Path,
+    logo: Option<&Path>,
+    direction: Option<&str>,
+    options: &DocumentOptions,
 ) -> Result<Vec<u8>> {
     let _ = logo;
     let rtl = direction
@@ -70,8 +93,13 @@ pub fn write(
         &build_meta(deck_title, author),
         deflated,
     )?;
-    write_file(&mut zip, "styles.xml", &build_styles(theme, rtl), deflated)?;
-    let content = build_content(slides, theme, &by_src);
+    write_file(
+        &mut zip,
+        "styles.xml",
+        &build_styles(theme, rtl, deck_title, options),
+        deflated,
+    )?;
+    let content = build_content(slides, theme, &by_src, options);
     let content = if rtl {
         apply_rtl_odt(&content)
     } else {
@@ -171,7 +199,7 @@ fn build_meta(title: &str, author: &str) -> String {
     )
 }
 
-fn build_styles(theme: &Theme, rtl: bool) -> String {
+fn build_styles(theme: &Theme, rtl: bool, deck_title: &str, options: &DocumentOptions) -> String {
     // ODT's default paragraph style determines reading direction for any
     // paragraph that doesn't override it. Setting `writing-mode=rl-tb`
     // here is the cleanest way to flip the whole document for RTL.
@@ -198,6 +226,38 @@ fn build_styles(theme: &Theme, rtl: bool) -> String {
 <style:style style:name="Subtitle" style:family="paragraph" style:parent-style-name="Standard">
 <style:paragraph-properties fo:text-align="center" fo:margin-bottom="0.4in"/>
 <style:text-properties fo:font-size="16pt" fo:color="#{muted_color}" fo:font-style="italic"/>
+</style:style>
+
+<style:style style:name="DocMeta" style:family="paragraph" style:parent-style-name="Standard">
+<style:paragraph-properties fo:text-align="center" fo:margin-top="0.04in" fo:margin-bottom="0.04in"/>
+<style:text-properties fo:font-size="9pt" fo:color="#{muted_color}"/>
+</style:style>
+
+<style:style style:name="SlideLabel" style:family="paragraph" style:parent-style-name="Standard">
+<style:paragraph-properties fo:margin-top="0.18in" fo:margin-bottom="0.04in"/>
+<style:text-properties style:font-name="{mono_font}" fo:font-size="9pt" fo:font-weight="bold" fo:text-transform="uppercase" fo:color="#{accent}"/>
+</style:style>
+
+<style:style style:name="Caption" style:family="paragraph" style:parent-style-name="Standard">
+<style:paragraph-properties fo:text-align="center" fo:margin-top="0.02in" fo:margin-bottom="0.12in"/>
+<style:text-properties fo:font-size="9pt" fo:font-style="italic" fo:color="#{muted_color}"/>
+</style:style>
+
+<style:style style:name="NotesBody" style:family="paragraph" style:parent-style-name="Standard">
+<style:paragraph-properties fo:background-color="#{accent_soft}" fo:padding="0.07in 0.12in" fo:margin-top="0.06in" fo:margin-bottom="0.08in"/>
+<style:text-properties fo:font-size="10.5pt"/>
+</style:style>
+
+<style:style style:name="TocTitle" style:family="paragraph" style:parent-style-name="Heading_20_1">
+<style:paragraph-properties fo:break-before="auto" fo:margin-top="0.2in" fo:margin-bottom="0.15in"/>
+</style:style>
+
+<style:style style:name="TocEntry" style:family="paragraph" style:parent-style-name="Standard">
+<style:paragraph-properties fo:margin-left="0.22in" fo:margin-top="0.03in" fo:margin-bottom="0.03in"/>
+</style:style>
+
+<style:style style:name="PageBreak" style:family="paragraph" style:parent-style-name="Standard">
+<style:paragraph-properties fo:break-after="page"/>
 </style:style>
 
 <style:style style:name="Heading_20_1" style:display-name="Heading 1" style:family="paragraph" style:parent-style-name="Standard" style:next-style-name="Standard" style:default-outline-level="1">
@@ -271,7 +331,7 @@ fn build_styles(theme: &Theme, rtl: bool) -> String {
 </style:page-layout>
 </office:automatic-styles>
 <office:master-styles>
-<style:master-page style:name="Standard" style:page-layout-name="PL1"/>
+{master_page}
 </office:master-styles>
 </office:document-styles>"##,
         ns = NS,
@@ -286,6 +346,22 @@ fn build_styles(theme: &Theme, rtl: bool) -> String {
         accent = theme.accent,
         accent_soft = theme.accent_soft,
         divider = theme.divider,
+        master_page = odt_master_page(deck_title, options.style),
+    )
+}
+
+fn odt_master_page(deck_title: &str, style: DocumentStyle) -> String {
+    if !style.has_page_chrome() {
+        return r#"<style:master-page style:name="Standard" style:page-layout-name="PL1"/>"#
+            .to_string();
+    }
+    format!(
+        r#"<style:master-page style:name="Standard" style:page-layout-name="PL1">
+<style:header><text:p text:style-name="DocMeta">{}</text:p></style:header>
+<style:footer><text:p text:style-name="DocMeta">{} · <text:page-number text:select-page="current">1</text:page-number></text:p></style:footer>
+</style:master-page>"#,
+        escape_xml(deck_title),
+        escape_xml(style.name()),
     )
 }
 
@@ -293,44 +369,37 @@ fn build_styles(theme: &Theme, rtl: bool) -> String {
 // Content
 // ---------------------------------------------------------------------------
 
-fn build_content(slides: &[Slide], theme: &Theme, by_src: &HashMap<String, usize>) -> String {
+fn build_content(
+    slides: &[Slide],
+    theme: &Theme,
+    by_src: &HashMap<String, usize>,
+    options: &DocumentOptions,
+) -> String {
     let mut body = String::new();
     let mut first_section_emitted = false;
     let mut last_section_title: Option<String> = None;
 
-    for slide in slides {
+    for (idx, slide) in slides.iter().enumerate() {
         match &slide.kind {
             SlideKind::Title {
                 subtitle,
                 author,
                 date,
             } => {
-                body.push_str(&format!(
-                    r#"<text:p text:style-name="Title">{}</text:p>"#,
-                    escape_xml(&slide.title),
-                ));
-                if let Some(s) = subtitle {
-                    body.push_str(&format!(
-                        r#"<text:p text:style-name="Subtitle">{}</text:p>"#,
-                        escape_xml(s),
-                    ));
+                render_title_page(
+                    &mut body,
+                    &slide.title,
+                    subtitle,
+                    author,
+                    date,
+                    options.style,
+                );
+                if options.style.has_toc() {
+                    body.push_str(&odt_page_break());
+                    body.push_str(&odt_toc(slides));
                 }
-                if let (Some(a), Some(d)) = (author.as_ref(), date.as_ref()) {
-                    body.push_str(&format!(
-                        r#"<text:p text:style-name="Subtitle">{} · {}</text:p>"#,
-                        escape_xml(a),
-                        escape_xml(d),
-                    ));
-                } else if let Some(a) = author {
-                    body.push_str(&format!(
-                        r#"<text:p text:style-name="Subtitle">{}</text:p>"#,
-                        escape_xml(a),
-                    ));
-                } else if let Some(d) = date {
-                    body.push_str(&format!(
-                        r#"<text:p text:style-name="Subtitle">{}</text:p>"#,
-                        escape_xml(d),
-                    ));
+                if options.style.has_title_page() {
+                    body.push_str(&odt_page_break());
                 }
             }
             SlideKind::Section => {
@@ -340,6 +409,9 @@ fn build_content(slides: &[Slide], theme: &Theme, by_src: &HashMap<String, usize
                     "Heading_20_1_first"
                 };
                 first_section_emitted = true;
+                if options.style.has_slide_labels() {
+                    body.push_str(&odt_slide_label(idx + 1, &slide.title));
+                }
                 body.push_str(&format!(
                     r#"<text:h text:style-name="{}" text:outline-level="1">{}</text:h>"#,
                     style,
@@ -357,6 +429,9 @@ fn build_content(slides: &[Slide], theme: &Theme, by_src: &HashMap<String, usize
                     .as_deref()
                     .map(|s| trim_cont_suffix(s) == title)
                     .unwrap_or(false);
+                if options.style.has_slide_labels() {
+                    body.push_str(&odt_slide_label(idx + 1, title));
+                }
                 if !skip_heading {
                     body.push_str(&format!(
                         r#"<text:h text:style-name="Heading_20_2" text:outline-level="2">{}</text:h>"#,
@@ -367,6 +442,9 @@ fn build_content(slides: &[Slide], theme: &Theme, by_src: &HashMap<String, usize
                 render_blocks(&mut body, &slide.blocks, theme, by_src);
             }
         }
+    }
+    if options.style.has_notes_appendix() {
+        append_notes_appendix(&mut body, slides);
     }
 
     format!(
@@ -388,6 +466,114 @@ fn build_content(slides: &[Slide], theme: &Theme, by_src: &HashMap<String, usize
         runs = RUN_STYLES_XML,
         body = body,
     )
+}
+
+fn render_title_page(
+    body: &mut String,
+    title: &str,
+    subtitle: &Option<String>,
+    author: &Option<String>,
+    date: &Option<String>,
+    style: DocumentStyle,
+) {
+    body.push_str(&format!(
+        r#"<text:p text:style-name="Title">{}</text:p>"#,
+        escape_xml(title),
+    ));
+    if let Some(s) = subtitle {
+        body.push_str(&format!(
+            r#"<text:p text:style-name="Subtitle">{}</text:p>"#,
+            escape_xml(s),
+        ));
+    }
+    if let (Some(a), Some(d)) = (author.as_ref(), date.as_ref()) {
+        body.push_str(&format!(
+            r#"<text:p text:style-name="Subtitle">{} · {}</text:p>"#,
+            escape_xml(a),
+            escape_xml(d),
+        ));
+    } else if let Some(a) = author {
+        body.push_str(&format!(
+            r#"<text:p text:style-name="Subtitle">{}</text:p>"#,
+            escape_xml(a),
+        ));
+    } else if let Some(d) = date {
+        body.push_str(&format!(
+            r#"<text:p text:style-name="Subtitle">{}</text:p>"#,
+            escape_xml(d),
+        ));
+    }
+    if style.has_title_page() {
+        body.push_str(&format!(
+            r#"<text:p text:style-name="DocMeta">Document style: {}</text:p>"#,
+            escape_xml(style.name()),
+        ));
+    }
+}
+
+fn odt_toc(slides: &[Slide]) -> String {
+    let mut out = String::new();
+    out.push_str(r#"<text:h text:style-name="TocTitle" text:outline-level="1">Contents</text:h>"#);
+    for (idx, slide) in slides.iter().enumerate() {
+        if matches!(slide.kind, SlideKind::Title { .. }) {
+            continue;
+        }
+        let title = trim_cont_suffix(&slide.title);
+        if title.is_empty() {
+            continue;
+        }
+        out.push_str(&format!(
+            r#"<text:p text:style-name="TocEntry">{}  {}</text:p>"#,
+            idx + 1,
+            escape_xml(title),
+        ));
+    }
+    out
+}
+
+fn odt_slide_label(idx: usize, title: &str) -> String {
+    format!(
+        r#"<text:p text:style-name="SlideLabel">Slide {} · {}</text:p>"#,
+        idx,
+        escape_xml(trim_cont_suffix(title)),
+    )
+}
+
+fn append_notes_appendix(body: &mut String, slides: &[Slide]) {
+    body.push_str(&odt_page_break());
+    body.push_str(
+        r#"<text:h text:style-name="Heading_20_1_first" text:outline-level="1">Speaker notes</text:h>"#,
+    );
+    let mut count = 0usize;
+    for (idx, slide) in slides.iter().enumerate() {
+        let Some(notes) = slide.notes.as_deref() else {
+            continue;
+        };
+        count += 1;
+        body.push_str(&format!(
+            r#"<text:h text:style-name="Heading_20_2" text:outline-level="2">Slide {}: {}</text:h>"#,
+            idx + 1,
+            escape_xml(trim_cont_suffix(&slide.title)),
+        ));
+        for line in notes.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            body.push_str(&format!(
+                r#"<text:p text:style-name="NotesBody">{}</text:p>"#,
+                escape_xml(line.trim()),
+            ));
+        }
+    }
+    if count == 0 {
+        body.push_str(
+            r#"<text:p text:style-name="NotesBody">No speaker notes in this deck.</text:p>"#,
+        );
+    }
+}
+
+fn odt_page_break() -> String {
+    r#"<text:p text:style-name="PageBreak"/>"#.to_string()
 }
 
 /// Flip ODF paragraph alignment for RTL: `start` becomes `end`, `left`
@@ -607,14 +793,15 @@ fn render_table(out: &mut String, headers: &[Vec<Run>], rows: &[Vec<Vec<Run>>], 
 fn render_image(out: &mut String, src: &str, alt: &str, by_src: &HashMap<String, usize>) {
     let Some(&idx) = by_src.get(src) else { return };
     let href = format!("Pictures/image{}", idx + 1);
+    let caption_alt = crate::math::visible_image_alt(src, alt);
     out.push_str(&format!(
         r#"<text:p text:style-name="Standard"><draw:frame text:anchor-type="paragraph" svg:width="6in" svg:height="auto" draw:z-index="0"><draw:image xlink:href="{}" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame></text:p>"#,
         escape_xml(&href),
     ));
-    if !alt.is_empty() {
+    if !caption_alt.is_empty() {
         out.push_str(&format!(
-            r#"<text:p text:style-name="Subtitle">{}</text:p>"#,
-            escape_xml(alt),
+            r#"<text:p text:style-name="Caption">{}</text:p>"#,
+            escape_xml(caption_alt),
         ));
     }
 }

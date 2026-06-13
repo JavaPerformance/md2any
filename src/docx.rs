@@ -12,6 +12,7 @@
 //! Slide → document mapping is the same as ODT: title slide produces a
 //! title block; section H1 starts a new page; content slide → H2 + flow.
 
+use crate::document::{DocumentOptions, DocumentStyle};
 use crate::image::{self, ImageMeta};
 use crate::ir::*;
 use crate::theme::Theme;
@@ -25,6 +26,10 @@ use zip::CompressionMethod;
 const REL_HYPERLINK: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
 const REL_IMAGE: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
+const REL_HEADER: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/header";
+const REL_FOOTER: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
 const REL_STYLES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles";
 const REL_NUMBERING: &str =
@@ -47,6 +52,28 @@ pub fn write(
     logo: Option<&Path>,
     direction: Option<&str>,
 ) -> Result<Vec<u8>> {
+    write_with_options(
+        slides,
+        theme,
+        deck_title,
+        author,
+        base_dir,
+        logo,
+        direction,
+        &DocumentOptions::default(),
+    )
+}
+
+pub fn write_with_options(
+    slides: &[Slide],
+    theme: &Theme,
+    deck_title: &str,
+    author: &str,
+    base_dir: &Path,
+    logo: Option<&Path>,
+    direction: Option<&str>,
+    options: &DocumentOptions,
+) -> Result<Vec<u8>> {
     let _ = logo;
     let rtl = direction
         .map(|s| s.eq_ignore_ascii_case("rtl"))
@@ -65,13 +92,26 @@ pub fn write(
     let _r_styles = rels.add(REL_STYLES, "styles.xml", false);
     let _r_numbering = rels.add(REL_NUMBERING, "numbering.xml", false);
     let _r_settings = rels.add(REL_SETTINGS, "settings.xml", false);
+    let page_chrome = options.style.has_page_chrome();
+    let header_rel = page_chrome.then(|| rels.add(REL_HEADER, "header1.xml", false));
+    let footer_rel = page_chrome.then(|| rels.add(REL_FOOTER, "footer1.xml", false));
     let image_rels: Vec<String> = metas
         .iter()
         .enumerate()
         .map(|(i, m)| rels.add(REL_IMAGE, &format!("media/image{}.{}", i + 1, m.ext), false))
         .collect();
 
-    let mut body = build_body(slides, theme, &by_src, &image_rels, &mut rels);
+    let mut body = build_body(
+        slides,
+        theme,
+        deck_title,
+        options,
+        header_rel.as_deref(),
+        footer_rel.as_deref(),
+        &by_src,
+        &image_rels,
+        &mut rels,
+    );
     if rtl {
         body = apply_rtl_docx(&body);
     }
@@ -85,7 +125,7 @@ pub fn write(
     write_file(
         &mut zip,
         "[Content_Types].xml",
-        &content_types(&metas),
+        &content_types(&metas, page_chrome),
         stored,
     )?;
     write_file(&mut zip, "_rels/.rels", &root_rels(), stored)?;
@@ -111,6 +151,20 @@ pub fn write(
     write_file(&mut zip, "word/styles.xml", &styles_xml(theme), deflated)?;
     write_file(&mut zip, "word/numbering.xml", &numbering_xml(), deflated)?;
     write_file(&mut zip, "word/settings.xml", &settings_xml(), deflated)?;
+    if page_chrome {
+        write_file(
+            &mut zip,
+            "word/header1.xml",
+            &header_xml(deck_title),
+            deflated,
+        )?;
+        write_file(
+            &mut zip,
+            "word/footer1.xml",
+            &footer_xml(options.style),
+            deflated,
+        )?;
+    }
 
     for (i, m) in metas.iter().enumerate() {
         zip.start_file(&format!("word/media/image{}.{}", i + 1, m.ext), stored)?;
@@ -211,7 +265,7 @@ impl DocRels {
 // Static parts
 // ---------------------------------------------------------------------------
 
-fn content_types(metas: &[ImageMeta]) -> String {
+fn content_types(metas: &[ImageMeta], page_chrome: bool) -> String {
     let mut s = String::from(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -241,8 +295,16 @@ fn content_types(metas: &[ImageMeta]) -> String {
 <Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
 <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
 <Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
-</Types>"#,
+"#,
     );
+    if page_chrome {
+        s.push_str(
+            r#"<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>
+<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>
+"#,
+        );
+    }
+    s.push_str("</Types>");
     s
 }
 
@@ -278,6 +340,31 @@ fn core_xml(title: &str, author: &str) -> String {
 </cp:coreProperties>"#,
         escape_xml(title),
         escape_xml(author),
+    )
+}
+
+fn header_xml(deck_title: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:p><w:pPr><w:pStyle w:val="DocMeta"/></w:pPr><w:r><w:t xml:space="preserve">{}</w:t></w:r></w:p>
+</w:hdr>"#,
+        escape_xml(deck_title),
+    )
+}
+
+fn footer_xml(style: DocumentStyle) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:p><w:pPr><w:pStyle w:val="DocMeta"/><w:jc w:val="right"/></w:pPr>
+<w:r><w:t xml:space="preserve">{} · page </w:t></w:r>
+<w:r><w:fldChar w:fldCharType="begin"/></w:r>
+<w:r><w:instrText xml:space="preserve">PAGE</w:instrText></w:r>
+<w:r><w:fldChar w:fldCharType="end"/></w:r>
+</w:p>
+</w:ftr>"#,
+        escape_xml(style.name()),
     )
 }
 
@@ -400,6 +487,23 @@ fn styles_xml(theme: &Theme) -> String {
 <w:pPr>
 <w:pageBreakBefore/>
 <w:spacing w:before="240" w:after="200"/>
+<w:pBdr><w:bottom w:val="single" w:sz="12" w:space="4" w:color="{accent}"/></w:pBdr>
+<w:outlineLvl w:val="0"/>
+</w:pPr>
+<w:rPr>
+<w:rFonts w:ascii="{title_font}" w:hAnsi="{title_font}"/>
+<w:b/><w:sz w:val="44"/>
+<w:color w:val="{title_color}"/>
+</w:rPr>
+</w:style>
+
+<w:style w:type="paragraph" w:styleId="Heading1NoBreak">
+<w:name w:val="heading 1 first"/>
+<w:basedOn w:val="Normal"/>
+<w:next w:val="Normal"/>
+<w:pPr>
+<w:spacing w:before="240" w:after="200"/>
+<w:pBdr><w:bottom w:val="single" w:sz="12" w:space="4" w:color="{accent}"/></w:pBdr>
 <w:outlineLvl w:val="0"/>
 </w:pPr>
 <w:rPr>
@@ -415,6 +519,8 @@ fn styles_xml(theme: &Theme) -> String {
 <w:next w:val="Normal"/>
 <w:pPr>
 <w:spacing w:before="320" w:after="120"/>
+<w:shd w:val="clear" w:color="auto" w:fill="{accent_soft}"/>
+<w:ind w:left="120" w:right="120"/>
 <w:outlineLvl w:val="1"/>
 </w:pPr>
 <w:rPr>
@@ -441,6 +547,7 @@ fn styles_xml(theme: &Theme) -> String {
 <w:pPr>
 <w:spacing w:before="40" w:after="40" w:line="240" w:lineRule="auto"/>
 <w:shd w:val="clear" w:color="auto" w:fill="{code_bg}"/>
+<w:pBdr><w:left w:val="single" w:sz="16" w:space="6" w:color="{code_accent}"/></w:pBdr>
 <w:ind w:left="200" w:right="200"/>
 </w:pPr>
 <w:rPr>
@@ -496,6 +603,53 @@ fn styles_xml(theme: &Theme) -> String {
 </w:rPr>
 </w:style>
 
+<w:style w:type="paragraph" w:styleId="DocMeta">
+<w:name w:val="Document Meta"/>
+<w:basedOn w:val="Normal"/>
+<w:pPr><w:spacing w:before="40" w:after="40"/></w:pPr>
+<w:rPr><w:sz w:val="18"/><w:color w:val="{muted_color}"/></w:rPr>
+</w:style>
+
+<w:style w:type="paragraph" w:styleId="SlideLabel">
+<w:name w:val="Slide Label"/>
+<w:basedOn w:val="DocMeta"/>
+<w:pPr><w:spacing w:before="180" w:after="40"/></w:pPr>
+<w:rPr>
+<w:rFonts w:ascii="{mono_font}" w:hAnsi="{mono_font}"/>
+<w:b/><w:caps/><w:sz w:val="18"/><w:color w:val="{accent}"/>
+</w:rPr>
+</w:style>
+
+<w:style w:type="paragraph" w:styleId="Caption">
+<w:name w:val="Caption"/>
+<w:basedOn w:val="DocMeta"/>
+<w:pPr><w:jc w:val="center"/><w:spacing w:before="20" w:after="120"/></w:pPr>
+<w:rPr><w:i/><w:color w:val="{muted_color}"/></w:rPr>
+</w:style>
+
+<w:style w:type="paragraph" w:styleId="NotesBody">
+<w:name w:val="Speaker Notes Body"/>
+<w:basedOn w:val="Normal"/>
+<w:pPr>
+<w:spacing w:before="80" w:after="100" w:line="300" w:lineRule="auto"/>
+<w:shd w:val="clear" w:color="auto" w:fill="{accent_soft}"/>
+<w:ind w:left="220" w:right="220"/>
+</w:pPr>
+</w:style>
+
+<w:style w:type="paragraph" w:styleId="TocTitle">
+<w:name w:val="Contents Title"/>
+<w:basedOn w:val="Heading1NoBreak"/>
+<w:pPr><w:spacing w:before="200" w:after="180"/></w:pPr>
+</w:style>
+
+<w:style w:type="paragraph" w:styleId="TocEntry">
+<w:name w:val="Contents Entry"/>
+<w:basedOn w:val="Normal"/>
+<w:pPr><w:spacing w:before="30" w:after="30"/><w:ind w:left="240"/></w:pPr>
+<w:rPr><w:color w:val="{body_color}"/></w:rPr>
+</w:style>
+
 </w:styles>"#,
         body_font = escape_xml(&theme.body_font),
         title_font = escape_xml(&theme.title_font),
@@ -507,6 +661,7 @@ fn styles_xml(theme: &Theme) -> String {
         code_text = theme.code_text,
         code_accent = theme.code_accent,
         accent = theme.accent,
+        accent_soft = theme.accent_soft,
         link = theme.link,
     )
 }
@@ -518,6 +673,10 @@ fn styles_xml(theme: &Theme) -> String {
 fn build_body(
     slides: &[Slide],
     theme: &Theme,
+    _deck_title: &str,
+    options: &DocumentOptions,
+    header_rel: Option<&str>,
+    footer_rel: Option<&str>,
     by_src: &HashMap<String, usize>,
     image_rels: &[String],
     rels: &mut DocRels,
@@ -526,25 +685,27 @@ fn build_body(
     let mut last_section_title: Option<String> = None;
     let mut first_section_emitted = false;
 
-    for slide in slides {
+    for (idx, slide) in slides.iter().enumerate() {
         match &slide.kind {
             SlideKind::Title {
                 subtitle,
                 author,
                 date,
             } => {
-                body.push_str(&para_styled("Title", &escape_xml(&slide.title)));
-                if let Some(s) = subtitle {
-                    body.push_str(&para_styled("Subtitle", &escape_xml(s)));
+                render_title_page(
+                    &mut body,
+                    &slide.title,
+                    subtitle,
+                    author,
+                    date,
+                    options.style,
+                );
+                if options.style.has_toc() {
+                    body.push_str(&page_break());
+                    body.push_str(&docx_toc(slides));
                 }
-                let footer = match (author.as_ref(), date.as_ref()) {
-                    (Some(a), Some(d)) => Some(format!("{} · {}", a, d)),
-                    (Some(a), None) => Some(a.clone()),
-                    (None, Some(d)) => Some(d.clone()),
-                    _ => None,
-                };
-                if let Some(f) = footer {
-                    body.push_str(&para_styled("Subtitle", &escape_xml(&f)));
+                if options.style.has_title_page() {
+                    body.push_str(&page_break());
                 }
             }
             SlideKind::Section => {
@@ -556,6 +717,9 @@ fn build_body(
                     "Heading1NoBreak"
                 };
                 first_section_emitted = true;
+                if options.style.has_slide_labels() {
+                    body.push_str(&slide_label(idx + 1, &slide.title));
+                }
                 body.push_str(&heading(style, &slide.title));
                 last_section_title = Some(slide.title.clone());
                 render_blocks(&mut body, &slide.blocks, theme, by_src, image_rels, rels);
@@ -566,6 +730,9 @@ fn build_body(
                     .as_deref()
                     .map(|s| trim_cont_suffix(s) == title)
                     .unwrap_or(false);
+                if options.style.has_slide_labels() {
+                    body.push_str(&slide_label(idx + 1, title));
+                }
                 if !skip {
                     body.push_str(&heading("Heading2", title));
                 }
@@ -574,6 +741,23 @@ fn build_body(
             }
         }
     }
+    if options.style.has_notes_appendix() {
+        append_notes_appendix(&mut body, slides);
+    }
+
+    let mut section_props = String::new();
+    if let Some(rid) = header_rel {
+        section_props.push_str(&format!(
+            r#"<w:headerReference w:type="default" r:id="{}"/>"#,
+            rid,
+        ));
+    }
+    if let Some(rid) = footer_rel {
+        section_props.push_str(&format!(
+            r#"<w:footerReference w:type="default" r:id="{}"/>"#,
+            rid,
+        ));
+    }
 
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -581,13 +765,98 @@ fn build_body(
 <w:body>
 {}
 <w:sectPr>
+{}
 <w:pgSz w:w="12240" w:h="15840"/>
 <w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/>
 </w:sectPr>
 </w:body>
 </w:document>"#,
-        body,
+        body, section_props,
     )
+}
+
+fn render_title_page(
+    body: &mut String,
+    title: &str,
+    subtitle: &Option<String>,
+    author: &Option<String>,
+    date: &Option<String>,
+    style: DocumentStyle,
+) {
+    body.push_str(&para_styled("Title", &escape_xml(title)));
+    if let Some(s) = subtitle {
+        body.push_str(&para_styled("Subtitle", &escape_xml(s)));
+    }
+    let footer = match (author.as_ref(), date.as_ref()) {
+        (Some(a), Some(d)) => Some(format!("{} · {}", a, d)),
+        (Some(a), None) => Some(a.clone()),
+        (None, Some(d)) => Some(d.clone()),
+        _ => None,
+    };
+    if let Some(f) = footer {
+        body.push_str(&para_styled("Subtitle", &escape_xml(&f)));
+    }
+    if style.has_title_page() {
+        body.push_str(&para_styled(
+            "DocMeta",
+            &escape_xml(&format!("Document style: {}", style.name())),
+        ));
+    }
+}
+
+fn docx_toc(slides: &[Slide]) -> String {
+    let mut out = String::new();
+    out.push_str(&para_styled("TocTitle", "Contents"));
+    for (idx, slide) in slides.iter().enumerate() {
+        if matches!(slide.kind, SlideKind::Title { .. }) {
+            continue;
+        }
+        let title = trim_cont_suffix(&slide.title);
+        if title.is_empty() {
+            continue;
+        }
+        out.push_str(&para_styled(
+            "TocEntry",
+            &escape_xml(&format!("{}  {}", idx + 1, title)),
+        ));
+    }
+    out
+}
+
+fn slide_label(idx: usize, title: &str) -> String {
+    para_styled(
+        "SlideLabel",
+        &escape_xml(&format!("Slide {} · {}", idx, trim_cont_suffix(title))),
+    )
+}
+
+fn append_notes_appendix(body: &mut String, slides: &[Slide]) {
+    body.push_str(&page_break());
+    body.push_str(&heading("Heading1NoBreak", "Speaker notes"));
+    let mut count = 0usize;
+    for (idx, slide) in slides.iter().enumerate() {
+        let Some(notes) = slide.notes.as_deref() else {
+            continue;
+        };
+        count += 1;
+        body.push_str(&heading(
+            "Heading2",
+            &format!("Slide {}: {}", idx + 1, trim_cont_suffix(&slide.title)),
+        ));
+        for line in notes.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            body.push_str(&para_styled("NotesBody", &escape_xml(line.trim())));
+        }
+    }
+    if count == 0 {
+        body.push_str(&para_styled("NotesBody", "No speaker notes in this deck."));
+    }
+}
+
+fn page_break() -> String {
+    r#"<w:p><w:r><w:br w:type="page"/></w:r></w:p>"#.to_string()
 }
 
 /// Add `<w:bidi/>` to every paragraph's `<w:pPr>` and switch left-aligned
@@ -679,7 +948,7 @@ fn render_block(
                 ));
             }
         }
-        Block::Table { headers, rows } => render_table(out, headers, rows, rels),
+        Block::Table { headers, rows } => render_table(out, headers, rows, theme, rels),
         Block::Columns { left, right } => {
             render_blocks(out, left, theme, by_src, image_rels, rels);
             render_blocks(out, right, theme, by_src, image_rels, rels);
@@ -692,7 +961,11 @@ fn render_block(
         } => {
             if let Some(&idx) = by_src.get(src) {
                 if let Some(rid) = image_rels.get(idx) {
-                    render_image(out, rid, &theme_image_dims(), alt);
+                    let caption_alt = crate::math::visible_image_alt(src, alt);
+                    render_image(out, rid, &theme_image_dims(), caption_alt);
+                    if !caption_alt.trim().is_empty() {
+                        out.push_str(&para_styled("Caption", &escape_xml(caption_alt.trim())));
+                    }
                 }
             }
         }
@@ -729,6 +1002,7 @@ fn render_table(
     out: &mut String,
     headers: &[Vec<Run>],
     rows: &[Vec<Vec<Run>>],
+    theme: &Theme,
     rels: &mut DocRels,
 ) {
     let cols = headers
@@ -738,18 +1012,20 @@ fn render_table(
         return;
     }
     let col_w = 9000 / cols.max(1) as u32; // dxa twentieths-of-a-point
-    out.push_str(
+    out.push_str(&format!(
         r#"<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/>
 <w:tblBorders>
-<w:top w:val="single" w:sz="4" w:color="CCCCCC"/>
-<w:left w:val="single" w:sz="4" w:color="CCCCCC"/>
-<w:bottom w:val="single" w:sz="4" w:color="CCCCCC"/>
-<w:right w:val="single" w:sz="4" w:color="CCCCCC"/>
-<w:insideH w:val="single" w:sz="4" w:color="EEEEEE"/>
-<w:insideV w:val="single" w:sz="4" w:color="EEEEEE"/>
+<w:top w:val="single" w:sz="4" w:color="{divider}"/>
+<w:left w:val="single" w:sz="4" w:color="{divider}"/>
+<w:bottom w:val="single" w:sz="4" w:color="{divider}"/>
+<w:right w:val="single" w:sz="4" w:color="{divider}"/>
+<w:insideH w:val="single" w:sz="4" w:color="{divider}"/>
+<w:insideV w:val="single" w:sz="4" w:color="{divider}"/>
 </w:tblBorders>
+<w:tblLook w:firstRow="1" w:noHBand="0" w:noVBand="1"/>
 </w:tblPr><w:tblGrid>"#,
-    );
+        divider = theme.divider,
+    ));
     for _ in 0..cols {
         out.push_str(&format!(r#"<w:gridCol w:w="{}"/>"#, col_w));
     }
@@ -763,8 +1039,9 @@ fn render_table(
             .take(cols)
         {
             out.push_str(&format!(
-                r#"<w:tc><w:tcPr><w:tcW w:w="{}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="F1F5F9"/></w:tcPr><w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r></w:p></w:tc>"#,
+                r#"<w:tc><w:tcPr><w:tcW w:w="{}" w:type="dxa"/><w:shd w:val="clear" w:color="auto" w:fill="{}"/></w:tcPr><w:p><w:pPr><w:pStyle w:val="Normal"/></w:pPr><w:r><w:rPr><w:b/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r></w:p></w:tc>"#,
                 col_w,
+                theme.accent_soft,
                 escape_xml(&runs_plain_text(c)),
             ));
         }
@@ -880,23 +1157,11 @@ fn para_styled(style: &str, text: &str) -> String {
 }
 
 fn heading(style: &str, title: &str) -> String {
-    // Use a dedicated style id `Heading1NoBreak` to suppress the page break
-    // on the first H1. We don't redeclare it in styles.xml; Word treats an
-    // unknown style id as the default-style chain, which gives an OK fallback
-    // (it inherits from Normal). To make it look like a Heading1 we inline
-    // the formatting.
-    if style == "Heading1NoBreak" {
-        format!(
-            r#"<w:p><w:pPr><w:spacing w:before="240" w:after="200"/><w:outlineLvl w:val="0"/></w:pPr><w:r><w:rPr><w:b/><w:sz w:val="44"/></w:rPr><w:t xml:space="preserve">{}</w:t></w:r></w:p>"#,
-            escape_xml(title),
-        )
-    } else {
-        format!(
-            r#"<w:p><w:pPr><w:pStyle w:val="{}"/></w:pPr><w:r><w:t xml:space="preserve">{}</w:t></w:r></w:p>"#,
-            style,
-            escape_xml(title),
-        )
-    }
+    format!(
+        r#"<w:p><w:pPr><w:pStyle w:val="{}"/></w:pPr><w:r><w:t xml:space="preserve">{}</w:t></w:r></w:p>"#,
+        style,
+        escape_xml(title),
+    )
 }
 
 fn runs_plain_text(runs: &[Run]) -> String {

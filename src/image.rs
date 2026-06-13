@@ -93,6 +93,9 @@ fn remote_image_options() -> RemoteImageOptions {
 /// `base_dir` is the directory of the markdown file — relative local
 /// paths resolve against it.
 pub fn load_any(base_dir: &Path, src: &str) -> Result<ImageMeta> {
+    if src.starts_with("data:") {
+        return load_data_uri(src);
+    }
     if src.starts_with("http://") || src.starts_with("https://") {
         return fetch_remote(src);
     }
@@ -102,6 +105,105 @@ pub fn load_any(base_dir: &Path, src: &str) -> Result<ImageMeta> {
         base_dir.join(src)
     };
     load(&path)
+}
+
+fn load_data_uri(src: &str) -> Result<ImageMeta> {
+    let (meta, data) = src
+        .split_once(',')
+        .ok_or_else(|| anyhow::anyhow!("invalid data URI: missing comma separator"))?;
+    let meta = meta
+        .strip_prefix("data:")
+        .ok_or_else(|| anyhow::anyhow!("invalid data URI: missing data: prefix"))?;
+    let mut parts = meta.split(';');
+    let mime = parts
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or("text/plain");
+    let base64_encoded = parts.any(|part| part.eq_ignore_ascii_case("base64"));
+    let bytes = if base64_encoded {
+        decode_base64_data(data).context("decode base64 data URI")?
+    } else {
+        decode_percent_data(data).context("decode percent-encoded data URI")?
+    };
+    sniff(&bytes, &format!("data URI ({mime})"))
+}
+
+fn decode_base64_data(input: &str) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u8;
+    let mut seen_padding = false;
+    for b in input.bytes().filter(|b| !b.is_ascii_whitespace()) {
+        if b == b'=' {
+            seen_padding = true;
+            continue;
+        }
+        if seen_padding {
+            bail!("invalid base64 padding");
+        }
+        let val = base64_value(b)
+            .ok_or_else(|| anyhow::anyhow!("invalid base64 character `{}`", char::from(b)))?;
+        buf = (buf << 6) | val as u32;
+        bits += 6;
+        while bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+            if bits == 0 {
+                buf = 0;
+            } else {
+                buf &= (1 << bits) - 1;
+            }
+        }
+    }
+    if bits == 6 {
+        bail!("truncated base64 data");
+    }
+    Ok(out)
+}
+
+fn base64_value(b: u8) -> Option<u8> {
+    match b {
+        b'A'..=b'Z' => Some(b - b'A'),
+        b'a'..=b'z' => Some(b - b'a' + 26),
+        b'0'..=b'9' => Some(b - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+fn decode_percent_data(input: &str) -> Result<Vec<u8>> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            if i + 2 >= bytes.len() {
+                bail!("truncated percent escape");
+            }
+            let hi = hex_value(bytes[i + 1]).ok_or_else(|| {
+                anyhow::anyhow!("invalid percent escape `{}`", char::from(bytes[i + 1]))
+            })?;
+            let lo = hex_value(bytes[i + 2]).ok_or_else(|| {
+                anyhow::anyhow!("invalid percent escape `{}`", char::from(bytes[i + 2]))
+            })?;
+            out.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    Ok(out)
+}
+
+fn hex_value(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Load an image, or fall back to a visible "image failed" placeholder
@@ -135,6 +237,8 @@ pub fn placeholder_meta(src: &str, reason: &str) -> ImageMeta {
             return meta;
         }
     }
+    #[cfg(not(feature = "svg"))]
+    let _ = (src, reason);
     static_placeholder_meta()
 }
 
@@ -157,6 +261,7 @@ fn svg_placeholder(src: &str, reason: &str) -> Result<ImageMeta> {
     rasterize_svg(svg.as_bytes(), "image-failed placeholder")
 }
 
+#[cfg(feature = "svg")]
 fn truncate_for_display(s: &str, max_chars: usize) -> String {
     let collapsed: String = s
         .chars()
@@ -172,6 +277,7 @@ fn truncate_for_display(s: &str, max_chars: usize) -> String {
     format!("{}…", head)
 }
 
+#[cfg(feature = "svg")]
 fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -664,6 +770,10 @@ fn looks_like_svg(bytes: &[u8]) -> bool {
 /// through `sniff` recursively so the downstream renderers see a normal
 /// PNG. Target DPI is fixed at 192 (2× retina) which keeps slide images
 /// crisp without making them silly-large.
+pub fn rasterize_svg_to_png(bytes: &[u8], origin: &str) -> Result<ImageMeta> {
+    rasterize_svg(bytes, origin)
+}
+
 #[cfg(feature = "svg")]
 fn rasterize_svg(bytes: &[u8], origin: &str) -> Result<ImageMeta> {
     // Build a font db once per SVG. Loading the bundled DejaVu families

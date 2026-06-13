@@ -1,15 +1,144 @@
-//! Tiny LaTeX-flavoured math to Unicode translator. Not a real math
-//! renderer — just enough to make `$E = mc^2$` and `\sum_{i=1}^n f(x_i)` look
-//! reasonable in a slide deck without pulling in a TeX engine.
+//! Tiny LaTeX-flavoured math preprocessor. Not a real TeX engine — just
+//! enough to make `$E = mc^2$` and `\sum_{i=1}^n f(x_i)` look reasonable in a
+//! slide deck without pulling in a runtime renderer.
 //!
 //! The translator runs as a *preprocessor* pass before pulldown-cmark sees
-//! the markdown. It replaces `$...$` and `$$...$$` spans (outside fenced
-//! code blocks) with italicised Unicode. Anything we can't translate is
-//! passed through verbatim so the user can spot it and adjust.
+//! the markdown. In Unicode mode it replaces `$...$` and `$$...$$` spans
+//! (outside fenced code blocks) with italicised Unicode. In SVG mode it keeps
+//! inline math as source and turns display spans into generated local image
+//! data. Anything we can't translate is passed through verbatim so the user can
+//! spot it and adjust.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MathMode {
+    /// Translate `$...$` and `$$...$$` into italicized Unicode text.
+    Unicode,
+    /// Leave math source untouched.
+    Source,
+    /// Render display `$$...$$` spans as generated SVG images.
+    Svg,
+}
+
+impl Default for MathMode {
+    fn default() -> Self {
+        MathMode::Unicode
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MathBlockAlign {
+    Left,
+    Center,
+    Right,
+}
+
+impl Default for MathBlockAlign {
+    fn default() -> Self {
+        MathBlockAlign::Center
+    }
+}
+
+impl MathBlockAlign {
+    pub fn name(self) -> &'static str {
+        match self {
+            MathBlockAlign::Left => "left",
+            MathBlockAlign::Center => "center",
+            MathBlockAlign::Right => "right",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MathSvgOptions {
+    /// Display math scale as a percentage. 100 means the built-in default.
+    pub scale_percent: u16,
+    /// Maximum display-math image height in logical CSS/SVG pixels.
+    pub max_height_px: Option<u16>,
+    pub block_align: MathBlockAlign,
+}
+
+impl Default for MathSvgOptions {
+    fn default() -> Self {
+        Self {
+            scale_percent: 100,
+            max_height_px: None,
+            block_align: MathBlockAlign::Center,
+        }
+    }
+}
+
+impl MathSvgOptions {
+    pub fn scale_factor(self) -> f32 {
+        (self.scale_percent as f32 / 100.0).clamp(0.25, 4.0)
+    }
+
+    fn image_alt(self) -> String {
+        let mut alt = format!(
+            "math;scale={};align={}",
+            self.scale_percent,
+            self.block_align.name()
+        );
+        if let Some(max_height) = self.max_height_px {
+            alt.push_str(&format!(";maxh={max_height}"));
+        }
+        alt
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MathImageMeta {
+    pub align: MathBlockAlign,
+    pub max_height_px: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MathOptions {
+    pub mode: MathMode,
+    pub macros: Vec<(String, String)>,
+    pub svg: MathSvgOptions,
+}
+
+impl MathOptions {
+    pub fn new(mode: MathMode) -> Self {
+        Self {
+            mode,
+            macros: Vec::new(),
+            svg: MathSvgOptions::default(),
+        }
+    }
+}
+
+impl Default for MathOptions {
+    fn default() -> Self {
+        MathOptions::new(MathMode::Unicode)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MathDiagnostic {
+    pub line: usize,
+    pub kind: &'static str,
+    pub detail: String,
+    pub source: String,
+}
 
 /// Walk the source string and replace math spans. Skips fenced code blocks
 /// (` ``` ` / `~~~`) so dollar signs inside code are left alone.
 pub fn translate(input: &str) -> String {
+    translate_with_mode(input, MathMode::Unicode)
+}
+
+pub fn translate_with_mode(input: &str, mode: MathMode) -> String {
+    translate_with_options(input, &MathOptions::new(mode))
+}
+
+pub fn translate_with_options(input: &str, options: &MathOptions) -> String {
+    if matches!(options.mode, MathMode::Source) {
+        return input.to_string();
+    }
+    if matches!(options.mode, MathMode::Svg) {
+        return translate_svg_mode(input, options);
+    }
     let mut out = String::with_capacity(input.len());
     let mut in_code = false;
     for line in input.split_inclusive('\n') {
@@ -23,12 +152,199 @@ pub fn translate(input: &str) -> String {
             out.push_str(line);
             continue;
         }
-        translate_line(line, &mut out);
+        translate_line(line, &mut out, &options.macros);
     }
     out
 }
 
-fn translate_line(line: &str, out: &mut String) {
+pub fn is_generated_math_image(src: &str, alt: &str) -> bool {
+    math_image_meta(src, alt).is_some()
+}
+
+pub fn math_image_meta(src: &str, alt: &str) -> Option<MathImageMeta> {
+    if !src.starts_with("data:image/svg+xml;base64,") {
+        return None;
+    }
+    let mut parts = alt.split(';');
+    if parts.next()?.trim() != "math" {
+        return None;
+    }
+    let mut meta = MathImageMeta {
+        align: MathBlockAlign::Center,
+        max_height_px: None,
+    };
+    for part in parts {
+        let Some((key, value)) = part.trim().split_once('=') else {
+            continue;
+        };
+        match key {
+            "align" => {
+                meta.align = match value {
+                    "left" => MathBlockAlign::Left,
+                    "right" => MathBlockAlign::Right,
+                    _ => MathBlockAlign::Center,
+                };
+            }
+            "maxh" => {
+                meta.max_height_px = value.parse::<u16>().ok();
+            }
+            _ => {}
+        }
+    }
+    Some(meta)
+}
+
+pub fn visible_image_alt<'a>(src: &str, alt: &'a str) -> &'a str {
+    if is_generated_math_image(src, alt) {
+        ""
+    } else {
+        alt
+    }
+}
+
+pub fn is_markup_text_language(lang: Option<&str>) -> bool {
+    matches!(
+        lang.map(|lang| lang.trim().to_ascii_lowercase()),
+        Some(lang)
+            if matches!(
+                lang.as_str(),
+                "math" | "md2any-math" | "math-unicode" | "unicode-math"
+            )
+    )
+}
+
+pub fn translate_markup_text(src: &str) -> String {
+    translate_math(src)
+}
+
+pub fn translate_markup_lines(lines: &[String], lang: Option<&str>) -> Vec<String> {
+    if is_markup_text_language(lang) {
+        lines
+            .iter()
+            .map(|line| translate_markup_text(line))
+            .collect()
+    } else {
+        lines.to_vec()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MathTextLayout {
+    pub width: f32,
+    pub height: f32,
+    pub baseline: f32,
+    pub draws: Vec<MathLayoutDraw>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MathLayoutDraw {
+    Text {
+        x: f32,
+        y: f32,
+        size: f32,
+        text: String,
+    },
+    Line {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        stroke_width: f32,
+    },
+    Polyline {
+        points: Vec<(f32, f32)>,
+        stroke_width: f32,
+    },
+    Delimiter {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        token: String,
+        stroke_width: f32,
+    },
+}
+
+pub fn layout_markup_text(src: &str, scale_percent: u16) -> MathTextLayout {
+    let expanded = apply_user_macros(src.trim(), &[]);
+    let node = MathParser::new(&expanded).parse_root();
+    let base_size = 28.0 * (scale_percent as f32 / 100.0).clamp(0.25, 4.0);
+    publish_math_box(layout_math(&node, base_size))
+}
+
+pub fn decode_generated_math_svg(src: &str) -> Option<String> {
+    let data = src.strip_prefix("data:image/svg+xml;base64,")?;
+    let bytes = decode_base64(data)?;
+    String::from_utf8(bytes).ok()
+}
+
+fn translate_svg_mode(input: &str, options: &MathOptions) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut in_code = false;
+    let mut in_display = false;
+    let mut display = String::new();
+
+    for line in input.split_inclusive('\n') {
+        if in_display {
+            if let Some(end) = find_display_close(line) {
+                display.push_str(&line[..end]);
+                emit_math_svg_image(&display, &mut out, options);
+                display.clear();
+                in_display = false;
+                translate_line_svg(&line[end + 2..], &mut out, options);
+            } else {
+                display.push_str(line);
+            }
+            continue;
+        }
+
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_code = !in_code;
+            out.push_str(line);
+            continue;
+        }
+        if in_code {
+            out.push_str(line);
+            continue;
+        }
+
+        if let Some(open) = find_unclosed_display_open(line) {
+            translate_line_svg(&line[..open], &mut out, options);
+            display.push_str(&line[open + 2..]);
+            in_display = true;
+        } else {
+            translate_line_svg(line, &mut out, options);
+        }
+    }
+
+    if in_display {
+        out.push_str("$$");
+        out.push_str(&display);
+    }
+    out
+}
+
+/// Inspect math spans for constructs the Unicode translator cannot render
+/// faithfully. This is intentionally conservative: it catches common rich
+/// TeX features before they silently degrade into literal source text.
+pub fn diagnose(input: &str) -> Vec<MathDiagnostic> {
+    let mut diagnostics = Vec::new();
+    let mut in_code = false;
+    for (idx, line) in input.lines().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_code = !in_code;
+            continue;
+        }
+        if !in_code {
+            diagnose_line(line, idx + 1, &mut diagnostics);
+        }
+    }
+    diagnostics
+}
+
+fn translate_line(line: &str, out: &mut String, macros: &[(String, String)]) {
     // Scan over byte indices but always slice on UTF-8 boundaries so we
     // never split a multi-byte char. The `$`, `\`, and `` ` `` markers we
     // care about are pure ASCII, so byte indices align with character
@@ -65,14 +381,14 @@ fn translate_line(line: &str, out: &mut String) {
             if i + 1 < bytes.len() && bytes[i + 1] == b'$' {
                 if let Some(end) = find_close(bytes, i + 2, b"$$") {
                     let inner = &line[i + 2..end];
-                    out.push_str(&render_math(inner, true));
+                    out.push_str(&render_math(inner, true, macros));
                     i = end + 2;
                     continue;
                 }
             } else if let Some(end) = find_close(bytes, i + 1, b"$") {
                 let inner = &line[i + 1..end];
                 if !inner.contains('\n') {
-                    out.push_str(&render_math(inner, false));
+                    out.push_str(&render_math(inner, false, macros));
                     i = end + 1;
                     continue;
                 }
@@ -82,6 +398,1706 @@ fn translate_line(line: &str, out: &mut String) {
         let ch_end = utf8_char_end(bytes, i);
         out.push_str(&line[i..ch_end]);
         i = ch_end;
+    }
+}
+
+fn translate_line_svg(line: &str, out: &mut String, options: &MathOptions) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let mut n = 0;
+            while i + n < bytes.len() && bytes[i + n] == b'`' {
+                n += 1;
+            }
+            if let Some(close) = find_code_span_close(bytes, i + n, n) {
+                let end = close + n;
+                out.push_str(&line[i..end]);
+                i = end;
+                continue;
+            }
+            out.push_str(&line[i..i + n]);
+            i += n;
+            continue;
+        }
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+            out.push('$');
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+            if let Some(end) = find_close(bytes, i + 2, b"$$") {
+                let inner = &line[i + 2..end];
+                emit_math_svg_image(inner, out, options);
+                i = end + 2;
+                continue;
+            }
+        }
+        let ch_end = utf8_char_end(bytes, i);
+        out.push_str(&line[i..ch_end]);
+        i = ch_end;
+    }
+}
+
+fn emit_math_svg_image(src: &str, out: &mut String, options: &MathOptions) {
+    out.push_str("\n\n![");
+    out.push_str(&options.svg.image_alt());
+    out.push_str("](");
+    out.push_str(&render_math_svg_data_uri(src, &options.macros, options.svg));
+    out.push_str(")\n\n");
+}
+
+fn find_display_close(line: &str) -> Option<usize> {
+    find_close(line.as_bytes(), 0, b"$$")
+}
+
+fn find_unclosed_display_open(line: &str) -> Option<usize> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let mut n = 0;
+            while i + n < bytes.len() && bytes[i + n] == b'`' {
+                n += 1;
+            }
+            if let Some(close) = find_code_span_close(bytes, i + n, n) {
+                i = close + n;
+                continue;
+            }
+            i += n;
+            continue;
+        }
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+            if let Some(close) = find_close(bytes, i + 2, b"$$") {
+                i = close + 2;
+                continue;
+            }
+            return Some(i);
+        }
+        i = utf8_char_end(bytes, i);
+    }
+    None
+}
+
+fn render_math_svg_data_uri(
+    src: &str,
+    macros: &[(String, String)],
+    options: MathSvgOptions,
+) -> String {
+    let svg = render_math_svg(src, macros, options);
+    format!("data:image/svg+xml;base64,{}", base64(svg.as_bytes()))
+}
+
+fn render_math_svg(src: &str, macros: &[(String, String)], options: MathSvgOptions) -> String {
+    let expanded = apply_user_macros(src.trim(), macros);
+    let node = MathParser::new(&expanded).parse_root();
+    let base_size = 28.0 * options.scale_factor();
+    let layout = layout_math(&node, base_size);
+    let pad_x = base_size;
+    let pad_y = base_size * 0.85;
+    let natural_width = (layout.width + pad_x * 2.0).ceil().clamp(96.0, 2200.0);
+    let natural_height = (layout.height + pad_y * 2.0).ceil().clamp(48.0, 1600.0);
+    let (width, height) = if let Some(max_height) = options.max_height_px {
+        let max_height = f32::from(max_height).max(24.0);
+        if natural_height > max_height {
+            let scale = max_height / natural_height;
+            ((natural_width * scale).ceil().max(96.0), max_height)
+        } else {
+            (natural_width, natural_height)
+        }
+    } else {
+        (natural_width, natural_height)
+    };
+    let mut body = String::new();
+    render_box(&layout, pad_x, pad_y, &mut body);
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {natural_width} {natural_height}" role="img" aria-label="math">
+  <rect width="{natural_width}" height="{natural_height}" rx="12" fill="#ffffff" fill-opacity="0"/>
+  <g font-family="DejaVu Sans, DejaVu Sans Mono, sans-serif" fill="#111827" stroke="#111827" stroke-linecap="round" stroke-linejoin="round">
+{body}  </g>
+</svg>"##
+    )
+}
+
+#[derive(Debug, Clone)]
+enum MathNode {
+    Row(Vec<MathNode>),
+    Text(String),
+    Fraction(Box<MathNode>, Box<MathNode>),
+    Sqrt(Box<MathNode>),
+    Delimited {
+        left: String,
+        body: Box<MathNode>,
+        right: String,
+    },
+    Script {
+        base: Box<MathNode>,
+        sub: Option<Box<MathNode>>,
+        sup: Option<Box<MathNode>>,
+    },
+    Matrix {
+        rows: Vec<Vec<MathNode>>,
+        left: &'static str,
+        right: &'static str,
+    },
+    Cases(Vec<(MathNode, Option<MathNode>)>),
+    Lines(Vec<MathNode>),
+}
+
+struct MathParser<'a> {
+    src: &'a str,
+    bytes: &'a [u8],
+    pos: usize,
+}
+
+impl<'a> MathParser<'a> {
+    fn new(src: &'a str) -> Self {
+        Self {
+            src,
+            bytes: src.as_bytes(),
+            pos: 0,
+        }
+    }
+
+    fn parse_root(mut self) -> MathNode {
+        let rows = split_top_level_math_rows(self.src);
+        if rows.len() > 1 {
+            return MathNode::Lines(
+                rows.into_iter()
+                    .map(|row| MathParser::new(&row).parse_row(None))
+                    .collect(),
+            );
+        }
+        self.parse_row(None)
+    }
+
+    fn parse_row(&mut self, stop: Option<u8>) -> MathNode {
+        let mut nodes = Vec::new();
+        while self.pos < self.bytes.len() {
+            if stop.is_some() && Some(self.bytes[self.pos]) == stop {
+                break;
+            }
+            let atom = self.parse_atom(stop);
+            if let Some(atom) = atom {
+                let atom = self.parse_scripts(atom, stop);
+                push_text_node(&mut nodes, atom);
+            } else {
+                break;
+            }
+        }
+        match nodes.len() {
+            0 => MathNode::Text(String::new()),
+            1 => nodes.remove(0),
+            _ => MathNode::Row(nodes),
+        }
+    }
+
+    fn parse_atom(&mut self, stop: Option<u8>) -> Option<MathNode> {
+        if self.pos >= self.bytes.len() {
+            return None;
+        }
+        let b = self.bytes[self.pos];
+        if stop.is_some() && Some(b) == stop {
+            return None;
+        }
+        match b {
+            b'{' => {
+                self.pos += 1;
+                let group = self.parse_row(Some(b'}'));
+                if self.pos < self.bytes.len() && self.bytes[self.pos] == b'}' {
+                    self.pos += 1;
+                }
+                Some(group)
+            }
+            b'}' => None,
+            b'\\' => Some(self.parse_command()),
+            b'^' | b'_' => {
+                self.pos += 1;
+                Some(MathNode::Text(char::from(b).to_string()))
+            }
+            b'&' => {
+                self.pos += 1;
+                Some(MathNode::Text(" ".into()))
+            }
+            _ if b.is_ascii_whitespace() => {
+                while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
+                    self.pos += 1;
+                }
+                Some(MathNode::Text(" ".into()))
+            }
+            _ => Some(self.parse_text_run(stop)),
+        }
+    }
+
+    fn parse_command(&mut self) -> MathNode {
+        let start = self.pos;
+        self.pos += 1;
+        if self.pos >= self.bytes.len() {
+            return MathNode::Text("\\".into());
+        }
+        let next = self.bytes[self.pos];
+        if next == b'\\' {
+            self.pos += 1;
+            return MathNode::Text("\n".into());
+        }
+        if !char::from(next).is_ascii_alphabetic() {
+            self.pos += 1;
+            return MathNode::Text(match next {
+                b',' | b':' | b';' | b' ' => " ".into(),
+                b'!' => String::new(),
+                b'|' => "‖".into(),
+                b'{' => "{".into(),
+                b'}' => "}".into(),
+                b'(' => "(".into(),
+                b')' => ")".into(),
+                b'[' => "[".into(),
+                b']' => "]".into(),
+                b'_' => "_".into(),
+                _ => char::from(next).to_string(),
+            });
+        }
+        let name_start = self.pos;
+        while self.pos < self.bytes.len() && char::from(self.bytes[self.pos]).is_ascii_alphabetic()
+        {
+            self.pos += 1;
+        }
+        let name = &self.src[name_start..self.pos];
+        let starred = if self.pos < self.bytes.len() && self.bytes[self.pos] == b'*' {
+            self.pos += 1;
+            true
+        } else {
+            false
+        };
+        match name {
+            "frac" => {
+                let num = self.parse_required_group_node();
+                let den = self.parse_required_group_node();
+                MathNode::Fraction(Box::new(num), Box::new(den))
+            }
+            "sqrt" => {
+                self.skip_optional_group();
+                MathNode::Sqrt(Box::new(self.parse_required_group_node()))
+            }
+            "binom" => {
+                let top = self.parse_required_group_node();
+                let bottom = self.parse_required_group_node();
+                MathNode::Matrix {
+                    rows: vec![vec![top], vec![bottom]],
+                    left: "(",
+                    right: ")",
+                }
+            }
+            "begin" => self.parse_environment(),
+            "left" => self.parse_left_right(),
+            "right" => {
+                let _ = self.parse_delimiter_token();
+                MathNode::Text(String::new())
+            }
+            "big" | "Big" | "bigg" | "Bigg" | "bigl" | "bigr" | "Bigl" | "Bigr" | "biggl"
+            | "biggr" | "Biggl" | "Biggr" => MathNode::Text(self.parse_delimiter_token()),
+            "limits" | "nolimits" => MathNode::Text(String::new()),
+            "text" | "textrm" | "textit" | "textbf" | "mathrm" | "mathbf" | "mathit" | "mathsf"
+            | "mathtt" => MathNode::Text(self.parse_required_group_raw()),
+            "operatorname" => {
+                let mut name = self.parse_required_group_raw();
+                if starred && !name.is_empty() {
+                    name.push(' ');
+                }
+                MathNode::Text(name)
+            }
+            "mathbb" => MathNode::Text(map_math_alphabet(
+                &self.parse_required_group_raw(),
+                blackboard_char,
+            )),
+            "mathcal" => MathNode::Text(map_math_alphabet(
+                &self.parse_required_group_raw(),
+                script_char,
+            )),
+            _ if accent_mark(name).is_some() => {
+                let mark = accent_mark(name).unwrap_or('\u{0302}');
+                let arg = self.parse_required_group_node();
+                MathNode::Text(apply_combining_mark(&node_plain_text(&arg), mark))
+            }
+            _ => {
+                if let Some(rep) = greek_or_symbol(name) {
+                    MathNode::Text(rep.into())
+                } else {
+                    MathNode::Text(self.src[start..self.pos].into())
+                }
+            }
+        }
+    }
+
+    fn parse_environment(&mut self) -> MathNode {
+        let name = self.parse_required_group_raw();
+        let marker = format!("\\end{{{name}}}");
+        let Some(rel_end) = self.src[self.pos..].find(&marker) else {
+            return MathNode::Text(format!("\\begin{{{name}}}"));
+        };
+        let inner_start = self.pos;
+        let inner_end = self.pos + rel_end;
+        self.pos = inner_end + marker.len();
+        let inner = &self.src[inner_start..inner_end];
+        match name.as_str() {
+            "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix"
+            | "smallmatrix" => {
+                let (left, right) = match name.as_str() {
+                    "pmatrix" => ("(", ")"),
+                    "bmatrix" => ("[", "]"),
+                    "Bmatrix" => ("{", "}"),
+                    "vmatrix" => ("|", "|"),
+                    "Vmatrix" => ("‖", "‖"),
+                    _ => ("", ""),
+                };
+                MathNode::Matrix {
+                    rows: parse_matrix_rows(inner),
+                    left,
+                    right,
+                }
+            }
+            "cases" => MathNode::Cases(parse_case_rows(inner)),
+            "aligned" | "align" | "alignat" | "gather" | "equation" | "split" => MathNode::Matrix {
+                rows: parse_matrix_rows(inner),
+                left: "",
+                right: "",
+            },
+            "array" => MathNode::Matrix {
+                rows: parse_matrix_rows(strip_array_spec(inner)),
+                left: "",
+                right: "",
+            },
+            _ => MathNode::Text(inner.into()),
+        }
+    }
+
+    fn parse_left_right(&mut self) -> MathNode {
+        let left = self.parse_delimiter_token();
+        let Some((inner_start, inner_end, right)) = self.find_matching_right() else {
+            return MathNode::Text(left);
+        };
+        let body = MathParser::new(&self.src[inner_start..inner_end]).parse_root();
+        MathNode::Delimited {
+            left,
+            body: Box::new(body),
+            right,
+        }
+    }
+
+    fn find_matching_right(&mut self) -> Option<(usize, usize, String)> {
+        let inner_start = self.pos;
+        let mut i = self.pos;
+        let mut brace_depth = 0usize;
+        let mut left_depth = 0usize;
+        while i < self.bytes.len() {
+            match self.bytes[i] {
+                b'{' => {
+                    brace_depth += 1;
+                    i += 1;
+                }
+                b'}' => {
+                    brace_depth = brace_depth.saturating_sub(1);
+                    i += 1;
+                }
+                b'\\' if brace_depth == 0 && starts_math_command(self.src, i, "left") => {
+                    left_depth += 1;
+                    i += "\\left".len();
+                }
+                b'\\' if brace_depth == 0 && starts_math_command(self.src, i, "right") => {
+                    if left_depth == 0 {
+                        let inner_end = i;
+                        self.pos = i + "\\right".len();
+                        let right = self.parse_delimiter_token();
+                        return Some((inner_start, inner_end, right));
+                    }
+                    left_depth = left_depth.saturating_sub(1);
+                    i += "\\right".len();
+                }
+                _ => i = utf8_char_end(self.bytes, i),
+            }
+        }
+        None
+    }
+
+    fn parse_delimiter_token(&mut self) -> String {
+        self.skip_spaces();
+        if self.pos >= self.bytes.len() {
+            return String::new();
+        }
+        if self.bytes[self.pos] == b'.' {
+            self.pos += 1;
+            return String::new();
+        }
+        if self.bytes[self.pos] == b'\\' {
+            let start = self.pos;
+            self.pos += 1;
+            if self.pos < self.bytes.len() && (self.bytes[self.pos] as char).is_ascii_alphabetic() {
+                let name_start = self.pos;
+                while self.pos < self.bytes.len()
+                    && (self.bytes[self.pos] as char).is_ascii_alphabetic()
+                {
+                    self.pos += 1;
+                }
+                return delimiter_name(&self.src[name_start..self.pos]).to_string();
+            }
+            if self.pos < self.bytes.len() {
+                let ch_end = utf8_char_end(self.bytes, self.pos);
+                let token = &self.src[start..ch_end];
+                self.pos = ch_end;
+                return delimiter_name(token.trim_start_matches('\\')).to_string();
+            }
+            return "\\".into();
+        }
+        let ch_end = utf8_char_end(self.bytes, self.pos);
+        let token = self.src[self.pos..ch_end].to_string();
+        self.pos = ch_end;
+        delimiter_name(&token).to_string()
+    }
+
+    fn parse_scripts(&mut self, base: MathNode, stop: Option<u8>) -> MathNode {
+        let mut sub = None;
+        let mut sup = None;
+        loop {
+            if self.pos >= self.bytes.len() {
+                break;
+            }
+            if stop.is_some() && Some(self.bytes[self.pos]) == stop {
+                break;
+            }
+            match self.bytes[self.pos] {
+                b'_' => {
+                    self.pos += 1;
+                    sub = Some(Box::new(self.parse_script_arg(stop)));
+                }
+                b'^' => {
+                    self.pos += 1;
+                    sup = Some(Box::new(self.parse_script_arg(stop)));
+                }
+                _ => break,
+            }
+        }
+        if sub.is_none() && sup.is_none() {
+            base
+        } else {
+            MathNode::Script {
+                base: Box::new(base),
+                sub,
+                sup,
+            }
+        }
+    }
+
+    fn parse_script_arg(&mut self, stop: Option<u8>) -> MathNode {
+        if self.pos < self.bytes.len() && self.bytes[self.pos] == b'{' {
+            self.pos += 1;
+            let group = self.parse_row(Some(b'}'));
+            if self.pos < self.bytes.len() && self.bytes[self.pos] == b'}' {
+                self.pos += 1;
+            }
+            group
+        } else if self.pos < self.bytes.len() && self.bytes[self.pos] == b'\\' {
+            self.parse_command()
+        } else if self.pos < self.bytes.len() {
+            if stop.is_some() && Some(self.bytes[self.pos]) == stop {
+                return MathNode::Text(String::new());
+            }
+            let end = utf8_char_end(self.bytes, self.pos);
+            let text = self.src[self.pos..end].to_string();
+            self.pos = end;
+            MathNode::Text(text)
+        } else {
+            MathNode::Text(String::new())
+        }
+    }
+
+    fn parse_required_group_node(&mut self) -> MathNode {
+        self.skip_spaces();
+        if self.pos >= self.bytes.len() || self.bytes[self.pos] != b'{' {
+            return MathNode::Text(String::new());
+        }
+        self.pos += 1;
+        let group = self.parse_row(Some(b'}'));
+        if self.pos < self.bytes.len() && self.bytes[self.pos] == b'}' {
+            self.pos += 1;
+        }
+        group
+    }
+
+    fn parse_required_group_raw(&mut self) -> String {
+        self.skip_spaces();
+        if self.pos >= self.bytes.len() || self.bytes[self.pos] != b'{' {
+            return String::new();
+        }
+        let open = self.pos;
+        let (end, inner) = read_group(self.bytes, open);
+        if let Some(end) = end {
+            self.pos = end + 1;
+        }
+        inner
+    }
+
+    fn skip_optional_group(&mut self) {
+        self.skip_spaces();
+        if self.pos >= self.bytes.len() || self.bytes[self.pos] != b'[' {
+            return;
+        }
+        self.pos += 1;
+        let mut depth = 1;
+        while self.pos < self.bytes.len() && depth > 0 {
+            match self.bytes[self.pos] {
+                b'[' => depth += 1,
+                b']' => depth -= 1,
+                _ => {}
+            }
+            self.pos += 1;
+        }
+    }
+
+    fn skip_spaces(&mut self) {
+        while self.pos < self.bytes.len() && self.bytes[self.pos].is_ascii_whitespace() {
+            self.pos += 1;
+        }
+    }
+
+    fn parse_text_run(&mut self, stop: Option<u8>) -> MathNode {
+        let start = self.pos;
+        while self.pos < self.bytes.len() {
+            let b = self.bytes[self.pos];
+            if stop.is_some() && Some(b) == stop {
+                break;
+            }
+            if matches!(b, b'\\' | b'{' | b'}' | b'^' | b'_' | b'&') || b.is_ascii_whitespace() {
+                break;
+            }
+            self.pos = utf8_char_end(self.bytes, self.pos);
+        }
+        MathNode::Text(self.src[start..self.pos].into())
+    }
+}
+
+fn push_text_node(nodes: &mut Vec<MathNode>, node: MathNode) {
+    match node {
+        MathNode::Text(text) if text.is_empty() => {}
+        MathNode::Text(text) => {
+            if let Some(MathNode::Text(prev)) = nodes.last_mut() {
+                prev.push_str(&text);
+            } else {
+                nodes.push(MathNode::Text(text));
+            }
+        }
+        other => nodes.push(other),
+    }
+}
+
+fn split_top_level_math_rows(src: &str) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    let mut brace_depth = 0usize;
+    let mut env_depth = 0usize;
+    let mut left_depth = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'{' {
+            brace_depth += 1;
+            current.push('{');
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'}' {
+            brace_depth = brace_depth.saturating_sub(1);
+            current.push('}');
+            i += 1;
+            continue;
+        }
+        if src[i..].starts_with("\\begin") {
+            env_depth += 1;
+        } else if src[i..].starts_with("\\end") {
+            env_depth = env_depth.saturating_sub(1);
+        }
+        if brace_depth == 0 && starts_math_command(src, i, "left") {
+            left_depth += 1;
+        } else if brace_depth == 0 && starts_math_command(src, i, "right") {
+            left_depth = left_depth.saturating_sub(1);
+        }
+        if brace_depth == 0
+            && env_depth == 0
+            && left_depth == 0
+            && i + 1 < bytes.len()
+            && &bytes[i..i + 2] == b"\\\\"
+        {
+            rows.push(current.trim().to_string());
+            current.clear();
+            i += 2;
+            continue;
+        }
+        if brace_depth == 0 && env_depth == 0 && left_depth == 0 && bytes[i] == b'\n' {
+            if !current.trim().is_empty() {
+                rows.push(current.trim().to_string());
+                current.clear();
+            }
+            i += 1;
+            continue;
+        }
+        let end = utf8_char_end(bytes, i);
+        current.push_str(&src[i..end]);
+        i = end;
+    }
+    if !current.trim().is_empty() || rows.is_empty() {
+        rows.push(current.trim().to_string());
+    }
+    rows
+}
+
+fn starts_math_command(src: &str, pos: usize, name: &str) -> bool {
+    let rest = &src[pos..];
+    let needle = format!("\\{name}");
+    if !rest.starts_with(&needle) {
+        return false;
+    }
+    rest.as_bytes()
+        .get(needle.len())
+        .map_or(true, |b| !(*b as char).is_ascii_alphabetic())
+}
+
+fn parse_matrix_rows(inner: &str) -> Vec<Vec<MathNode>> {
+    split_math_rows(inner)
+        .into_iter()
+        .map(|row| {
+            row.split('&')
+                .map(|cell| MathParser::new(cell.trim()).parse_root())
+                .collect::<Vec<_>>()
+        })
+        .filter(|row| !row.is_empty())
+        .collect()
+}
+
+fn parse_case_rows(inner: &str) -> Vec<(MathNode, Option<MathNode>)> {
+    split_math_rows(inner)
+        .into_iter()
+        .filter_map(|row| {
+            if row.trim().is_empty() {
+                return None;
+            }
+            let cells = row
+                .split('&')
+                .map(|cell| MathParser::new(cell.trim()).parse_root())
+                .collect::<Vec<_>>();
+            let expr = cells
+                .get(0)
+                .cloned()
+                .unwrap_or_else(|| MathNode::Text(String::new()));
+            let condition = cells.get(1).cloned();
+            Some((expr, condition))
+        })
+        .collect()
+}
+
+fn strip_array_spec(inner: &str) -> &str {
+    let trimmed = inner.trim_start();
+    let bytes = trimmed.as_bytes();
+    if bytes.first() != Some(&b'{') {
+        return inner;
+    }
+    let (end, _) = read_group(bytes, 0);
+    if let Some(end) = end {
+        &trimmed[end + 1..]
+    } else {
+        inner
+    }
+}
+
+fn delimiter_name(token: &str) -> &str {
+    match token {
+        "lbrace" | "{" => "{",
+        "rbrace" | "}" => "}",
+        "langle" => "⟨",
+        "rangle" => "⟩",
+        "vert" | "lvert" | "rvert" | "mid" | "|" => "|",
+        "Vert" | "lVert" | "rVert" | "parallel" => "‖",
+        "lfloor" => "⌊",
+        "rfloor" => "⌋",
+        "lceil" => "⌈",
+        "rceil" => "⌉",
+        "lbrack" | "[" => "[",
+        "rbrack" | "]" => "]",
+        "(" | ")" => token,
+        "" | "." => "",
+        _ => token,
+    }
+}
+
+fn node_plain_text(node: &MathNode) -> String {
+    match node {
+        MathNode::Row(nodes) | MathNode::Lines(nodes) => {
+            nodes.iter().map(node_plain_text).collect()
+        }
+        MathNode::Text(text) => text.clone(),
+        MathNode::Fraction(num, den) => {
+            format!("({})/({})", node_plain_text(num), node_plain_text(den))
+        }
+        MathNode::Sqrt(inner) => format!("√({})", node_plain_text(inner)),
+        MathNode::Delimited { left, body, right } => {
+            format!("{left}{}{right}", node_plain_text(body))
+        }
+        MathNode::Script { base, sub, sup } => {
+            let mut out = node_plain_text(base);
+            if let Some(sub) = sub {
+                out.push('_');
+                out.push_str(&node_plain_text(sub));
+            }
+            if let Some(sup) = sup {
+                out.push('^');
+                out.push_str(&node_plain_text(sup));
+            }
+            out
+        }
+        MathNode::Matrix { rows, .. } => rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(node_plain_text)
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        MathNode::Cases(rows) => rows
+            .iter()
+            .map(|(expr, condition)| {
+                if let Some(condition) = condition {
+                    format!(
+                        "{} if {}",
+                        node_plain_text(expr),
+                        node_plain_text(condition)
+                    )
+                } else {
+                    node_plain_text(expr)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MathBox {
+    width: f32,
+    height: f32,
+    baseline: f32,
+    draws: Vec<Draw>,
+}
+
+#[derive(Debug, Clone)]
+enum Draw {
+    Text {
+        x: f32,
+        y: f32,
+        size: f32,
+        text: String,
+    },
+    Line {
+        x1: f32,
+        y1: f32,
+        x2: f32,
+        y2: f32,
+        stroke_width: f32,
+    },
+    Polyline {
+        points: Vec<(f32, f32)>,
+        stroke_width: f32,
+    },
+    Delimiter {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        token: String,
+        stroke_width: f32,
+    },
+}
+
+fn layout_math(node: &MathNode, size: f32) -> MathBox {
+    match node {
+        MathNode::Text(text) => layout_text(text, size),
+        MathNode::Row(nodes) => layout_row(nodes, size),
+        MathNode::Fraction(num, den) => layout_fraction(num, den, size),
+        MathNode::Sqrt(inner) => layout_sqrt(inner, size),
+        MathNode::Delimited { left, body, right } => layout_delimited(left, body, right, size),
+        MathNode::Script { base, sub, sup } => {
+            layout_script(base, sub.as_deref(), sup.as_deref(), size)
+        }
+        MathNode::Matrix { rows, left, right } => layout_matrix(rows, left, right, size),
+        MathNode::Cases(rows) => layout_cases(rows, size),
+        MathNode::Lines(lines) => layout_lines(lines, size),
+    }
+}
+
+fn layout_text(text: &str, size: f32) -> MathBox {
+    if text.is_empty() {
+        return MathBox {
+            width: 0.0,
+            height: size * 1.15,
+            baseline: size * 0.82,
+            draws: Vec::new(),
+        };
+    }
+    let width = text.chars().map(char_width_factor).sum::<f32>() * size;
+    let height = size * 1.15;
+    let baseline = size * 0.82;
+    MathBox {
+        width,
+        height,
+        baseline,
+        draws: vec![Draw::Text {
+            x: 0.0,
+            y: baseline,
+            size,
+            text: text.into(),
+        }],
+    }
+}
+
+fn char_width_factor(ch: char) -> f32 {
+    if ch.is_whitespace() {
+        0.34
+    } else if ('\u{0300}'..='\u{036f}').contains(&ch) {
+        0.0
+    } else if ch.is_ascii_punctuation() {
+        0.36
+    } else if ch.is_ascii_digit() || ch.is_ascii_alphabetic() {
+        0.58
+    } else {
+        0.66
+    }
+}
+
+fn layout_row(nodes: &[MathNode], size: f32) -> MathBox {
+    let children = nodes
+        .iter()
+        .map(|node| layout_math(node, size))
+        .collect::<Vec<_>>();
+    let baseline = children
+        .iter()
+        .map(|b| b.baseline)
+        .fold(size * 0.82, f32::max);
+    let below = children
+        .iter()
+        .map(|b| b.height - b.baseline)
+        .fold(size * 0.33, f32::max);
+    let mut draws = Vec::new();
+    let mut x = 0.0;
+    for child in children {
+        append_draws(&mut draws, &child, x, baseline - child.baseline);
+        x += child.width;
+    }
+    MathBox {
+        width: x,
+        height: baseline + below,
+        baseline,
+        draws,
+    }
+}
+
+fn layout_fraction(num: &MathNode, den: &MathNode, size: f32) -> MathBox {
+    let child_size = (size * 0.82).max(12.0);
+    let num_box = layout_math(num, child_size);
+    let den_box = layout_math(den, child_size);
+    let pad = size * 0.28;
+    let gap = size * 0.16;
+    let line_y = num_box.height + gap;
+    let width = num_box.width.max(den_box.width) + pad * 2.0;
+    let mut draws = Vec::new();
+    append_draws(&mut draws, &num_box, (width - num_box.width) / 2.0, 0.0);
+    draws.push(Draw::Line {
+        x1: 0.0,
+        y1: line_y,
+        x2: width,
+        y2: line_y,
+        stroke_width: (size * 0.045).max(1.2),
+    });
+    let den_y = line_y + gap;
+    append_draws(&mut draws, &den_box, (width - den_box.width) / 2.0, den_y);
+    MathBox {
+        width,
+        height: den_y + den_box.height,
+        baseline: line_y + gap + den_box.baseline,
+        draws,
+    }
+}
+
+fn layout_sqrt(inner: &MathNode, size: f32) -> MathBox {
+    let inner_box = layout_math(inner, size * 0.94);
+    let left = size * 0.62;
+    let top = size * 0.14;
+    let pad = size * 0.18;
+    let width = left + inner_box.width + pad;
+    let height = inner_box.height + top + size * 0.10;
+    let baseline = top + inner_box.baseline;
+    let mut draws = Vec::new();
+    let y_mid = top + inner_box.height * 0.58;
+    let y_base = top + inner_box.height * 0.86;
+    draws.push(Draw::Polyline {
+        points: vec![
+            (size * 0.08, y_mid),
+            (size * 0.22, y_base),
+            (size * 0.42, top + inner_box.height),
+            (left * 0.92, top + size * 0.06),
+            (width, top + size * 0.06),
+        ],
+        stroke_width: (size * 0.045).max(1.2),
+    });
+    append_draws(&mut draws, &inner_box, left, top);
+    MathBox {
+        width,
+        height,
+        baseline,
+        draws,
+    }
+}
+
+fn layout_delimited(left: &str, body: &MathNode, right: &str, size: f32) -> MathBox {
+    let body_box = layout_math(body, size);
+    layout_delimited_box(left, body_box, right, size)
+}
+
+fn layout_delimited_box(left: &str, body_box: MathBox, right: &str, size: f32) -> MathBox {
+    let delimiter_height = body_box.height.max(size * 1.25).min(size * 6.0);
+    let left_box = layout_delimiter(left, delimiter_height, size);
+    let right_box = layout_delimiter(right, delimiter_height, size);
+    let gap = if left.is_empty() && right.is_empty() {
+        0.0
+    } else {
+        size * 0.12
+    };
+    let body_y = (delimiter_height - body_box.height) / 2.0;
+    let baseline = body_y + body_box.baseline;
+    let mut draws = Vec::new();
+    let mut x = 0.0;
+    if !left.is_empty() {
+        append_draws(&mut draws, &left_box, x, 0.0);
+        x += left_box.width + gap;
+    }
+    append_draws(&mut draws, &body_box, x, body_y);
+    x += body_box.width;
+    if !right.is_empty() {
+        x += gap;
+        append_draws(&mut draws, &right_box, x, 0.0);
+        x += right_box.width;
+    }
+    MathBox {
+        width: x,
+        height: delimiter_height,
+        baseline,
+        draws,
+    }
+}
+
+fn layout_delimiter(token: &str, height: f32, size: f32) -> MathBox {
+    if token.is_empty() {
+        return MathBox {
+            width: 0.0,
+            height,
+            baseline: height * 0.5,
+            draws: Vec::new(),
+        };
+    }
+    if scalable_delimiter(token) {
+        let width = delimiter_width(token, height, size);
+        return MathBox {
+            width,
+            height,
+            baseline: height * 0.5,
+            draws: vec![Draw::Delimiter {
+                x: 0.0,
+                y: 0.0,
+                width,
+                height,
+                token: token.to_string(),
+                stroke_width: (size * 0.055).max(1.35),
+            }],
+        };
+    }
+    let font_size = height.min(size * 3.2).max(size * 1.15);
+    layout_text(token, font_size)
+}
+
+fn scalable_delimiter(token: &str) -> bool {
+    matches!(
+        token,
+        "(" | ")" | "[" | "]" | "{" | "}" | "|" | "‖" | "⟨" | "⟩"
+    )
+}
+
+fn delimiter_width(token: &str, height: f32, size: f32) -> f32 {
+    match token {
+        "|" => size * 0.18,
+        "‖" => size * 0.34,
+        "⟨" | "⟩" => (height * 0.18).clamp(size * 0.34, size * 0.72),
+        _ => (height * 0.16).clamp(size * 0.32, size * 0.74),
+    }
+}
+
+fn layout_script(
+    base: &MathNode,
+    sub: Option<&MathNode>,
+    sup: Option<&MathNode>,
+    size: f32,
+) -> MathBox {
+    let base_box = layout_math(base, size);
+    let script_size = (size * 0.62).max(10.0);
+    let sup_box = sup.map(|node| layout_math(node, script_size));
+    let sub_box = sub.map(|node| layout_math(node, script_size));
+    let gap = size * 0.08;
+    let above = sup_box
+        .as_ref()
+        .map(|b| (b.height * 0.72).max(size * 0.15))
+        .unwrap_or(0.0);
+    let below = sub_box
+        .as_ref()
+        .map(|b| (b.height * 0.72).max(size * 0.15))
+        .unwrap_or(0.0);
+    let baseline = above + base_box.baseline;
+    let height = above + base_box.height + below;
+    let script_width = sup_box
+        .as_ref()
+        .map(|b| b.width)
+        .unwrap_or(0.0)
+        .max(sub_box.as_ref().map(|b| b.width).unwrap_or(0.0));
+    let mut draws = Vec::new();
+    append_draws(&mut draws, &base_box, 0.0, above);
+    if let Some(sup_box) = sup_box.as_ref() {
+        append_draws(
+            &mut draws,
+            sup_box,
+            base_box.width + gap,
+            (above - sup_box.height * 0.70).max(0.0),
+        );
+    }
+    if let Some(sub_box) = sub_box.as_ref() {
+        append_draws(
+            &mut draws,
+            sub_box,
+            base_box.width + gap,
+            baseline + size * 0.10,
+        );
+    }
+    MathBox {
+        width: base_box.width + gap + script_width,
+        height,
+        baseline,
+        draws,
+    }
+}
+
+fn layout_lines(lines: &[MathNode], size: f32) -> MathBox {
+    let rows = lines
+        .iter()
+        .map(|line| layout_math(line, size))
+        .collect::<Vec<_>>();
+    stack_rows(&rows, size * 0.38, false)
+}
+
+fn layout_matrix(rows: &[Vec<MathNode>], left: &str, right: &str, size: f32) -> MathBox {
+    let cell_size = (size * 0.86).max(12.0);
+    let laid_rows = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .map(|cell| layout_math(cell, cell_size))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let cols = laid_rows.iter().map(|row| row.len()).max().unwrap_or(0);
+    let mut col_widths = vec![0.0; cols];
+    for row in &laid_rows {
+        for (idx, cell) in row.iter().enumerate() {
+            if cell.width > col_widths[idx] {
+                col_widths[idx] = cell.width;
+            }
+        }
+    }
+    let col_gap = size * 0.65;
+    let row_gap = size * 0.28;
+    let body_width = col_widths.iter().sum::<f32>() + col_gap * cols.saturating_sub(1) as f32;
+    let mut y = 0.0;
+    let mut draws = Vec::new();
+    for row in &laid_rows {
+        let baseline = row
+            .iter()
+            .map(|cell| cell.baseline)
+            .fold(cell_size * 0.82, f32::max);
+        let below = row
+            .iter()
+            .map(|cell| cell.height - cell.baseline)
+            .fold(cell_size * 0.33, f32::max);
+        let mut x = 0.0;
+        for (idx, cell) in row.iter().enumerate() {
+            let cell_x = x + (col_widths[idx] - cell.width) / 2.0;
+            append_draws(&mut draws, cell, cell_x, y + baseline - cell.baseline);
+            x += col_widths[idx] + col_gap;
+        }
+        y += baseline + below + row_gap;
+    }
+    let height = (y - row_gap).max(size * 1.2);
+    let baseline = height / 2.0 + size * 0.28;
+    let body = MathBox {
+        width: body_width,
+        height,
+        baseline,
+        draws,
+    };
+    if left.is_empty() && right.is_empty() {
+        body
+    } else {
+        layout_delimited_box(left, body, right, size)
+    }
+}
+
+fn layout_cases(rows: &[(MathNode, Option<MathNode>)], size: f32) -> MathBox {
+    let matrix_rows = rows
+        .iter()
+        .map(|(expr, condition)| {
+            let mut row = vec![expr.clone()];
+            if let Some(condition) = condition {
+                row.push(MathNode::Text("if ".into()));
+                row.push(condition.clone());
+            }
+            row
+        })
+        .collect::<Vec<_>>();
+    layout_matrix(&matrix_rows, "{", "", size)
+}
+
+fn stack_rows(rows: &[MathBox], gap: f32, center: bool) -> MathBox {
+    let width = rows.iter().map(|row| row.width).fold(0.0, f32::max);
+    let height =
+        rows.iter().map(|row| row.height).sum::<f32>() + gap * rows.len().saturating_sub(1) as f32;
+    let baseline = rows.first().map(|row| row.baseline).unwrap_or(height * 0.5);
+    let mut draws = Vec::new();
+    let mut y = 0.0;
+    for row in rows {
+        let x = if center {
+            (width - row.width) / 2.0
+        } else {
+            0.0
+        };
+        append_draws(&mut draws, row, x, y);
+        y += row.height + gap;
+    }
+    MathBox {
+        width,
+        height,
+        baseline,
+        draws,
+    }
+}
+
+fn append_draws(draws: &mut Vec<Draw>, child: &MathBox, dx: f32, dy: f32) {
+    for draw in &child.draws {
+        draws.push(offset_draw(draw, dx, dy));
+    }
+}
+
+fn publish_math_box(layout: MathBox) -> MathTextLayout {
+    MathTextLayout {
+        width: layout.width,
+        height: layout.height,
+        baseline: layout.baseline,
+        draws: layout.draws.into_iter().map(publish_draw).collect(),
+    }
+}
+
+fn publish_draw(draw: Draw) -> MathLayoutDraw {
+    match draw {
+        Draw::Text { x, y, size, text } => MathLayoutDraw::Text { x, y, size, text },
+        Draw::Line {
+            x1,
+            y1,
+            x2,
+            y2,
+            stroke_width,
+        } => MathLayoutDraw::Line {
+            x1,
+            y1,
+            x2,
+            y2,
+            stroke_width,
+        },
+        Draw::Polyline {
+            points,
+            stroke_width,
+        } => MathLayoutDraw::Polyline {
+            points,
+            stroke_width,
+        },
+        Draw::Delimiter {
+            x,
+            y,
+            width,
+            height,
+            token,
+            stroke_width,
+        } => MathLayoutDraw::Delimiter {
+            x,
+            y,
+            width,
+            height,
+            token,
+            stroke_width,
+        },
+    }
+}
+
+fn offset_draw(draw: &Draw, dx: f32, dy: f32) -> Draw {
+    match draw {
+        Draw::Text { x, y, size, text } => Draw::Text {
+            x: x + dx,
+            y: y + dy,
+            size: *size,
+            text: text.clone(),
+        },
+        Draw::Line {
+            x1,
+            y1,
+            x2,
+            y2,
+            stroke_width,
+        } => Draw::Line {
+            x1: x1 + dx,
+            y1: y1 + dy,
+            x2: x2 + dx,
+            y2: y2 + dy,
+            stroke_width: *stroke_width,
+        },
+        Draw::Polyline {
+            points,
+            stroke_width,
+        } => Draw::Polyline {
+            points: points.iter().map(|(x, y)| (x + dx, y + dy)).collect(),
+            stroke_width: *stroke_width,
+        },
+        Draw::Delimiter {
+            x,
+            y,
+            width,
+            height,
+            token,
+            stroke_width,
+        } => Draw::Delimiter {
+            x: x + dx,
+            y: y + dy,
+            width: *width,
+            height: *height,
+            token: token.clone(),
+            stroke_width: *stroke_width,
+        },
+    }
+}
+
+fn render_box(layout: &MathBox, dx: f32, dy: f32, out: &mut String) {
+    for draw in &layout.draws {
+        match draw {
+            Draw::Text { x, y, size, text } => {
+                if text.is_empty() {
+                    continue;
+                }
+                out.push_str(&format!(
+                    r#"    <text x="{:.1}" y="{:.1}" font-size="{:.1}" stroke="none">{}</text>"#,
+                    x + dx,
+                    y + dy,
+                    size,
+                    escape_xml(text)
+                ));
+                out.push('\n');
+            }
+            Draw::Line {
+                x1,
+                y1,
+                x2,
+                y2,
+                stroke_width,
+            } => {
+                out.push_str(&format!(
+                    r#"    <line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke-width="{:.1}"/>"#,
+                    x1 + dx,
+                    y1 + dy,
+                    x2 + dx,
+                    y2 + dy,
+                    stroke_width
+                ));
+                out.push('\n');
+            }
+            Draw::Polyline {
+                points,
+                stroke_width,
+            } => {
+                let points = points
+                    .iter()
+                    .map(|(x, y)| format!("{:.1},{:.1}", x + dx, y + dy))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                out.push_str(&format!(
+                    r#"    <polyline points="{points}" fill="none" stroke-width="{:.1}"/>"#,
+                    stroke_width
+                ));
+                out.push('\n');
+            }
+            Draw::Delimiter {
+                x,
+                y,
+                width,
+                height,
+                token,
+                stroke_width,
+            } => {
+                render_delimiter(*x + dx, *y + dy, *width, *height, token, *stroke_width, out);
+            }
+        }
+    }
+}
+
+fn render_delimiter(
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    token: &str,
+    stroke_width: f32,
+    out: &mut String,
+) {
+    let d = match token {
+        "(" => format!(
+            "M {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1}",
+            x + width * 0.86,
+            y,
+            x + width * 0.10,
+            y + height * 0.20,
+            x + width * 0.10,
+            y + height * 0.80,
+            x + width * 0.86,
+            y + height
+        ),
+        ")" => format!(
+            "M {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1}",
+            x + width * 0.14,
+            y,
+            x + width * 0.90,
+            y + height * 0.20,
+            x + width * 0.90,
+            y + height * 0.80,
+            x + width * 0.14,
+            y + height
+        ),
+        "[" => format!(
+            "M {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1}",
+            x + width,
+            y,
+            x,
+            y,
+            x,
+            y + height,
+            x + width,
+            y + height
+        ),
+        "]" => format!(
+            "M {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1}",
+            x,
+            y,
+            x + width,
+            y,
+            x + width,
+            y + height,
+            x,
+            y + height
+        ),
+        "{" => format!(
+            "M {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1}",
+            x + width,
+            y,
+            x + width * 0.18,
+            y,
+            x + width * 0.20,
+            y + height * 0.28,
+            x + width * 0.56,
+            y + height * 0.38,
+            x + width * 0.82,
+            y + height * 0.46,
+            x + width * 0.18,
+            y + height * 0.45,
+            x + width * 0.18,
+            y + height * 0.50,
+            x + width * 0.18,
+            y + height * 0.55,
+            x + width * 0.82,
+            y + height * 0.54,
+            x + width * 0.56,
+            y + height * 0.62,
+            x + width * 0.20,
+            y + height * 0.72,
+            x + width * 0.18,
+            y + height,
+            x + width,
+            y + height
+        ),
+        "}" => format!(
+            "M {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1} C {:.1} {:.1}, {:.1} {:.1}, {:.1} {:.1}",
+            x,
+            y,
+            x + width * 0.82,
+            y,
+            x + width * 0.80,
+            y + height * 0.28,
+            x + width * 0.44,
+            y + height * 0.38,
+            x + width * 0.18,
+            y + height * 0.46,
+            x + width * 0.82,
+            y + height * 0.45,
+            x + width * 0.82,
+            y + height * 0.50,
+            x + width * 0.82,
+            y + height * 0.55,
+            x + width * 0.18,
+            y + height * 0.54,
+            x + width * 0.44,
+            y + height * 0.62,
+            x + width * 0.80,
+            y + height * 0.72,
+            x + width * 0.82,
+            y + height,
+            x,
+            y + height
+        ),
+        "|" => format!(
+            "M {:.1} {:.1} L {:.1} {:.1}",
+            x + width * 0.5,
+            y,
+            x + width * 0.5,
+            y + height
+        ),
+        "‖" => format!(
+            "M {:.1} {:.1} L {:.1} {:.1} M {:.1} {:.1} L {:.1} {:.1}",
+            x + width * 0.35,
+            y,
+            x + width * 0.35,
+            y + height,
+            x + width * 0.65,
+            y,
+            x + width * 0.65,
+            y + height
+        ),
+        "⟨" => format!(
+            "M {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1}",
+            x + width,
+            y,
+            x,
+            y + height * 0.5,
+            x + width,
+            y + height
+        ),
+        "⟩" => format!(
+            "M {:.1} {:.1} L {:.1} {:.1} L {:.1} {:.1}",
+            x,
+            y,
+            x + width,
+            y + height * 0.5,
+            x,
+            y + height
+        ),
+        _ => return,
+    };
+    out.push_str(&format!(
+        r#"    <path d="{d}" fill="none" stroke-width="{stroke_width:.1}"/>"#
+    ));
+    out.push('\n');
+}
+
+fn escape_xml(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | b2 as u32;
+        out.push(TABLE[((n >> 18) & 0x3f) as usize] as char);
+        out.push(TABLE[((n >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[((n >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(n & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+fn decode_base64(input: &str) -> Option<Vec<u8>> {
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut buf = 0u32;
+    let mut bits = 0u8;
+    let mut seen_padding = false;
+    for b in input.bytes().filter(|b| !b.is_ascii_whitespace()) {
+        if b == b'=' {
+            seen_padding = true;
+            continue;
+        }
+        if seen_padding {
+            return None;
+        }
+        let value = match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32;
+        buf = (buf << 6) | value;
+        bits += 6;
+        while bits >= 8 {
+            bits -= 8;
+            out.push(((buf >> bits) & 0xff) as u8);
+            if bits == 0 {
+                buf = 0;
+            } else {
+                buf &= (1 << bits) - 1;
+            }
+        }
+    }
+    if bits == 6 {
+        return None;
+    }
+    Some(out)
+}
+
+fn diagnose_line(line: &str, line_no: usize, diagnostics: &mut Vec<MathDiagnostic>) {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let mut n = 0;
+            while i + n < bytes.len() && bytes[i + n] == b'`' {
+                n += 1;
+            }
+            if let Some(close) = find_code_span_close(bytes, i + n, n) {
+                i = close + n;
+                continue;
+            }
+            i += n;
+            continue;
+        }
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'$' {
+            if i + 1 < bytes.len() && bytes[i + 1] == b'$' {
+                if let Some(end) = find_close(bytes, i + 2, b"$$") {
+                    diagnose_span(&line[i + 2..end], line_no, "display", diagnostics);
+                    i = end + 2;
+                    continue;
+                }
+                diagnostics.push(MathDiagnostic {
+                    line: line_no,
+                    kind: "unterminated-display-math",
+                    detail: "display math starts with `$$` but has no closing `$$` on this line"
+                        .to_string(),
+                    source: excerpt(&line[i..]),
+                });
+                break;
+            } else if let Some(end) = find_close(bytes, i + 1, b"$") {
+                diagnose_span(&line[i + 1..end], line_no, "inline", diagnostics);
+                i = end + 1;
+                continue;
+            } else {
+                diagnostics.push(MathDiagnostic {
+                    line: line_no,
+                    kind: "unterminated-inline-math",
+                    detail: "inline math starts with `$` but has no closing `$` on this line"
+                        .to_string(),
+                    source: excerpt(&line[i..]),
+                });
+                break;
+            }
+        }
+        i = utf8_char_end(bytes, i);
+    }
+}
+
+fn diagnose_span(
+    src: &str,
+    line_no: usize,
+    math_kind: &str,
+    diagnostics: &mut Vec<MathDiagnostic>,
+) {
+    let mut seen_macros: Vec<String> = Vec::new();
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            i = utf8_char_end(bytes, i);
+            continue;
+        }
+        if i + 1 < bytes.len() && bytes[i + 1] == b'\\' {
+            diagnostics.push(MathDiagnostic {
+                line: line_no,
+                kind: "unsupported-math-linebreak",
+                detail: format!("{math_kind} math uses `\\\\`; aligned or multi-line equations need a rich math renderer"),
+                source: excerpt(src),
+            });
+            i += 2;
+            continue;
+        }
+        if i + 1 < bytes.len() && matches!(bytes[i + 1], b',' | b':' | b';' | b'!') {
+            i += 2;
+            continue;
+        }
+        if i + 1 >= bytes.len() || !(bytes[i + 1] as char).is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        while j < bytes.len() && (bytes[j] as char).is_ascii_alphabetic() {
+            j += 1;
+        }
+        let name = &src[i + 1..j];
+        if name == "begin" {
+            if let Some(env) = read_command_group_name(bytes, j) {
+                if unsupported_environment(&env) {
+                    diagnostics.push(MathDiagnostic {
+                        line: line_no,
+                        kind: "unsupported-math-environment",
+                        detail: format!("`{env}` environments need a rich math renderer"),
+                        source: excerpt(src),
+                    });
+                }
+            }
+        } else if !supported_macro(name) && !seen_macros.iter().any(|m| m == name) {
+            seen_macros.push(name.to_string());
+            diagnostics.push(MathDiagnostic {
+                line: line_no,
+                kind: "unsupported-math-macro",
+                detail: format!("`\\{name}` is not translated by `--math unicode`"),
+                source: excerpt(src),
+            });
+        }
+        i = j;
     }
 }
 
@@ -135,8 +2151,9 @@ fn find_close(bytes: &[u8], from: usize, marker: &[u8]) -> Option<usize> {
     None
 }
 
-fn render_math(src: &str, display: bool) -> String {
-    let body = translate_math(src);
+fn render_math(src: &str, display: bool, macros: &[(String, String)]) -> String {
+    let expanded = apply_user_macros(src, macros);
+    let body = translate_math(&expanded);
     if display {
         // Display math goes on its own line, italicised by the renderer via
         // surrounding underscores (markdown italics).
@@ -146,12 +2163,32 @@ fn render_math(src: &str, display: bool) -> String {
     }
 }
 
+fn apply_user_macros(src: &str, macros: &[(String, String)]) -> String {
+    if macros.is_empty() {
+        return src.to_string();
+    }
+    let mut ordered = macros.to_vec();
+    ordered.sort_by(|(left, _), (right, _)| {
+        right.len().cmp(&left.len()).then_with(|| left.cmp(right))
+    });
+    let mut out = src.to_string();
+    for (from, to) in ordered {
+        if !from.is_empty() {
+            out = out.replace(&from, &to);
+        }
+    }
+    out
+}
+
 fn translate_math(src: &str) -> String {
     // Order matters here. We need `^{...}` and `_{...}` to keep their
     // braces long enough for `apply_super_sub` to read the full group;
     // otherwise stripping `{` and `}` early collapses `x^{n+1}` to `x^n+1`
     // and the super-sub pass would only catch the first character.
-    let with_macros = expand_macros(src.trim());
+    let normalized = normalize_math_source(src.trim());
+    let with_environments = expand_simple_environments(&normalized);
+    let with_groups = expand_group_commands(&with_environments);
+    let with_macros = expand_macros(&with_groups);
     let with_frac = expand_frac(&with_macros);
     let with_binom = expand_binom(&with_frac);
     let with_sqrt = expand_sqrt(&with_binom);
@@ -159,6 +2196,313 @@ fn translate_math(src: &str) -> String {
     // Anything still wrapped in braces was either malformed or a group we
     // don't recognise; flatten it now so the user doesn't see literal `{}`.
     with_super.replace('{', "").replace('}', "")
+}
+
+fn normalize_math_source(src: &str) -> String {
+    src.replace("\\left.", "")
+        .replace("\\right.", "")
+        .replace("\\limits", "")
+        .replace("\\nolimits", "")
+}
+
+fn expand_simple_environments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if s[i..].starts_with("\\begin") {
+            let j = i + "\\begin".len();
+            if let Some((after_name, name)) = read_math_group_arg(bytes, j) {
+                let marker = format!("\\end{{{name}}}");
+                if let Some(rel_end) = s[after_name..].find(&marker) {
+                    let inner_start = after_name;
+                    let inner_end = after_name + rel_end;
+                    out.push_str(&render_simple_environment(
+                        &name,
+                        &s[inner_start..inner_end],
+                    ));
+                    i = inner_end + marker.len();
+                    continue;
+                }
+            }
+        }
+        let ch_end = utf8_char_end(bytes, i);
+        out.push_str(&s[i..ch_end]);
+        i = ch_end;
+    }
+    out
+}
+
+fn render_simple_environment(name: &str, inner: &str) -> String {
+    match name {
+        "matrix" | "pmatrix" | "bmatrix" | "Bmatrix" | "vmatrix" | "Vmatrix" | "smallmatrix" => {
+            render_matrix_environment(name, inner)
+        }
+        "cases" => render_cases_environment(inner),
+        "aligned" | "align" | "alignat" | "gather" | "equation" | "split" => {
+            render_aligned_environment(inner)
+        }
+        _ => inner.to_string(),
+    }
+}
+
+fn render_matrix_environment(name: &str, inner: &str) -> String {
+    let (open, close) = match name {
+        "pmatrix" => ("(", ")"),
+        "bmatrix" => ("[", "]"),
+        "Bmatrix" => ("{", "}"),
+        "vmatrix" => ("|", "|"),
+        "Vmatrix" => ("‖", "‖"),
+        _ => ("", ""),
+    };
+    let rows = split_math_rows(inner)
+        .into_iter()
+        .map(|row| {
+            row.split('&')
+                .map(|cell| translate_math(cell.trim()))
+                .collect::<Vec<_>>()
+                .join("  ")
+        })
+        .filter(|row| !row.trim().is_empty())
+        .collect::<Vec<_>>();
+    if rows.is_empty() {
+        return String::new();
+    }
+    let body = rows.join("\n");
+    if open.is_empty() {
+        body
+    } else {
+        format!("{open} {body} {close}")
+    }
+}
+
+fn render_cases_environment(inner: &str) -> String {
+    split_math_rows(inner)
+        .into_iter()
+        .map(|row| {
+            let cells = row
+                .split('&')
+                .map(|cell| translate_math(cell.trim()))
+                .filter(|cell| !cell.trim().is_empty())
+                .collect::<Vec<_>>();
+            match cells.as_slice() {
+                [] => String::new(),
+                [expr] => expr.clone(),
+                [expr, condition, ..] => format!("{expr}  if {condition}"),
+            }
+        })
+        .filter(|row| !row.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn render_aligned_environment(inner: &str) -> String {
+    split_math_rows(inner)
+        .into_iter()
+        .map(|row| {
+            row.split('&')
+                .map(|cell| translate_math(cell.trim()))
+                .filter(|cell| !cell.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .filter(|row| !row.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn split_math_rows(inner: &str) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut current = String::new();
+    let bytes = inner.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && &bytes[i..i + 2] == b"\\\\" {
+            rows.push(current.trim().to_string());
+            current.clear();
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'\n' {
+            if !current.ends_with(' ') {
+                current.push(' ');
+            }
+            i += 1;
+            continue;
+        }
+        let end = utf8_char_end(bytes, i);
+        current.push_str(&inner[i..end]);
+        i = end;
+    }
+    rows.push(current.trim().to_string());
+    rows
+}
+
+fn expand_group_commands(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() && (bytes[i + 1] as char).is_ascii_alphabetic()
+        {
+            let mut j = i + 1;
+            while j < bytes.len() && (bytes[j] as char).is_ascii_alphabetic() {
+                j += 1;
+            }
+            let name = &s[i + 1..j];
+            let arg_start = if name == "operatorname" && j < bytes.len() && bytes[j] == b'*' {
+                j + 1
+            } else {
+                j
+            };
+            if let Some((end, arg)) = read_math_group_arg(bytes, arg_start) {
+                if is_text_like_group_command(name) {
+                    out.push_str(&arg);
+                    i = end;
+                    continue;
+                }
+                if name == "mathbb" {
+                    out.push_str(&map_math_alphabet(&arg, blackboard_char));
+                    i = end;
+                    continue;
+                }
+                if name == "mathcal" {
+                    out.push_str(&map_math_alphabet(&arg, script_char));
+                    i = end;
+                    continue;
+                }
+                if let Some(mark) = accent_mark(name) {
+                    out.push_str(&apply_combining_mark(&translate_math(&arg), mark));
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        let ch_end = utf8_char_end(bytes, i);
+        out.push_str(&s[i..ch_end]);
+        i = ch_end;
+    }
+    out
+}
+
+fn read_math_group_arg(bytes: &[u8], from: usize) -> Option<(usize, String)> {
+    let mut j = from;
+    while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    if j >= bytes.len() || bytes[j] != b'{' {
+        return None;
+    }
+    let (end, inner) = read_group(bytes, j);
+    end.map(|idx| (idx + 1, inner))
+}
+
+fn is_text_like_group_command(name: &str) -> bool {
+    matches!(
+        name,
+        "text"
+            | "textrm"
+            | "textit"
+            | "textbf"
+            | "mathrm"
+            | "mathbf"
+            | "mathit"
+            | "mathsf"
+            | "mathtt"
+            | "operatorname"
+    )
+}
+
+fn accent_mark(name: &str) -> Option<char> {
+    match name {
+        "vec" => Some('\u{20d7}'),
+        "bar" => Some('\u{0304}'),
+        "overline" => Some('\u{0305}'),
+        "hat" => Some('\u{0302}'),
+        "tilde" => Some('\u{0303}'),
+        "dot" => Some('\u{0307}'),
+        "ddot" => Some('\u{0308}'),
+        _ => None,
+    }
+}
+
+fn apply_combining_mark(arg: &str, mark: char) -> String {
+    let mut out = String::with_capacity(arg.len() + 4);
+    for ch in arg.chars() {
+        out.push(ch);
+        if !ch.is_whitespace() {
+            out.push(mark);
+        }
+    }
+    out
+}
+
+fn map_math_alphabet(arg: &str, map: fn(char) -> Option<char>) -> String {
+    arg.chars().map(|ch| map(ch).unwrap_or(ch)).collect()
+}
+
+fn blackboard_char(ch: char) -> Option<char> {
+    Some(match ch {
+        'A' => '𝔸',
+        'B' => '𝔹',
+        'C' => 'ℂ',
+        'D' => '𝔻',
+        'E' => '𝔼',
+        'F' => '𝔽',
+        'G' => '𝔾',
+        'H' => 'ℍ',
+        'I' => '𝕀',
+        'J' => '𝕁',
+        'K' => '𝕂',
+        'L' => '𝕃',
+        'M' => '𝕄',
+        'N' => 'ℕ',
+        'O' => '𝕆',
+        'P' => 'ℙ',
+        'Q' => 'ℚ',
+        'R' => 'ℝ',
+        'S' => '𝕊',
+        'T' => '𝕋',
+        'U' => '𝕌',
+        'V' => '𝕍',
+        'W' => '𝕎',
+        'X' => '𝕏',
+        'Y' => '𝕐',
+        'Z' => 'ℤ',
+        _ => return None,
+    })
+}
+
+fn script_char(ch: char) -> Option<char> {
+    Some(match ch {
+        'A' => '𝒜',
+        'B' => 'ℬ',
+        'C' => '𝒞',
+        'D' => '𝒟',
+        'E' => 'ℰ',
+        'F' => 'ℱ',
+        'G' => '𝒢',
+        'H' => 'ℋ',
+        'I' => 'ℐ',
+        'J' => '𝒥',
+        'K' => '𝒦',
+        'L' => 'ℒ',
+        'M' => 'ℳ',
+        'N' => '𝒩',
+        'O' => '𝒪',
+        'P' => '𝒫',
+        'Q' => '𝒬',
+        'R' => 'ℛ',
+        'S' => '𝒮',
+        'T' => '𝒯',
+        'U' => '𝒰',
+        'V' => '𝒱',
+        'W' => '𝒲',
+        'X' => '𝒳',
+        'Y' => '𝒴',
+        'Z' => '𝒵',
+        _ => return None,
+    })
 }
 
 /// Replace `\alpha`-style commands with their Unicode equivalents.
@@ -177,6 +2521,15 @@ fn expand_macros(s: &str) -> String {
             let replacement: Option<&str> = match next {
                 b',' | b':' | b';' => Some(" "),
                 b'!' => Some(""),
+                b'|' => Some("‖"),
+                b'{' => Some("{"),
+                b'}' => Some("}"),
+                b'(' => Some("("),
+                b')' => Some(")"),
+                b'[' => Some("["),
+                b']' => Some("]"),
+                b'_' => Some("_"),
+                b' ' => Some(" "),
                 _ => None,
             };
             if let Some(rep) = replacement {
@@ -352,6 +2705,80 @@ fn read_group(bytes: &[u8], open: usize) -> (Option<usize>, String) {
     (None, String::new())
 }
 
+fn read_command_group_name(bytes: &[u8], open: usize) -> Option<String> {
+    let mut j = open;
+    while j < bytes.len() && bytes[j] == b' ' {
+        j += 1;
+    }
+    if j >= bytes.len() || bytes[j] != b'{' {
+        return None;
+    }
+    let (end, inner) = read_group(bytes, j);
+    end.map(|_| inner)
+}
+
+fn unsupported_environment(name: &str) -> bool {
+    matches!(
+        name,
+        "matrix"
+            | "pmatrix"
+            | "bmatrix"
+            | "Bmatrix"
+            | "vmatrix"
+            | "Vmatrix"
+            | "smallmatrix"
+            | "array"
+            | "cases"
+            | "aligned"
+            | "align"
+            | "alignat"
+            | "gather"
+            | "equation"
+            | "split"
+    )
+}
+
+fn supported_macro(name: &str) -> bool {
+    matches!(
+        name,
+        "frac"
+            | "sqrt"
+            | "binom"
+            | "begin"
+            | "end"
+            | "limits"
+            | "nolimits"
+            | "mathbb"
+            | "mathcal"
+            | "text"
+            | "textrm"
+            | "textit"
+            | "textbf"
+            | "mathrm"
+            | "mathbf"
+            | "mathit"
+            | "mathsf"
+            | "mathtt"
+            | "operatorname"
+            | "vec"
+            | "bar"
+            | "overline"
+            | "hat"
+            | "tilde"
+            | "dot"
+            | "ddot"
+            | "dagger"
+    ) || greek_or_symbol(name).is_some()
+}
+
+fn excerpt(src: &str) -> String {
+    let mut out: String = src.chars().take(96).collect();
+    if src.chars().count() > 96 {
+        out.push('…');
+    }
+    out
+}
+
 /// Convert `x^2`, `x^{2n}`, `a_i`, `a_{ij}` to Unicode super/subscript when
 /// every character in the exponent maps cleanly. Falls back to `x^(2n)`
 /// notation otherwise.
@@ -370,9 +2797,9 @@ fn apply_super_sub(s: &str) -> String {
             let (end, group) = if i + 1 < bytes.len() && bytes[i + 1] == b'{' {
                 read_group(bytes, i + 1)
             } else if i + 1 < bytes.len() {
-                let end = i + 2;
+                let end = utf8_char_end(bytes, i + 1);
                 (
-                    Some(i + 1),
+                    Some(end.saturating_sub(1)),
                     std::str::from_utf8(&bytes[i + 1..end])
                         .unwrap_or("")
                         .to_string(),
@@ -589,21 +3016,45 @@ fn greek_or_symbol(name: &str) -> Option<&'static str> {
         "equiv" => "≡",
         "sim" => "∼",
         "simeq" => "≃",
+        "cong" => "≅",
+        "doteq" => "≐",
+        "ll" => "≪",
+        "gg" => "≫",
+        "prec" => "≺",
+        "succ" => "≻",
+        "preceq" => "≼",
+        "succeq" => "≽",
         "propto" => "∝",
         // Arrows
         "to" => "→",
         "rightarrow" => "→",
         "leftarrow" => "←",
+        "longrightarrow" => "⟶",
+        "longleftarrow" => "⟵",
         "Rightarrow" => "⇒",
         "Leftarrow" => "⇐",
+        "Longrightarrow" => "⟹",
+        "Longleftarrow" => "⟸",
         "leftrightarrow" => "↔",
         "Leftrightarrow" => "⇔",
+        "longleftrightarrow" => "⟷",
+        "Longleftrightarrow" => "⟺",
         "mapsto" => "↦",
+        "uparrow" => "↑",
+        "downarrow" => "↓",
+        "Uparrow" => "⇑",
+        "Downarrow" => "⇓",
         // Operators
         "pm" => "±",
         "mp" => "∓",
         "times" => "×",
         "cdot" => "·",
+        "circ" => "∘",
+        "bullet" => "•",
+        "oplus" => "⊕",
+        "otimes" => "⊗",
+        "wedge" => "∧",
+        "vee" => "∨",
         "div" => "÷",
         "cup" => "∪",
         "cap" => "∩",
@@ -620,12 +3071,19 @@ fn greek_or_symbol(name: &str) -> Option<&'static str> {
         "supset" => "⊃",
         "subseteq" => "⊆",
         "supseteq" => "⊇",
+        "nsubseteq" => "⊈",
+        "nsupseteq" => "⊉",
+        "includenot" => "∌",
         "land" => "∧",
         "lor" => "∨",
         "lnot" => "¬",
+        "neg" => "¬",
+        "therefore" => "∴",
+        "because" => "∵",
         // Misc
         "infty" => "∞",
         "emptyset" => "∅",
+        "varnothing" => "∅",
         "partial" => "∂",
         "nabla" => "∇",
         "hbar" => "ℏ",
@@ -633,6 +3091,21 @@ fn greek_or_symbol(name: &str) -> Option<&'static str> {
         "Re" => "ℜ",
         "Im" => "ℑ",
         "aleph" => "ℵ",
+        "angle" => "∠",
+        "triangle" => "△",
+        "degree" => "°",
+        "prime" => "′",
+        "dagger" => "†",
+        "langle" => "⟨",
+        "rangle" => "⟩",
+        "lvert" => "|",
+        "rvert" => "|",
+        "lVert" => "‖",
+        "rVert" => "‖",
+        "lfloor" => "⌊",
+        "rfloor" => "⌋",
+        "lceil" => "⌈",
+        "rceil" => "⌉",
         "ldots" => "…",
         "cdots" => "⋯",
         "vdots" => "⋮",
@@ -677,6 +3150,8 @@ fn greek_or_symbol(name: &str) -> Option<&'static str> {
         "lim" => "lim",
         "liminf" => "lim inf",
         "limsup" => "lim sup",
+        "argmax" => "arg max",
+        "argmin" => "arg min",
         "deg" => "deg",
         "det" => "det",
         "dim" => "dim",
@@ -684,7 +3159,53 @@ fn greek_or_symbol(name: &str) -> Option<&'static str> {
         "hom" => "hom",
         "ker" => "ker",
         "mod" => "mod",
+        "rank" => "rank",
+        "trace" => "trace",
+        "tr" => "tr",
+        "span" => "span",
         "Pr" => "Pr",
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn svg_layout_draws_fraction_and_sqrt_geometry() {
+        let svg = render_math_svg(r"\frac{a+1}{\sqrt{x}}", &[], MathSvgOptions::default());
+
+        assert!(svg.contains("<line "), "{svg}");
+        assert!(svg.contains("<polyline "), "{svg}");
+        assert!(svg.contains(">a+1</text>"), "{svg}");
+        assert!(svg.contains(">x</text>"), "{svg}");
+    }
+
+    #[test]
+    fn svg_layout_aligns_matrix_cells() {
+        let svg = render_math_svg(
+            r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}",
+            &[],
+            MathSvgOptions::default(),
+        );
+
+        assert!(svg.contains(">a</text>"), "{svg}");
+        assert!(svg.contains(">b</text>"), "{svg}");
+        assert!(svg.contains(">c</text>"), "{svg}");
+        assert!(svg.contains(">d</text>"), "{svg}");
+        assert!(svg.contains("<path "), "{svg}");
+    }
+
+    #[test]
+    fn math_options_apply_front_matter_style_macros() {
+        let options = MathOptions {
+            mode: MathMode::Unicode,
+            macros: vec![(r"\RR".into(), r"\mathbb{R}".into())],
+            svg: MathSvgOptions::default(),
+        };
+        let rendered = translate_with_options(r"$x \in \RR^n$", &options);
+
+        assert!(rendered.contains("ℝⁿ"), "{rendered}");
+    }
 }

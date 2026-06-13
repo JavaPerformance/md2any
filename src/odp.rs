@@ -702,9 +702,15 @@ fn render_content_slide(
 ) -> String {
     let mut s = page_open(&format!("page{}", num), "Default");
     s.push_str(&bg_image_xml(slide, theme, imgs, reg));
-    content_slide_body(
-        &mut s, slide, num, total, deck_title, theme, layout, imgs, reg,
-    );
+    if let Some((src, alt, _)) = slide.full_page_image() {
+        s.push_str(&render_full_page_image(src, alt, theme, imgs, reg));
+    } else if let Some((lines, lang)) = slide.full_page_code() {
+        s.push_str(&render_full_page_code(lines, lang, theme, reg));
+    } else {
+        content_slide_body(
+            &mut s, slide, num, total, deck_title, theme, layout, imgs, reg,
+        );
+    }
     s.push_str(&page_close(slide.notes.as_deref(), theme, reg));
     s
 }
@@ -1285,14 +1291,21 @@ fn content_slide_body(
 
     let underline_y = if matches!(layout.kind, LayoutKind::Clean) {
         let y = title_y + title_h + 30000;
-        s.push_str(&rect(reg, content_x, y, 400000, 50000, &theme.accent));
         s.push_str(&rect(
             reg,
-            content_x + 420000,
+            content_x,
             y + 18000,
-            content_w - 420000,
+            content_w,
             14000,
             &theme.divider,
+        ));
+        s.push_str(&rect(
+            reg,
+            content_x,
+            y,
+            progress_width(content_w, num, total),
+            50000,
+            &theme.accent,
         ));
         y
     } else {
@@ -1322,6 +1335,23 @@ fn content_slide_body(
     );
 
     if !layout.shows_sidebar() {
+        let rule_y = footer_y.saturating_sub(90000);
+        s.push_str(&rect(
+            reg,
+            content_x,
+            rule_y,
+            content_w,
+            18000,
+            &theme.divider,
+        ));
+        s.push_str(&rect(
+            reg,
+            content_x,
+            rule_y,
+            content_w.min(420000),
+            18000,
+            &theme.accent,
+        ));
         if let Some((key, iw, ih)) = imgs.logo() {
             let logo_h: u32 = 300000;
             let logo_w = if ih > 0 {
@@ -1411,7 +1441,7 @@ fn render_blocks(
 ) {
     let estimated: u32 = blocks
         .iter()
-        .map(|b| block_height_emu(b, w, theme.slide_h, imgs))
+        .map(|b| block_height_emu(b, w, theme, imgs))
         .sum::<u32>()
         + (blocks.len().saturating_sub(1) as u32) * 80000;
     let scale: f32 = if estimated > h_total && estimated > 0 {
@@ -1422,7 +1452,7 @@ fn render_blocks(
 
     let mut y = y_start;
     for block in blocks {
-        let raw_h = block_height_emu(block, w, theme.slide_h, imgs);
+        let raw_h = block_height_emu(block, w, theme, imgs);
         let h = (((raw_h as f32) * scale) as u32).max(200000);
         match block {
             Block::Paragraph(runs) => {
@@ -1481,6 +1511,8 @@ fn render_blocks(
                 title,
                 lines,
                 line_numbers,
+                start_line,
+                ..
             } => {
                 out.push_str(&code_block(
                     reg,
@@ -1492,6 +1524,7 @@ fn render_blocks(
                     title.as_deref(),
                     lang.as_deref(),
                     *line_numbers,
+                    *start_line,
                     theme,
                 ));
             }
@@ -1603,7 +1636,7 @@ fn render_footnotes_block(
     )
 }
 
-fn block_height_emu(b: &Block, w: u32, slide_h: u32, imgs: &Imgs) -> u32 {
+fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
     let cpl = chars_per_line(w);
     match b {
         Block::Paragraph(runs) => {
@@ -1623,7 +1656,7 @@ fn block_height_emu(b: &Block, w: u32, slide_h: u32, imgs: &Imgs) -> u32 {
                 })
                 .sum::<u32>()
                 + 80000;
-            if items.len() > crate::theme::LONG_LIST_THRESHOLD {
+            if items.len() > crate::theme::LONG_LIST_THRESHOLD && !theme.portrait {
                 let col_w = (w.saturating_sub(200000)) / 2;
                 let col_cpl = chars_per_line(col_w);
                 let col_total: u32 = items
@@ -1661,18 +1694,18 @@ fn block_height_emu(b: &Block, w: u32, slide_h: u32, imgs: &Imgs) -> u32 {
                 .sum::<u32>()
                 + 120000
         }
-        Block::Table { rows, .. } => (rows.len() as u32 + 1) * 340000 + 80000,
+        Block::Table { headers, rows } => table_height_emu(headers, rows, w, theme),
         Block::Columns { left, right } => {
             let gap: u32 = 280000;
             let half = w.saturating_sub(gap) / 2;
             let lh: u32 = left
                 .iter()
-                .map(|b| block_height_emu(b, half, slide_h, imgs))
+                .map(|b| block_height_emu(b, half, theme, imgs))
                 .sum::<u32>()
                 + (left.len().saturating_sub(1) as u32) * 80000;
             let rh: u32 = right
                 .iter()
-                .map(|b| block_height_emu(b, half, slide_h, imgs))
+                .map(|b| block_height_emu(b, half, theme, imgs))
                 .sum::<u32>()
                 + (right.len().saturating_sub(1) as u32) * 80000;
             lh.max(rh)
@@ -1683,11 +1716,11 @@ fn block_height_emu(b: &Block, w: u32, slide_h: u32, imgs: &Imgs) -> u32 {
             alt,
             width_pct: _,
         } => {
-            let max_image_h = slide_h * crate::theme::IMAGE_MAX_HEIGHT_FRACTION_NUM
+            let max_image_h = theme.slide_h * crate::theme::IMAGE_MAX_HEIGHT_FRACTION_NUM
                 / crate::theme::IMAGE_MAX_HEIGHT_FRACTION_DEN;
-            let placeholder_h = slide_h * 30 / 100;
+            let placeholder_h = theme.slide_h * 30 / 100;
             let display_h = if let Some((iw, ih)) = imgs.dims(src) {
-                let (_, dh) = fit_image(iw, ih, w, max_image_h);
+                let (_, dh) = fit_image_for_block(src, alt, iw, ih, w, max_image_h, theme.slide_h);
                 dh
             } else {
                 placeholder_h
@@ -1731,6 +1764,44 @@ fn fit_image(iw: u32, ih: u32, max_w: u32, max_h: u32) -> (u32, u32) {
     } else {
         let w_at_mh = mh * iw / ih;
         (w_at_mh as u32, mh as u32)
+    }
+}
+
+fn fit_image_for_block(
+    src: &str,
+    alt: &str,
+    iw: u32,
+    ih: u32,
+    max_w: u32,
+    max_h: u32,
+    slide_h: u32,
+) -> (u32, u32) {
+    let Some(math_meta) = crate::math::math_image_meta(src, alt) else {
+        return fit_image(iw, ih, max_w, max_h);
+    };
+    let natural_w = ((iw.max(1) as u64 * 12_700) / 2).min(u32::MAX as u64) as u32;
+    let natural_h = ((ih.max(1) as u64 * 12_700) / 2).min(u32::MAX as u64) as u32;
+    let configured_max_h = math_meta
+        .max_height_px
+        .map(|px| u32::from(px).saturating_mul(12_700));
+    let math_max_h = configured_max_h
+        .unwrap_or(slide_h * 28 / 100)
+        .min(max_h)
+        .max(1)
+        .min(natural_h.max(1));
+    fit_image(
+        natural_w,
+        natural_h,
+        max_w.min(natural_w.max(1)),
+        math_max_h,
+    )
+}
+
+fn image_x_for_block(src: &str, alt: &str, x: u32, w: u32, display_w: u32) -> u32 {
+    match crate::math::math_image_meta(src, alt).map(|meta| meta.align) {
+        Some(crate::math::MathBlockAlign::Left) => x,
+        Some(crate::math::MathBlockAlign::Right) => x + w.saturating_sub(display_w),
+        Some(crate::math::MathBlockAlign::Center) | None => x + w.saturating_sub(display_w) / 2,
     }
 }
 
@@ -2030,6 +2101,7 @@ fn code_block(
     title: Option<&str>,
     lang: Option<&str>,
     line_numbers: bool,
+    start_line: usize,
     theme: &Theme,
 ) -> String {
     let mut s = String::new();
@@ -2121,8 +2193,9 @@ fn code_block(
     });
 
     let highlighted: Vec<Vec<Token>> = syntax::tokenize(lines, lang);
+    let last_line = start_line.saturating_add(lines.len().saturating_sub(1));
     let gutter_w = if line_numbers {
-        Some(lines.len().to_string().len())
+        Some(last_line.to_string().len())
     } else {
         None
     };
@@ -2135,7 +2208,7 @@ fn code_block(
     for (idx, line_tokens) in highlighted.iter().enumerate() {
         let mut runs_xml = String::new();
         if let Some(width) = gutter_w {
-            let n = format!("{:>w$}", idx + 1, w = width);
+            let n = format!("{:>w$}", start_line + idx, w = width);
             let st = reg.text_name(TextStyleKey {
                 color: theme.muted_color.clone(),
                 size_pt: theme.code_size / 100,
@@ -2226,53 +2299,56 @@ fn render_table(
     if cols == 0 {
         return String::new();
     }
-    let col_w = w / cols as u32;
-    let header_h = 380000_u32;
-    let row_h = if rows.is_empty() {
-        320000
-    } else {
-        (h.saturating_sub(header_h) / rows.len() as u32).max(280000)
-    };
+    let col_widths = table_column_widths(headers, rows, w);
+    let row_heights = fit_table_row_heights(
+        table_natural_row_heights(headers, rows, &col_widths, theme),
+        h,
+    );
 
     let mut s = String::new();
 
     for c in 0..cols {
-        let cx = x + col_w * c as u32;
+        let cx = x + col_widths.iter().take(c).sum::<u32>();
+        let max_chars = table_chars_per_line(col_widths[c], table_header_size(theme));
         s.push_str(&cell(
             reg,
             cx,
             y,
-            col_w,
-            header_h,
+            col_widths[c],
+            row_heights[0],
             headers.get(c).map(|r| r.as_slice()).unwrap_or(&[]),
             &theme.accent,
             &theme.on_accent,
-            theme.body_size - 200,
+            table_header_size(theme),
             true,
+            max_chars,
             theme,
         ));
     }
+    let table_band_bg = theme.table_band_bg();
     for (i, row) in rows.iter().enumerate() {
-        let ry = y + header_h + row_h * i as u32;
+        let ry = y + row_heights.iter().take(i + 1).sum::<u32>();
         let banded = i % 2 == 1;
         let bg = if banded {
-            theme.code_bg.clone()
+            table_band_bg.clone()
         } else {
             theme.bg.clone()
         };
         for c in 0..cols {
-            let cx = x + col_w * c as u32;
+            let cx = x + col_widths.iter().take(c).sum::<u32>();
+            let max_chars = table_chars_per_line(col_widths[c], table_body_size(theme));
             s.push_str(&cell(
                 reg,
                 cx,
                 ry,
-                col_w,
-                row_h,
+                col_widths[c],
+                row_heights[i + 1],
                 row.get(c).map(|r| r.as_slice()).unwrap_or(&[]),
                 &bg,
                 &theme.body_color,
-                theme.body_size - 400,
+                table_body_size(theme),
                 false,
+                max_chars,
                 theme,
             ));
         }
@@ -2291,6 +2367,7 @@ fn cell(
     text_color: &str,
     size_centipt: u32,
     bold: bool,
+    max_chars: usize,
     theme: &Theme,
 ) -> String {
     let g = reg.graphic_name(GraphicStyleKey {
@@ -2305,9 +2382,17 @@ fn cell(
         align: "start",
         line_spacing_pct: 120,
     });
+    let wrapped = wrap_runs_for_table(runs, max_chars);
+    let mut wrapped_runs = Vec::new();
+    for (idx, line) in wrapped.into_iter().enumerate() {
+        if idx > 0 {
+            wrapped_runs.push(Run::plain("\n"));
+        }
+        wrapped_runs.extend(line);
+    }
     let runs_xml = runs_to_spans(
         reg,
-        runs,
+        &wrapped_runs,
         size_centipt,
         text_color,
         bold,
@@ -2326,6 +2411,195 @@ fn cell(
     )
 }
 
+fn table_height_emu(headers: &[Vec<Run>], rows: &[Vec<Vec<Run>>], w: u32, theme: &Theme) -> u32 {
+    let col_widths = table_column_widths(headers, rows, w);
+    table_natural_row_heights(headers, rows, &col_widths, theme)
+        .iter()
+        .sum::<u32>()
+        + 80000
+}
+
+fn table_header_size(theme: &Theme) -> u32 {
+    theme.body_size.saturating_sub(200)
+}
+
+fn table_body_size(theme: &Theme) -> u32 {
+    theme.body_size.saturating_sub(400)
+}
+
+fn table_natural_row_heights(
+    headers: &[Vec<Run>],
+    rows: &[Vec<Vec<Run>>],
+    col_widths: &[u32],
+    theme: &Theme,
+) -> Vec<u32> {
+    let mut heights = Vec::with_capacity(rows.len() + 1);
+    heights.push(table_row_height(
+        headers,
+        col_widths,
+        table_header_size(theme),
+        380000,
+    ));
+    for row in rows {
+        heights.push(table_row_height(
+            row,
+            col_widths,
+            table_body_size(theme),
+            340000,
+        ));
+    }
+    heights
+}
+
+fn table_column_widths(headers: &[Vec<Run>], rows: &[Vec<Vec<Run>>], w: u32) -> Vec<u32> {
+    let cols = headers
+        .len()
+        .max(rows.iter().map(|r| r.len()).max().unwrap_or(0));
+    if cols == 0 {
+        return Vec::new();
+    }
+    let equal = || {
+        let base = w / cols as u32;
+        let mut widths = vec![base; cols];
+        if let Some(last) = widths.last_mut() {
+            *last = w.saturating_sub(base * (cols as u32 - 1));
+        }
+        widths
+    };
+    let desired_min = if cols <= 2 {
+        w * 18 / 100
+    } else {
+        w * 10 / 100
+    };
+    let min_w = desired_min.min(w / cols as u32);
+    let total_min = min_w.saturating_mul(cols as u32);
+    if total_min >= w {
+        return equal();
+    }
+
+    let mut weights = Vec::with_capacity(cols);
+    for c in 0..cols {
+        let mut max_len = headers
+            .get(c)
+            .map(|runs| runs_text(runs).chars().count())
+            .unwrap_or(0);
+        for row in rows {
+            max_len = max_len.max(
+                row.get(c)
+                    .map(|runs| runs_text(runs).chars().count())
+                    .unwrap_or(0),
+            );
+        }
+        weights.push(max_len.clamp(6, 90) as u32);
+    }
+    let weight_total = weights.iter().sum::<u32>().max(1);
+    let remaining = w - total_min;
+    let mut widths: Vec<u32> = weights
+        .iter()
+        .map(|weight| min_w + remaining * *weight / weight_total)
+        .collect();
+    let used = widths.iter().take(cols.saturating_sub(1)).sum::<u32>();
+    if let Some(last) = widths.last_mut() {
+        *last = w.saturating_sub(used);
+    }
+    widths
+}
+
+fn table_row_height(cells: &[Vec<Run>], col_widths: &[u32], size_centipt: u32, min_h: u32) -> u32 {
+    let lines = col_widths
+        .iter()
+        .enumerate()
+        .map(|(idx, width)| {
+            let max_chars = table_chars_per_line(*width, size_centipt);
+            wrap_runs_for_table(
+                cells.get(idx).map(|runs| runs.as_slice()).unwrap_or(&[]),
+                max_chars,
+            )
+            .len()
+        })
+        .max()
+        .unwrap_or(1) as u32;
+    let line_h = (size_centipt as f32 * 160.0) as u32;
+    min_h.max(lines * line_h + 120000)
+}
+
+fn table_chars_per_line(col_w: u32, size_centipt: u32) -> usize {
+    let inner = col_w.saturating_sub(180000).max(300000) as f32;
+    let char_w = (size_centipt as f32 / 100.0) * 12700.0 * 0.52;
+    (inner / char_w).floor().max(8.0) as usize
+}
+
+fn fit_table_row_heights(mut heights: Vec<u32>, target_h: u32) -> Vec<u32> {
+    let natural = heights.iter().sum::<u32>();
+    if natural == 0 || target_h == 0 || natural <= target_h {
+        return heights;
+    }
+    for h in &mut heights {
+        *h = ((*h as u64 * target_h as u64) / natural as u64) as u32;
+    }
+    heights
+}
+
+fn wrap_runs_for_table(runs: &[Run], max_chars: usize) -> Vec<Vec<Run>> {
+    let max_chars = max_chars.max(8);
+    let mut lines: Vec<Vec<Run>> = vec![Vec::new()];
+    let mut current_len = 0usize;
+    for run in runs {
+        for word in run.text.split_whitespace() {
+            let word_len = word.chars().count();
+            if current_len > 0 && current_len + 1 + word_len > max_chars {
+                lines.push(Vec::new());
+                current_len = 0;
+            }
+            if current_len > 0 {
+                lines
+                    .last_mut()
+                    .unwrap()
+                    .push(run_with_text(run, " ".to_string()));
+                current_len += 1;
+            }
+            if word_len <= max_chars {
+                lines
+                    .last_mut()
+                    .unwrap()
+                    .push(run_with_text(run, word.to_string()));
+                current_len += word_len;
+            } else {
+                let mut chunk = String::new();
+                let mut chunk_len = 0usize;
+                for ch in word.chars() {
+                    if chunk_len == max_chars {
+                        lines
+                            .last_mut()
+                            .unwrap()
+                            .push(run_with_text(run, std::mem::take(&mut chunk)));
+                        lines.push(Vec::new());
+                        chunk_len = 0;
+                        current_len = 0;
+                    }
+                    chunk.push(ch);
+                    chunk_len += 1;
+                }
+                if !chunk.is_empty() {
+                    lines.last_mut().unwrap().push(run_with_text(run, chunk));
+                    current_len += chunk_len;
+                }
+            }
+        }
+    }
+    if lines.iter().all(|line| line.is_empty()) {
+        vec![vec![Run::plain("")]]
+    } else {
+        lines
+    }
+}
+
+fn run_with_text(run: &Run, text: String) -> Run {
+    let mut out = run.clone();
+    out.text = text;
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Image
 // ---------------------------------------------------------------------------
@@ -2342,11 +2616,12 @@ fn render_image(
     imgs: &Imgs,
 ) -> String {
     let mut s = String::new();
-    let caption_h = if alt.is_empty() { 0 } else { 260000 };
+    let caption_alt = crate::math::visible_image_alt(src, alt);
+    let caption_h = if caption_alt.is_empty() { 0 } else { 260000 };
     let image_h = h.saturating_sub(caption_h + 80000);
 
     let (display_w, display_h) = if let Some((iw, ih)) = imgs.dims(src) {
-        fit_image(iw, ih, w, image_h)
+        fit_image_for_block(src, alt, iw, ih, w, image_h, theme.slide_h)
     } else {
         (w, image_h)
     };
@@ -2360,7 +2635,7 @@ fn render_image(
             text_anchor: "top",
             text_align: "left",
         });
-        let img_x = x + (w.saturating_sub(display_w)) / 2;
+        let img_x = image_x_for_block(src, alt, x, w, display_w);
         s.push_str(&format!(
             r#"<draw:frame draw:style-name="{g}" svg:x="{x}" svg:y="{y}" svg:width="{w}" svg:height="{h}"><draw:image xlink:href="{href}" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame>"#,
             g = g,
@@ -2372,7 +2647,7 @@ fn render_image(
         ));
     }
 
-    if !alt.is_empty() {
+    if !caption_alt.is_empty() {
         let caption_y = y + display_h + 60000;
         s.push_str(&text_frame(
             reg,
@@ -2382,7 +2657,7 @@ fn render_image(
             caption_h,
             "top",
             "center",
-            &[Run::plain(alt)],
+            &[Run::plain(caption_alt)],
             1300,
             &theme.muted_color,
             false,
@@ -2391,6 +2666,97 @@ fn render_image(
         ));
     }
     s
+}
+
+fn render_full_page_image(
+    src: &str,
+    _alt: &str,
+    theme: &Theme,
+    imgs: &Imgs,
+    reg: &mut Registry,
+) -> String {
+    let (display_w, display_h) = if let Some((iw, ih)) = imgs.dims(src) {
+        fit_image(iw, ih, theme.slide_w, theme.slide_h)
+    } else {
+        (theme.slide_w, theme.slide_h)
+    };
+    let x = theme.slide_w.saturating_sub(display_w) / 2;
+    let y = theme.slide_h.saturating_sub(display_h) / 2;
+
+    if let Some(href) = imgs.href(src) {
+        let g = reg.graphic_name(GraphicStyleKey {
+            fill: None,
+            no_fill: true,
+            stroke: None,
+            corner_radius_emu: 0,
+            text_anchor: "top",
+            text_align: "left",
+        });
+        format!(
+            r#"<draw:frame draw:style-name="{g}" svg:x="{x}" svg:y="{y}" svg:width="{w}" svg:height="{h}"><draw:image xlink:href="{href}" xlink:type="simple" xlink:show="embed" xlink:actuate="onLoad"/></draw:frame>"#,
+            g = g,
+            x = cm(x),
+            y = cm(y),
+            w = cm(display_w),
+            h = cm(display_h),
+            href = escape_xml(&href),
+        )
+    } else {
+        rect(reg, 0, 0, theme.slide_w, theme.slide_h, &theme.divider)
+    }
+}
+
+fn render_full_page_code(
+    lines: &[String],
+    lang: Option<&str>,
+    theme: &Theme,
+    reg: &mut Registry,
+) -> String {
+    let math_markup = crate::math::is_markup_text_language(lang);
+    let rendered_lines = crate::math::translate_markup_lines(lines, lang);
+    let margin_x = if theme.portrait { 280000 } else { 360000 };
+    let margin_y = if theme.portrait { 320000 } else { 300000 };
+    let w = theme.slide_w.saturating_sub(margin_x * 2);
+    let h = theme.slide_h.saturating_sub(margin_y * 2);
+    let base_size = theme.code_size.min(if theme.portrait { 850 } else { 950 });
+    let line_count = rendered_lines.len().max(1) as f32;
+    let max_chars = rendered_lines
+        .iter()
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(1)
+        .max(1) as f32;
+    let char_factor = if math_markup { 0.50_f32 } else { 0.58_f32 };
+    let line_factor = if math_markup { 1.10_f32 } else { 1.18_f32 };
+    let size_by_width = ((w as f32 / 12_700.0) / (max_chars * char_factor) * 100.0) as u32;
+    let size_by_height = ((h as f32 / 12_700.0) / (line_count * line_factor) * 100.0) as u32;
+    let size = base_size.min(size_by_width).min(size_by_height).max(450);
+    let mut runs = Vec::with_capacity(rendered_lines.len().saturating_mul(2));
+    for (idx, line) in rendered_lines.iter().enumerate() {
+        if idx > 0 {
+            runs.push(Run::plain("\n"));
+        }
+        runs.push(Run::plain(line));
+    }
+    text_frame(
+        reg,
+        margin_x,
+        margin_y,
+        w,
+        h,
+        "top",
+        if math_markup { "center" } else { "left" },
+        &runs,
+        size,
+        &theme.title_color,
+        false,
+        math_markup,
+        if math_markup {
+            &theme.body_font
+        } else {
+            &theme.mono_font
+        },
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2418,6 +2784,15 @@ fn rect(reg: &mut Registry, x: u32, y: u32, w: u32, h: u32, color: &str) -> Stri
 
 fn cm(emu: u32) -> String {
     format!("{:.4}cm", emu as f64 / 360000.0)
+}
+
+fn progress_width(width: u32, num: usize, total: usize) -> u32 {
+    if width == 0 || total == 0 {
+        return 0;
+    }
+    ((width as u64 * num.max(1) as u64) / total as u64)
+        .min(width as u64)
+        .max(1) as u32
 }
 
 fn escape_xml(s: &str) -> String {

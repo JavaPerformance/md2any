@@ -6,8 +6,8 @@
 //! [`Slide`]s as it encounters H1/H2 headings, `---` rules, and the like.
 //!
 //! Two preprocessing passes run before pulldown-cmark sees the source:
-//!   1. [`crate::math::translate`] converts `$...$` / `$$...$$` LaTeX-ish
-//!      spans into Unicode.
+//!   1. [`crate::math::translate_with_options`] converts `$...$` / `$$...$$`
+//!      LaTeX-ish spans into Unicode/source/SVG math output.
 //!   2. A local pass converts the `:::` column-break sentinel into an HTML
 //!      comment that pulldown-cmark passes through verbatim — we then
 //!      collapse it back into a [`Block::Columns`] later.
@@ -17,7 +17,28 @@
 //! the slide where they're used.
 
 use crate::ir::*;
+use crate::math::{MathMode, MathOptions, MathSvgOptions};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone)]
+pub struct ParseOptions {
+    pub math_mode: MathMode,
+    pub math_macros: Vec<(String, String)>,
+    pub math_svg: MathSvgOptions,
+    pub include_base_dir: Option<PathBuf>,
+}
+
+impl Default for ParseOptions {
+    fn default() -> Self {
+        ParseOptions {
+            math_mode: MathMode::Unicode,
+            math_macros: Vec::new(),
+            math_svg: MathSvgOptions::default(),
+            include_base_dir: None,
+        }
+    }
+}
 
 /// Parse markdown into a flat sequence of [`Slide`]s.
 ///
@@ -26,16 +47,26 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 /// `fallback_title` is the deck title used when a content slide is reached
 /// before any heading exists — usually the input filename's stem.
 pub fn parse(input: &str, front: &FrontMatter, fallback_title: &str) -> Vec<Slide> {
+    parse_with_options(input, front, fallback_title, ParseOptions::default())
+}
+
+pub fn parse_with_options(
+    input: &str,
+    front: &FrontMatter,
+    fallback_title: &str,
+    options: ParseOptions,
+) -> Vec<Slide> {
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
     opts.insert(Options::ENABLE_STRIKETHROUGH);
     opts.insert(Options::ENABLE_TASKLISTS);
     opts.insert(Options::ENABLE_FOOTNOTES);
 
-    let preprocessed = preprocess(input);
+    let math_options = resolve_math_options(front, &options);
+    let preprocessed = preprocess(input, &math_options);
     let parser = Parser::new_ext(&preprocessed, opts);
 
-    let mut st = State::new(front, fallback_title);
+    let mut st = State::new(front, fallback_title, options.include_base_dir.as_deref());
     for event in parser {
         st.handle(event);
     }
@@ -47,7 +78,7 @@ pub fn parse(input: &str, front: &FrontMatter, fallback_title: &str) -> Vec<Slid
 /// Honour `<!-- layout: image-left | image-right -->` by reshaping the
 /// slide's block list into a two-column layout: the first Image on one
 /// side, everything else on the other. Slides without exactly one image,
-/// or with an unrecognised hint, pass through unchanged.
+/// or with an unrecognised/post-renderer hint, pass through unchanged.
 fn apply_layout_hints(slides: &mut Vec<Slide>) {
     for slide in slides {
         let Some(hint) = slide.layout_hint.as_deref() else {
@@ -85,9 +116,27 @@ fn apply_layout_hints(slides: &mut Vec<Slide>) {
     }
 }
 
-fn preprocess(input: &str) -> String {
-    // First pass: math → Unicode (skips fenced code blocks itself).
-    let math_translated = crate::math::translate(input);
+fn resolve_math_options(front: &FrontMatter, options: &ParseOptions) -> MathOptions {
+    let mut macros = front
+        .math_macros
+        .as_ref()
+        .map(|m| {
+            m.iter()
+                .map(|(from, to)| (from.clone(), to.clone()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    macros.extend(options.math_macros.clone());
+    MathOptions {
+        mode: options.math_mode,
+        macros,
+        svg: options.math_svg,
+    }
+}
+
+fn preprocess(input: &str, math_options: &MathOptions) -> String {
+    // First pass: math preprocessing (skips fenced code blocks itself).
+    let math_translated = crate::math::translate_with_options(input, math_options);
     let mut out = String::with_capacity(math_translated.len());
     let mut in_code = false;
     for line in math_translated.lines() {
@@ -165,6 +214,7 @@ fn parse_width_pct(attr: &str) -> Option<u8> {
 struct State<'a> {
     front: &'a FrontMatter,
     fallback_title: &'a str,
+    include_base_dir: Option<&'a Path>,
     slides: Vec<Slide>,
     current: Slide,
     started_real_content: bool,
@@ -186,6 +236,9 @@ struct State<'a> {
     in_code: bool,
     code_lang: Option<String>,
     code_title: Option<String>,
+    code_include: Option<CodeInclude>,
+    code_start_line: usize,
+    code_columns: Option<CodeColumns>,
     code_buf: String,
 
     in_blockquote: u32,
@@ -218,7 +271,11 @@ struct State<'a> {
 }
 
 impl<'a> State<'a> {
-    fn new(front: &'a FrontMatter, fallback_title: &'a str) -> Self {
+    fn new(
+        front: &'a FrontMatter,
+        fallback_title: &'a str,
+        include_base_dir: Option<&'a Path>,
+    ) -> Self {
         let initial = if front.title.is_some() {
             Slide {
                 kind: SlideKind::Title {
@@ -245,6 +302,7 @@ impl<'a> State<'a> {
         State {
             front,
             fallback_title,
+            include_base_dir,
             slides: Vec::new(),
             current: initial,
             started_real_content: front.title.is_some(),
@@ -262,6 +320,9 @@ impl<'a> State<'a> {
             in_code: false,
             code_lang: None,
             code_title: None,
+            code_include: None,
+            code_start_line: 1,
+            code_columns: None,
             code_buf: String::new(),
             in_blockquote: 0,
             quote_paragraphs: Vec::new(),
@@ -467,12 +528,15 @@ impl<'a> State<'a> {
             Tag::CodeBlock(kind) => {
                 self.flush_paragraph();
                 self.in_code = true;
-                let (lang, title) = match kind {
+                let info = match kind {
                     CodeBlockKind::Fenced(info) => parse_fence_info(&info),
-                    _ => (None, None),
+                    _ => FenceInfo::default(),
                 };
-                self.code_lang = lang;
-                self.code_title = title;
+                self.code_lang = info.lang;
+                self.code_title = info.title;
+                self.code_include = info.include;
+                self.code_start_line = info.start_line;
+                self.code_columns = info.columns;
                 self.code_buf.clear();
             }
             Tag::List(start) => {
@@ -585,9 +649,33 @@ impl<'a> State<'a> {
                 }
             }
             TagEnd::CodeBlock => {
-                let code = std::mem::take(&mut self.code_buf);
+                let fallback_code = std::mem::take(&mut self.code_buf);
                 let lang = self.code_lang.take();
                 let title = self.code_title.take();
+                let include = self.code_include.take();
+                let columns = self.code_columns.take();
+                let mut include_error = None;
+                let (code, start_line) = if let Some(include) = include {
+                    match load_code_include(self.include_base_dir, &include) {
+                        Ok(code) => (code, include.start_line),
+                        Err(e) => {
+                            let detail = e.to_string();
+                            eprintln!(
+                                "md2any: warning: code include {} failed: {e}",
+                                include.display
+                            );
+                            include_error = Some(format!("{}: {}", include.display, detail));
+                            let body = if fallback_code.trim().is_empty() {
+                                format!("md2any include failed: {e}")
+                            } else {
+                                fallback_code
+                            };
+                            (body, include.start_line)
+                        }
+                    }
+                } else {
+                    (fallback_code, self.code_start_line)
+                };
                 let lines: Vec<String> = code
                     .trim_end_matches('\n')
                     .split('\n')
@@ -599,9 +687,14 @@ impl<'a> State<'a> {
                     title,
                     lines,
                     line_numbers,
+                    start_line,
+                    columns,
+                    include_error,
                 });
                 self.started_real_content = true;
                 self.in_code = false;
+                self.code_start_line = 1;
+                self.code_columns = None;
             }
             TagEnd::List(_) => {
                 let _ordered = self.list_stack.pop().unwrap_or(false);
@@ -783,9 +876,9 @@ fn extract_img_width(s: &str) -> Option<u8> {
     rest.parse::<u8>().ok().filter(|n| (1..=100).contains(n))
 }
 
-/// Recognised values: `image-left`, `image-right`. Anything else returns
-/// `None` (silently ignored — better than failing the whole render for a
-/// typo in a comment).
+/// Recognised values: `image-left`, `image-right`, `image-full`, `text-full`.
+/// Anything else returns `None` (silently ignored — better than failing the
+/// whole render for a typo in a comment).
 fn extract_layout(s: &str) -> Option<String> {
     let s = s.trim();
     if !s.starts_with("<!--") || !s.ends_with("-->") {
@@ -795,7 +888,7 @@ fn extract_layout(s: &str) -> Option<String> {
     let lower = inner.to_ascii_lowercase();
     let body = lower.strip_prefix("layout:")?.trim();
     match body {
-        "image-left" | "image-right" => Some(body.to_string()),
+        "image-left" | "image-right" | "image-full" | "text-full" => Some(body.to_string()),
         _ => None,
     }
 }
@@ -821,28 +914,233 @@ fn extract_note(s: &str) -> Option<String> {
     }
 }
 
-fn parse_fence_info(info: &str) -> (Option<String>, Option<String>) {
+#[derive(Debug, Clone)]
+struct FenceInfo {
+    lang: Option<String>,
+    title: Option<String>,
+    include: Option<CodeInclude>,
+    start_line: usize,
+    columns: Option<CodeColumns>,
+}
+
+impl Default for FenceInfo {
+    fn default() -> Self {
+        Self {
+            lang: None,
+            title: None,
+            include: None,
+            start_line: 1,
+            columns: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CodeInclude {
+    path: String,
+    display: String,
+    start_line: usize,
+    end_line: Option<usize>,
+}
+
+fn parse_fence_info(info: &str) -> FenceInfo {
     let info = info.trim();
     if info.is_empty() {
-        return (None, None);
+        return FenceInfo::default();
     }
-    let mut parts = info.splitn(2, char::is_whitespace);
-    let lang = parts
-        .next()
-        .map(|s| s.to_string())
-        .filter(|s| !s.is_empty());
-    let title = parts
-        .next()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let title = title.map(|t| {
-        if let Some(stripped) = t.strip_prefix("title=") {
-            stripped.trim_matches('"').to_string()
+    let mut out = FenceInfo {
+        start_line: 1,
+        ..Default::default()
+    };
+    let mut title_parts = Vec::new();
+    for token in split_fence_tokens(info) {
+        if let Some(value) = token.strip_prefix("file=") {
+            if let Some(include) = parse_code_include(value) {
+                out.start_line = include.start_line;
+                if out.lang.is_none() {
+                    out.lang = lang_from_path(&include.path);
+                }
+                if out.title.is_none() && title_parts.is_empty() {
+                    out.title = Some(include.display.clone());
+                }
+                out.include = Some(include);
+            }
+        } else if let Some(value) = token.strip_prefix("title=") {
+            out.title = Some(value.to_string());
+            title_parts.clear();
+        } else if let Some(value) = token.strip_prefix("start=") {
+            if let Ok(n) = value.parse::<usize>() {
+                out.start_line = n.max(1);
+            }
+        } else if let Some(value) = token
+            .strip_prefix("columns=")
+            .or_else(|| token.strip_prefix("cols="))
+            .or_else(|| token.strip_prefix("code-columns="))
+        {
+            out.columns = parse_code_columns(value);
+        } else if out.lang.is_none() {
+            out.lang = Some(token);
         } else {
-            t
+            title_parts.push(token);
         }
-    });
-    (lang, title)
+    }
+    if out.title.is_none() && !title_parts.is_empty() {
+        out.title = Some(title_parts.join(" "));
+    }
+    out
+}
+
+fn split_fence_tokens(info: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in info.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quote.is_some() {
+            escaped = true;
+            continue;
+        }
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        if ch == '"' || ch == '\'' {
+            quote = Some(ch);
+        } else if ch.is_whitespace() {
+            if !current.is_empty() {
+                out.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+fn parse_code_include(value: &str) -> Option<CodeInclude> {
+    let (path, fragment) = value.split_once('#').unwrap_or((value, ""));
+    if path.trim().is_empty() {
+        return None;
+    }
+    let (start_line, end_line) = parse_line_fragment(fragment).unwrap_or((1, None));
+    Some(CodeInclude {
+        path: path.to_string(),
+        display: value.to_string(),
+        start_line,
+        end_line,
+    })
+}
+
+fn parse_line_fragment(fragment: &str) -> Option<(usize, Option<usize>)> {
+    if fragment.trim().is_empty() {
+        return None;
+    }
+    let fragment = fragment.trim().trim_start_matches('L');
+    let (start, end) = fragment
+        .split_once('-')
+        .or_else(|| fragment.split_once(".."))
+        .unwrap_or((fragment, ""));
+    let start_line = parse_line_number(start)?;
+    let end_line = if end.trim().is_empty() {
+        None
+    } else {
+        Some(parse_line_number(end)?)
+    };
+    Some((start_line.max(1), end_line.map(|n| n.max(start_line))))
+}
+
+fn parse_line_number(value: &str) -> Option<usize> {
+    value.trim().trim_start_matches('L').parse::<usize>().ok()
+}
+
+fn parse_code_columns(value: &str) -> Option<CodeColumns> {
+    let normalized = value.trim().to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "1" | "one" | "single" | "off" | "none" => Some(CodeColumns::Single),
+        "auto" | "smart" => Some(CodeColumns::Auto),
+        "2" | "two" | "two-up" | "twoup" | "columns" => Some(CodeColumns::TwoUp),
+        _ => None,
+    }
+}
+
+fn load_code_include(base_dir: Option<&Path>, include: &CodeInclude) -> std::io::Result<String> {
+    let path = Path::new(&include.path);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else if let Some(base_dir) = base_dir {
+        base_dir.join(path)
+    } else {
+        path.to_path_buf()
+    };
+    let text = std::fs::read_to_string(&path)?;
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return Ok(String::new());
+    }
+    let start_idx = include.start_line.saturating_sub(1).min(lines.len());
+    let end_idx = include
+        .end_line
+        .unwrap_or(lines.len())
+        .min(lines.len())
+        .max(start_idx);
+    Ok(lines[start_idx..end_idx].join("\n"))
+}
+
+fn lang_from_path(path: &str) -> Option<String> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let lang = match ext.as_str() {
+        "rs" => "rust",
+        "py" => "python",
+        "js" | "mjs" | "cjs" => "js",
+        "ts" | "tsx" => "ts",
+        "jsx" => "jsx",
+        "go" => "go",
+        "c" | "h" => "c",
+        "cc" | "cpp" | "cxx" | "hpp" => "cpp",
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "scala" | "sc" => "scala",
+        "cs" => "csharp",
+        "ps1" | "psm1" | "psd1" => "powershell",
+        "hs" | "lhs" => "haskell",
+        "bcpl" => "bcpl",
+        "vue" => "vue",
+        "svelte" => "svelte",
+        "astro" => "astro",
+        "graphql" | "gql" => "graphql",
+        "tf" | "tfvars" | "hcl" => "hcl",
+        "dockerfile" | "containerfile" => "dockerfile",
+        "rb" => "ruby",
+        "sh" | "bash" | "zsh" => "bash",
+        "sql" => "sql",
+        "diff" | "patch" => "diff",
+        "http" => "http",
+        "ini" | "cfg" | "conf" | "env" | "properties" | "props" => "properties",
+        "json" => "json",
+        "yaml" | "yml" => "yaml",
+        "toml" => "toml",
+        "html" | "htm" => "html",
+        "css" => "css",
+        "md" | "markdown" => "md",
+        _ => return None,
+    };
+    Some(lang.to_string())
 }
 
 fn subtitle_from_runs(runs: &[Run]) -> Option<String> {

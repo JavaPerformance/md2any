@@ -1,15 +1,23 @@
 //! Intermediate representation for the deck.
 //!
-//! Every renderer (PPTX, ODP, PDF, DOCX, ODT) walks a tree of [`Slide`]s,
+//! Every renderer (PPTX, ODP, PDF, DOCX, ODT, HTML) walks a tree of [`Slide`]s,
 //! each of which contains a list of [`Block`]s. The parser builds this
 //! tree from markdown; the paginator may rewrite it (splitting long slides
 //! into `(cont.)` chunks); the renderers only ever read it.
 //!
 //! Keeping the IR small and renderer-agnostic is the load-bearing design
-//! choice in md2any: adding a sixth output format means writing one new
+//! choice in md2any: adding another output format means writing one new
 //! `fn write(slides, theme, ...)` file, nothing else.
 
 use serde::Deserialize;
+use std::collections::BTreeMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CodeColumns {
+    Single,
+    Auto,
+    TwoUp,
+}
 
 /// Document-level options parsed from the YAML block at the top of the
 /// markdown file. Every field is optional and may be overridden by a CLI
@@ -24,6 +32,35 @@ pub struct FrontMatter {
     pub aspect: Option<String>,
     pub font: Option<String>,
     pub layout: Option<String>,
+    /// Math preprocessor mode: "unicode" (default), "source", or "svg".
+    pub math: Option<String>,
+    /// Exact math macro substitutions applied inside math spans before the
+    /// built-in translator/renderer sees them.
+    pub math_macros: Option<BTreeMap<String, String>>,
+    /// Scale factor for generated SVG display math, e.g. 0.85 or 1.25.
+    #[serde(alias = "math-scale")]
+    pub math_scale: Option<f32>,
+    /// Alignment for generated SVG display math: "left", "center", or "right".
+    #[serde(alias = "math-block-align")]
+    pub math_block_align: Option<String>,
+    /// Maximum generated SVG display-math height in logical pixels.
+    #[serde(alias = "math-max-height")]
+    pub math_max_height: Option<f32>,
+    /// Flowing document profile for DOCX/ODT: "plain", "report",
+    /// "handout", or "speaker-notes".
+    pub doc_style: Option<String>,
+    /// Slide pagination strategy: "smart" (default), "simple", or "off".
+    pub break_mode: Option<String>,
+    /// Percentage of the estimated slide content area to fill before breaking.
+    pub break_fill: Option<f32>,
+    /// Wide-table handling: "auto" (default), "split", "transpose", or "off".
+    pub table_fit: Option<String>,
+    /// Code block palette: "dark" (default), "light", or "match".
+    #[serde(alias = "code-theme")]
+    pub code_theme: Option<String>,
+    /// Code block column flow: "single" (default), "auto", or "two-up".
+    #[serde(alias = "code-columns")]
+    pub code_columns: Option<String>,
     #[serde(default)]
     pub toc: bool,
     pub logo: Option<String>,
@@ -89,12 +126,20 @@ pub enum Block {
     /// nesting; `ordered` is per-item so mixed lists are possible.
     List(Vec<ListItem>),
     /// Fenced code block, optionally with a language hint and filename
-    /// caption. `line_numbers` defaults to true when `lines.len() > 5`.
+    /// caption. `line_numbers` defaults to true when `lines.len() > 5`;
+    /// `start_line` preserves numbering across paginated continuation chunks.
     CodeBlock {
         lang: Option<String>,
         title: Option<String>,
         lines: Vec<String>,
         line_numbers: bool,
+        start_line: usize,
+        /// Optional per-fence column flow override from `columns=...`.
+        columns: Option<CodeColumns>,
+        /// Set when a `file=...#Lx-Ly` include could not be loaded.
+        /// Renderers still receive fallback `lines`; `--check` uses this to
+        /// make the failed include visible in CI.
+        include_error: Option<String>,
     },
     /// Block quote — each inner `Vec<Run>` is one paragraph of the quote.
     Quote(Vec<Vec<Run>>),
@@ -156,12 +201,61 @@ pub struct Slide {
     /// Per-slide full-bleed background image from `<!-- bg: path -->`.
     /// Propagates through continuation slides created by pagination.
     pub bg_image: Option<String>,
-    /// Per-slide layout hint from `<!-- layout: NAME -->`. Recognised by a
-    /// small post-parse pass that rearranges the block list (e.g. splits
-    /// an image off into its own column for `image-left` / `image-right`).
-    /// Renderers themselves don't read this field — by the time pagination
-    /// runs, the transform has already happened.
+    /// Per-slide layout hint from `<!-- layout: NAME -->`. Most hints are
+    /// handled by a small post-parse pass that rearranges the block list
+    /// (e.g. splits an image off into its own column for `image-left` /
+    /// `image-right`). Renderer-owned hints such as `image-full` remain here.
     pub layout_hint: Option<String>,
+}
+
+impl Slide {
+    /// Return the sole image on a slide that requested full-page image layout.
+    pub fn full_page_image(&self) -> Option<(&str, &str, Option<u8>)> {
+        if self.layout_hint.as_deref() != Some("image-full") {
+            return None;
+        }
+
+        let mut image = None;
+        for block in &self.blocks {
+            match block {
+                Block::Image {
+                    src,
+                    alt,
+                    width_pct,
+                } => {
+                    if image.is_some() {
+                        return None;
+                    }
+                    image = Some((src.as_str(), alt.as_str(), *width_pct));
+                }
+                Block::Footnotes(_) => {}
+                _ => return None,
+            }
+        }
+        image
+    }
+
+    /// Return the sole code block on a slide that requested full-page text layout.
+    pub fn full_page_code(&self) -> Option<(&[String], Option<&str>)> {
+        if self.layout_hint.as_deref() != Some("text-full") {
+            return None;
+        }
+
+        let mut code = None;
+        for block in &self.blocks {
+            match block {
+                Block::CodeBlock { lang, lines, .. } => {
+                    if code.is_some() {
+                        return None;
+                    }
+                    code = Some((lines.as_slice(), lang.as_deref()));
+                }
+                Block::Footnotes(_) => {}
+                _ => return None,
+            }
+        }
+        code
+    }
 }
 
 /// Concatenate all run text into a single plain string. Strips all

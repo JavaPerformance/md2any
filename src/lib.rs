@@ -1,4 +1,4 @@
-//! md2any — Markdown → PowerPoint / OpenDocument / PDF / Word / Writer.
+//! md2any — Markdown -> PowerPoint / OpenDocument / PDF / Word / Writer / HTML / SVG / PNG.
 //!
 //! ## Pipeline overview
 //!
@@ -15,7 +15,8 @@
 //!        ↓
 //!  toc::inject (optional)      (auto Contents slide)
 //!        ↓
-//!  one of: pptx | odp | pdf | docx | odt ::write
+//!  one of: pptx | odp | pdf | docx | odt | html ::write
+//!  or svg::write_files for one SVG/PNG per slide
 //!        ↓
 //!  bytes
 //! ```
@@ -30,10 +31,12 @@
 //! - [`front_matter`], [`parser`], [`paginate`], [`toc`] — input pipeline.
 //! - [`ir`] — slide tree shared by every renderer.
 //! - [`theme`], [`layout`], [`syntax`] — visual configuration.
-//! - [`pptx`], [`odp`], [`pdf`], [`docx`], [`odt`] — the five writers.
+//! - [`pptx`], [`odp`], [`pdf`], [`docx`], [`odt`], [`html`] — single-file writers.
 //! - [`diagram`], [`math`] — preprocessing helpers.
 //! - [`lint`] — `--check` mode.
+//! - [`render_plan`] — JSON IR/render-plan diagnostics.
 //! - [`serve`] — `--serve` HTTP preview.
+//! - [`svg`] — one SVG/PNG image per slide.
 //! - [`image`] — PNG/JPEG sniffer + dimension reader.
 //!
 //! ## Library use
@@ -48,19 +51,30 @@
 //! let theme = md2any::theme::Theme::resolve("light", "16:9", None)?;
 //! let layout = md2any::layout::Layout::resolve("clean")?;
 //! let slides = md2any::parser::parse(&body, &front, "talk");
-//! let slides = md2any::paginate::paginate(slides, &theme);
+//! let options = md2any::paginate::PaginationOptions {
+//!     break_mode: md2any::paginate::BreakMode::Smart,
+//!     fill: 0.9,
+//!     table_fit: md2any::paginate::TableFit::Auto,
+//!     ..Default::default()
+//! };
+//! let slides = md2any::paginate::paginate_for_layout_with_options(
+//!     slides, &theme, &layout, options,
+//! );
 //! let bytes = md2any::pdf::write(
 //!     &slides, &theme, &layout, "talk", "Author",
-//!     std::path::Path::new("."), None, None, None, 0.4, None, false, None,
+//!     std::path::Path::new("."), None, None, None, 0.4, None, false,
+//!     md2any::pdf::NotesPageSize::Slide, md2any::pdf::NotesLayout::Auto, None,
 //! )?;
 //! std::fs::write("talk.pdf", bytes)?;
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 
 pub mod diagram;
+pub mod document;
 pub mod docx;
 pub mod font;
 pub mod front_matter;
+pub mod html;
 pub mod image;
 pub mod ir;
 pub mod layout;
@@ -72,7 +86,9 @@ pub mod paginate;
 pub mod parser;
 pub mod pdf;
 pub mod pptx;
+pub mod render_plan;
 pub mod serve;
+pub mod svg;
 pub mod syntax;
 pub mod theme;
 pub mod toc;
@@ -140,6 +156,7 @@ fn block_snapshot(b: &ir::Block, depth: usize, out: &mut String) {
             title,
             lines,
             line_numbers,
+            ..
         } => {
             out.push_str(&format!(
                 "{}Code(lang={:?}, title={:?}, lines={}, nums={}):\n",

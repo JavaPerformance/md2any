@@ -670,6 +670,395 @@ const CSS_TYPES: &[&str] = &[];
 const CSS_CONST: &[&str] = &[];
 
 // ---------------------------------------------------------------------------
+// Additional developer / config languages
+// ---------------------------------------------------------------------------
+
+const HCL_KEYWORDS: &[&str] = &[
+    "resource",
+    "data",
+    "module",
+    "variable",
+    "output",
+    "locals",
+    "provider",
+    "terraform",
+    "required_providers",
+    "required_version",
+    "backend",
+    "dynamic",
+    "for_each",
+    "count",
+    "depends_on",
+    "lifecycle",
+    "provisioner",
+    "source",
+    "version",
+];
+const HCL_TYPES: &[&str] = &[
+    "string", "number", "bool", "list", "map", "object", "tuple", "set", "any",
+];
+const HCL_CONST: &[&str] = &["true", "false", "null"];
+
+const DOCKERFILE_KEYWORDS: &[&str] = &[
+    "FROM",
+    "RUN",
+    "CMD",
+    "LABEL",
+    "MAINTAINER",
+    "EXPOSE",
+    "ENV",
+    "ADD",
+    "COPY",
+    "ENTRYPOINT",
+    "VOLUME",
+    "USER",
+    "WORKDIR",
+    "ARG",
+    "ONBUILD",
+    "STOPSIGNAL",
+    "HEALTHCHECK",
+    "SHELL",
+    "AS",
+];
+const DOCKERFILE_TYPES: &[&str] = &[];
+const DOCKERFILE_CONST: &[&str] = &["true", "false"];
+
+const POWERSHELL_KEYWORDS: &[&str] = &[
+    "begin",
+    "break",
+    "catch",
+    "class",
+    "continue",
+    "data",
+    "do",
+    "dynamicparam",
+    "else",
+    "elseif",
+    "end",
+    "enum",
+    "exit",
+    "filter",
+    "finally",
+    "for",
+    "foreach",
+    "from",
+    "function",
+    "if",
+    "in",
+    "param",
+    "process",
+    "return",
+    "switch",
+    "throw",
+    "trap",
+    "try",
+    "until",
+    "using",
+    "var",
+    "while",
+];
+const POWERSHELL_TYPES: &[&str] = &[
+    "string",
+    "int",
+    "long",
+    "bool",
+    "datetime",
+    "array",
+    "hashtable",
+    "object",
+    "pscustomobject",
+];
+const POWERSHELL_CONST: &[&str] = &[
+    "$true",
+    "$false",
+    "$null",
+    "$ErrorActionPreference",
+    "$env",
+    "true",
+    "false",
+    "null",
+];
+
+const PROPERTIES_KEYWORDS: &[&str] = &[];
+const PROPERTIES_TYPES: &[&str] = &[];
+const PROPERTIES_CONST: &[&str] = &[
+    "true", "false", "yes", "no", "on", "off", "null", "enabled", "disabled",
+];
+
+const HASKELL_KEYWORDS: &[&str] = &[
+    "case",
+    "class",
+    "data",
+    "default",
+    "deriving",
+    "do",
+    "else",
+    "family",
+    "forall",
+    "foreign",
+    "if",
+    "import",
+    "in",
+    "infix",
+    "infixl",
+    "infixr",
+    "instance",
+    "let",
+    "module",
+    "newtype",
+    "of",
+    "qualified",
+    "then",
+    "type",
+    "where",
+];
+const HASKELL_TYPES: &[&str] = &[
+    "Bool", "Char", "Double", "Either", "Float", "IO", "Int", "Integer", "Maybe", "String",
+];
+const HASKELL_CONST: &[&str] = &["True", "False", "Nothing", "Just", "Left", "Right"];
+
+const SCALA_KEYWORDS: &[&str] = &[
+    "abstract",
+    "case",
+    "catch",
+    "class",
+    "def",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "false",
+    "final",
+    "finally",
+    "for",
+    "given",
+    "if",
+    "implicit",
+    "import",
+    "lazy",
+    "match",
+    "new",
+    "null",
+    "object",
+    "override",
+    "package",
+    "private",
+    "protected",
+    "return",
+    "sealed",
+    "then",
+    "this",
+    "throw",
+    "trait",
+    "true",
+    "try",
+    "type",
+    "val",
+    "var",
+    "while",
+    "with",
+    "yield",
+];
+const SCALA_TYPES: &[&str] = &[
+    "Any", "AnyRef", "Boolean", "Byte", "Char", "Double", "Either", "Float", "Int", "List", "Long",
+    "Map", "Option", "Seq", "Set", "Short", "String", "Unit",
+];
+const SCALA_CONST: &[&str] = &["true", "false", "null", "None", "Some", "Nil"];
+
+const KOTLIN_KEYWORDS: &[&str] = &[
+    "as",
+    "break",
+    "by",
+    "catch",
+    "class",
+    "companion",
+    "constructor",
+    "continue",
+    "data",
+    "do",
+    "else",
+    "enum",
+    "false",
+    "finally",
+    "for",
+    "fun",
+    "if",
+    "import",
+    "in",
+    "inline",
+    "interface",
+    "is",
+    "lateinit",
+    "null",
+    "object",
+    "override",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "return",
+    "sealed",
+    "suspend",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typealias",
+    "val",
+    "var",
+    "when",
+    "while",
+];
+const KOTLIN_TYPES: &[&str] = &[
+    "Any",
+    "Boolean",
+    "Byte",
+    "Char",
+    "Double",
+    "Float",
+    "Int",
+    "List",
+    "Long",
+    "Map",
+    "MutableList",
+    "MutableMap",
+    "Nothing",
+    "Sequence",
+    "Set",
+    "Short",
+    "String",
+    "Unit",
+];
+const KOTLIN_CONST: &[&str] = &["true", "false", "null"];
+
+const CSHARP_KEYWORDS: &[&str] = &[
+    "abstract",
+    "as",
+    "async",
+    "await",
+    "base",
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "default",
+    "delegate",
+    "do",
+    "else",
+    "enum",
+    "event",
+    "explicit",
+    "extern",
+    "false",
+    "finally",
+    "fixed",
+    "for",
+    "foreach",
+    "global",
+    "if",
+    "implicit",
+    "in",
+    "interface",
+    "internal",
+    "is",
+    "lock",
+    "namespace",
+    "new",
+    "null",
+    "out",
+    "override",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "record",
+    "ref",
+    "return",
+    "sealed",
+    "static",
+    "struct",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "using",
+    "virtual",
+    "void",
+    "while",
+    "yield",
+];
+const CSHARP_TYPES: &[&str] = &[
+    "bool",
+    "byte",
+    "char",
+    "DateTime",
+    "decimal",
+    "double",
+    "float",
+    "Guid",
+    "int",
+    "IEnumerable",
+    "List",
+    "long",
+    "object",
+    "string",
+    "Task",
+    "var",
+];
+const CSHARP_CONST: &[&str] = &["true", "false", "null"];
+
+const GRAPHQL_KEYWORDS: &[&str] = &[
+    "directive",
+    "enum",
+    "extend",
+    "fragment",
+    "implements",
+    "input",
+    "interface",
+    "mutation",
+    "on",
+    "query",
+    "repeatable",
+    "scalar",
+    "schema",
+    "subscription",
+    "type",
+    "union",
+];
+const GRAPHQL_TYPES: &[&str] = &["Boolean", "Float", "ID", "Int", "String"];
+const GRAPHQL_CONST: &[&str] = &["true", "false", "null"];
+
+const HTTP_KEYWORDS: &[&str] = &[
+    "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS", "CONNECT", "TRACE", "HTTP",
+];
+const HTTP_TYPES: &[&str] = &[
+    "Accept",
+    "Authorization",
+    "Cache-Control",
+    "Content-Length",
+    "Content-Type",
+    "Cookie",
+    "Host",
+    "Location",
+    "Set-Cookie",
+    "User-Agent",
+];
+const HTTP_CONST: &[&str] = &["true", "false", "null"];
+
+const BCPL_KEYWORDS: &[&str] = &[
+    "AND", "BE", "BREAK", "CASE", "DEFAULT", "DO", "ELSE", "FALSE", "FINISH", "FOR", "GLOBAL",
+    "GOTO", "IF", "LET", "MANIFEST", "OR", "REPEAT", "RESULTIS", "RETURN", "STATIC", "SWITCHON",
+    "TEST", "THEN", "TO", "TRUE", "UNLESS", "UNTIL", "VALOF", "VEC", "WHILE",
+];
+const BCPL_TYPES: &[&str] = &[];
+const BCPL_CONST: &[&str] = &["TRUE", "FALSE"];
+
+// ---------------------------------------------------------------------------
 // Mainframe languages
 // ---------------------------------------------------------------------------
 
@@ -1386,6 +1775,264 @@ const LANG_DB2: Lang = Lang {
     line_full_comment_prefixes: &[],
 };
 
+const RPG_FIXED_KEYWORDS: &[&str] = &[
+    "H", "F", "D", "I", "C", "O", "P", "ADD", "SUB", "MULT", "DIV", "MVR", "SQRT", "XFOOT",
+    "Z-ADD", "Z-SUB", "MOVE", "MOVEL", "CAT", "XLATE", "SCAN", "CHECK", "CHEKR", "COMP", "TESTN",
+    "TESTZ", "LOOKUP", "SETLL", "SETGT", "READ", "READC", "READE", "READP", "READPE", "CHAIN",
+    "WRITE", "UPDATE", "DELETE", "EXFMT", "OPEN", "CLOSE", "EXCPT", "DSPLY", "DUMP", "DEBUG",
+    "GOTO", "TAG", "CAB", "CABEQ", "CABGE", "CABGT", "CABLE", "CABLT", "CABNE", "IF", "IFEQ",
+    "IFNE", "IFLT", "IFLE", "IFGT", "IFGE", "ELSE", "ENDIF", "DO", "DOU", "DOW", "ENDDO", "LEAVE",
+    "ITER", "SELECT", "WHEN", "OTHER", "ENDSL", "BEGSR", "ENDSR", "CAS", "CASEQ", "CASNE", "CASLT",
+    "CASLE", "CASGT", "CASGE", "CALL", "CALLP", "PARM", "PLIST", "KLIST", "KFLD", "DEFINE", "DEFN",
+    "EVAL", "CLEAR", "RESET", "SETON", "SETOFF", "RETURN",
+];
+const RPG_FIXED_TYPES: &[&str] = &[
+    "A", "B", "C", "D", "F", "G", "I", "N", "P", "S", "T", "U", "Z",
+];
+const RPG_CONST: &[&str] = &[
+    "**FREE",
+    "*ALL",
+    "*BLANK",
+    "*BLANKS",
+    "*END",
+    "*ENTRY",
+    "*FILE",
+    "*HIVAL",
+    "*IN",
+    "*INLR",
+    "*INZSR",
+    "*ISO",
+    "*LOVAL",
+    "*MDY",
+    "*NODEBUGIO",
+    "*NO",
+    "*NULL",
+    "*OFF",
+    "*OMIT",
+    "*ON",
+    "*PSSR",
+    "*SRCSTMT",
+    "*START",
+    "*YMD",
+    "*YES",
+    "*ZERO",
+    "*ZEROS",
+];
+
+const LANG_RPG_FIXED: Lang = Lang {
+    line_comment: &[],
+    block_comment: Some(("/*", "*/")),
+    string_delims: &['\''],
+    triple_string: None,
+    keywords: RPG_FIXED_KEYWORDS,
+    types: RPG_FIXED_TYPES,
+    constants: RPG_CONST,
+    capitalized_is_type: false,
+    attribute_starts: &[],
+    case_insensitive: true,
+    ident_extra: "_-*",
+    col_comment_indicators: &[(6, '*'), (6, '/')],
+    line_full_comment_prefixes: &[],
+};
+
+const RPG_FREE_KEYWORDS: &[&str] = &[
+    "**FREE",
+    "ctl-opt",
+    "dcl-c",
+    "dcl-ds",
+    "dcl-f",
+    "dcl-pi",
+    "dcl-pr",
+    "dcl-proc",
+    "dcl-s",
+    "end-ds",
+    "end-for",
+    "end-pi",
+    "end-pr",
+    "end-proc",
+    "begsr",
+    "endsr",
+    "if",
+    "elseif",
+    "else",
+    "endif",
+    "for",
+    "to",
+    "by",
+    "dow",
+    "dou",
+    "enddo",
+    "select",
+    "when",
+    "other",
+    "endsl",
+    "monitor",
+    "on-error",
+    "endmon",
+    "chain",
+    "read",
+    "readc",
+    "reade",
+    "readp",
+    "readpe",
+    "write",
+    "update",
+    "delete",
+    "exfmt",
+    "open",
+    "close",
+    "setll",
+    "setgt",
+    "eval",
+    "callp",
+    "return",
+    "dsply",
+    "clear",
+    "reset",
+    "leave",
+    "iter",
+    "in",
+    "inz",
+    "like",
+    "likeds",
+    "extname",
+    "extpgm",
+    "export",
+    "import",
+    "qualified",
+    "template",
+    "options",
+    "const",
+    "value",
+    "varying",
+];
+const RPG_FREE_TYPES: &[&str] = &[
+    "char",
+    "varchar",
+    "graph",
+    "ucs2",
+    "ind",
+    "int",
+    "uns",
+    "packed",
+    "zoned",
+    "float",
+    "date",
+    "time",
+    "timestamp",
+    "pointer",
+    "sqltype",
+];
+
+const LANG_RPG_FREE: Lang = Lang {
+    line_comment: &["//"],
+    block_comment: Some(("/*", "*/")),
+    string_delims: &['\''],
+    triple_string: None,
+    keywords: RPG_FREE_KEYWORDS,
+    types: RPG_FREE_TYPES,
+    constants: RPG_CONST,
+    capitalized_is_type: false,
+    attribute_starts: &['%'],
+    case_insensitive: true,
+    ident_extra: "_-*",
+    col_comment_indicators: &[],
+    line_full_comment_prefixes: &[],
+};
+
+const CL_KEYWORDS: &[&str] = &[
+    "PGM",
+    "ENDPGM",
+    "DCL",
+    "DCLF",
+    "CHGVAR",
+    "IF",
+    "THEN",
+    "ELSE",
+    "DO",
+    "ENDDO",
+    "DOFOR",
+    "DOWHILE",
+    "DOUNTIL",
+    "SELECT",
+    "WHEN",
+    "OTHERWISE",
+    "ENDSELECT",
+    "MONMSG",
+    "CALL",
+    "CALLPRC",
+    "RETURN",
+    "GOTO",
+    "SNDPGMMSG",
+    "RCVMSG",
+    "SNDBRKMSG",
+    "SNDUSRMSG",
+    "SBMJOB",
+    "DLYJOB",
+    "RTVJOBA",
+    "RTVOBJD",
+    "RTVDTAARA",
+    "CHGDTAARA",
+    "CRTDTAARA",
+    "DLTDTAARA",
+    "OVRDBF",
+    "DLTOVR",
+    "OPNQRYF",
+    "CPYF",
+    "CLRPFM",
+    "RUNQRY",
+    "CRTLIB",
+    "DLTLIB",
+    "ADDLIBLE",
+    "RMVLIBLE",
+    "CHGLIBL",
+    "CHKOBJ",
+    "CRTPF",
+    "DLTF",
+    "DSPFD",
+    "DSPFFD",
+    "WRKOBJ",
+    "WRKACTJOB",
+    "WRKSPLF",
+    "STRCMTCTL",
+    "COMMIT",
+    "ROLLBACK",
+    "CMDLBL",
+    "PARM",
+    "VAR",
+    "TYPE",
+    "LEN",
+    "VALUE",
+    "COND",
+    "EXEC",
+    "MSG",
+    "MSGID",
+    "MSGF",
+    "MSGTYPE",
+];
+const CL_CONST: &[&str] = &[
+    "*ALL", "*BLANK", "*CAT", "*BCAT", "*TCAT", "*CHAR", "*DEC", "*LGL", "*INT", "*UINT", "*YES",
+    "*NO", "*ON", "*OFF", "*NONE", "*N", "*SAME", "*LIBL", "*CURLIB", "*JOB", "*PGM", "*ESCAPE",
+    "*INFO", "*STATUS", "*COMP", "*DIAG", "*EQ", "*NE", "*GT", "*GE", "*LT", "*LE", "*AND", "*OR",
+    "*NOT",
+];
+
+const LANG_CL: Lang = Lang {
+    line_comment: &[],
+    block_comment: Some(("/*", "*/")),
+    string_delims: &['\''],
+    triple_string: None,
+    keywords: CL_KEYWORDS,
+    types: &[],
+    constants: CL_CONST,
+    capitalized_is_type: false,
+    attribute_starts: &['&'],
+    case_insensitive: true,
+    ident_extra: "_*#@$",
+    col_comment_indicators: &[],
+    line_full_comment_prefixes: &[],
+};
+
 fn get_lang(name: &str) -> Option<&'static Lang> {
     let n = name.to_lowercase();
     match n.as_str() {
@@ -1396,20 +2043,55 @@ fn get_lang(name: &str) -> Option<&'static Lang> {
         "c" | "h" => Some(&LANG_C),
         "cpp" | "c++" | "cxx" | "hpp" | "cc" => Some(&LANG_CPP),
         "java" => Some(&LANG_JAVA),
+        "kotlin" | "kt" | "kts" => Some(&LANG_KOTLIN),
+        "scala" | "sc" => Some(&LANG_SCALA),
+        "csharp" | "cs" | "c#" | "dotnet" => Some(&LANG_CSHARP),
+        "haskell" | "hs" | "lhs" => Some(&LANG_HASKELL),
+        "bcpl" => Some(&LANG_BCPL),
         "ruby" | "rb" => Some(&LANG_RUBY),
+        "powershell" | "ps" | "pwsh" | "ps1" => Some(&LANG_POWERSHELL),
         "bash" | "sh" | "shell" | "zsh" | "fish" => Some(&LANG_BASH),
         "sql" | "postgres" | "postgresql" | "mysql" | "sqlite" => Some(&LANG_SQL),
+        "terraform" | "hcl" | "tf" | "tfvars" => Some(&LANG_HCL),
+        "dockerfile" | "containerfile" | "docker" => Some(&LANG_DOCKERFILE),
+        "properties" | "props" | "ini" | "cfg" | "conf" | "env" | "dotenv" => {
+            Some(&LANG_PROPERTIES)
+        }
+        "graphql" | "gql" => Some(&LANG_GRAPHQL),
+        "http" | "rest" | "request" | "requests" => Some(&LANG_HTTP),
         "json" => Some(&LANG_JSON),
         "yaml" | "yml" => Some(&LANG_YAML),
         "toml" => Some(&LANG_TOML),
-        "html" | "xml" | "svg" => Some(&LANG_HTML),
+        "html" | "xml" | "svg" | "vue" | "svelte" | "astro" => Some(&LANG_HTML),
         "css" | "scss" | "less" => Some(&LANG_CSS),
         "cobol" | "cob" | "cbl" => Some(&LANG_COBOL),
         "jcl" => Some(&LANG_JCL),
         "rexx" | "rex" => Some(&LANG_REXX),
-        "pli" | "pl1" | "pl/i" | "pli390" => Some(&LANG_PLI),
+        "pl1" | "pli" | "pl/i" | "pli390" | "plx" | "pl/x" => Some(&LANG_PLI),
         "hlasm" | "asm" | "asm370" | "asm390" | "s390asm" | "ibmasm" => Some(&LANG_HLASM),
         "db2" | "db2sql" | "db2ddl" => Some(&LANG_DB2),
+        "rpg" | "rpg2" | "rpgii" | "rpg3" | "rpgiii" | "rpg400" => Some(&LANG_RPG_FIXED),
+        "rpgle" | "rpg4" | "rpgiv" | "rpgfree" | "rpg-free" | "free-rpg" | "sqlrpgle" => {
+            Some(&LANG_RPG_FREE)
+        }
+        "cl" | "clp" | "clle" | "ibmcl" | "ibmi-cl" | "control-language" => Some(&LANG_CL),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SpecialLang {
+    Diff,
+    Markdown,
+    Bf,
+}
+
+fn get_special_lang(name: &str) -> Option<SpecialLang> {
+    let n = name.to_lowercase();
+    match n.as_str() {
+        "diff" | "patch" | "udiff" => Some(SpecialLang::Diff),
+        "markdown" | "md" | "mdown" => Some(SpecialLang::Markdown),
+        "bf" => Some(SpecialLang::Bf),
         _ => None,
     }
 }
@@ -1655,6 +2337,182 @@ const LANG_CSS: Lang = Lang {
     line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
 };
 
+const LANG_HCL: Lang = Lang {
+    line_comment: &["#", "//"],
+    block_comment: Some(("/*", "*/")),
+    string_delims: &['"'],
+    triple_string: None,
+    keywords: HCL_KEYWORDS,
+    types: HCL_TYPES,
+    constants: HCL_CONST,
+    capitalized_is_type: false,
+    attribute_starts: &[],
+    case_insensitive: DEFAULTS.case_insensitive,
+    ident_extra: "-",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
+const LANG_DOCKERFILE: Lang = Lang {
+    line_comment: &["#"],
+    block_comment: None,
+    string_delims: &['"', '\''],
+    triple_string: None,
+    keywords: DOCKERFILE_KEYWORDS,
+    types: DOCKERFILE_TYPES,
+    constants: DOCKERFILE_CONST,
+    capitalized_is_type: false,
+    attribute_starts: &[],
+    case_insensitive: true,
+    ident_extra: "_-",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
+const LANG_POWERSHELL: Lang = Lang {
+    line_comment: &["#"],
+    block_comment: Some(("<#", "#>")),
+    string_delims: &['"', '\''],
+    triple_string: None,
+    keywords: POWERSHELL_KEYWORDS,
+    types: POWERSHELL_TYPES,
+    constants: POWERSHELL_CONST,
+    capitalized_is_type: true,
+    attribute_starts: &['$', '@'],
+    case_insensitive: true,
+    ident_extra: "-:$",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
+const LANG_PROPERTIES: Lang = Lang {
+    line_comment: &["#", ";"],
+    block_comment: None,
+    string_delims: &['"', '\''],
+    triple_string: None,
+    keywords: PROPERTIES_KEYWORDS,
+    types: PROPERTIES_TYPES,
+    constants: PROPERTIES_CONST,
+    capitalized_is_type: false,
+    attribute_starts: &[],
+    case_insensitive: true,
+    ident_extra: "._-",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
+const LANG_HASKELL: Lang = Lang {
+    line_comment: &["--"],
+    block_comment: Some(("{-", "-}")),
+    string_delims: &['"', '\''],
+    triple_string: None,
+    keywords: HASKELL_KEYWORDS,
+    types: HASKELL_TYPES,
+    constants: HASKELL_CONST,
+    capitalized_is_type: true,
+    attribute_starts: &[],
+    case_insensitive: DEFAULTS.case_insensitive,
+    ident_extra: "_'",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
+const LANG_SCALA: Lang = Lang {
+    line_comment: &["//"],
+    block_comment: Some(("/*", "*/")),
+    string_delims: &['"', '\''],
+    triple_string: Some("\"\"\""),
+    keywords: SCALA_KEYWORDS,
+    types: SCALA_TYPES,
+    constants: SCALA_CONST,
+    capitalized_is_type: true,
+    attribute_starts: &['@'],
+    case_insensitive: DEFAULTS.case_insensitive,
+    ident_extra: "_",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
+const LANG_KOTLIN: Lang = Lang {
+    line_comment: &["//"],
+    block_comment: Some(("/*", "*/")),
+    string_delims: &['"', '\''],
+    triple_string: Some("\"\"\""),
+    keywords: KOTLIN_KEYWORDS,
+    types: KOTLIN_TYPES,
+    constants: KOTLIN_CONST,
+    capitalized_is_type: true,
+    attribute_starts: &['@'],
+    case_insensitive: DEFAULTS.case_insensitive,
+    ident_extra: "_",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
+const LANG_CSHARP: Lang = Lang {
+    line_comment: &["//"],
+    block_comment: Some(("/*", "*/")),
+    string_delims: &['"', '\''],
+    triple_string: None,
+    keywords: CSHARP_KEYWORDS,
+    types: CSHARP_TYPES,
+    constants: CSHARP_CONST,
+    capitalized_is_type: true,
+    attribute_starts: &['@', '['],
+    case_insensitive: DEFAULTS.case_insensitive,
+    ident_extra: "_",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
+const LANG_GRAPHQL: Lang = Lang {
+    line_comment: &["#"],
+    block_comment: None,
+    string_delims: &['"'],
+    triple_string: Some("\"\"\""),
+    keywords: GRAPHQL_KEYWORDS,
+    types: GRAPHQL_TYPES,
+    constants: GRAPHQL_CONST,
+    capitalized_is_type: true,
+    attribute_starts: &['@', '$'],
+    case_insensitive: DEFAULTS.case_insensitive,
+    ident_extra: "_",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
+const LANG_HTTP: Lang = Lang {
+    line_comment: &[],
+    block_comment: None,
+    string_delims: &['"'],
+    triple_string: None,
+    keywords: HTTP_KEYWORDS,
+    types: HTTP_TYPES,
+    constants: HTTP_CONST,
+    capitalized_is_type: false,
+    attribute_starts: &[],
+    case_insensitive: false,
+    ident_extra: "-/",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
+const LANG_BCPL: Lang = Lang {
+    line_comment: &["//"],
+    block_comment: Some(("/*", "*/")),
+    string_delims: &['"', '\''],
+    triple_string: None,
+    keywords: BCPL_KEYWORDS,
+    types: BCPL_TYPES,
+    constants: BCPL_CONST,
+    capitalized_is_type: false,
+    attribute_starts: &[],
+    case_insensitive: true,
+    ident_extra: "_",
+    col_comment_indicators: DEFAULTS.col_comment_indicators,
+    line_full_comment_prefixes: DEFAULTS.line_full_comment_prefixes,
+};
+
 #[derive(Default, Clone, Copy)]
 pub struct State {
     in_block_comment: bool,
@@ -1662,6 +2520,12 @@ pub struct State {
 }
 
 pub fn tokenize(lines: &[String], lang_name: Option<&str>) -> Vec<Vec<Token>> {
+    if let Some(special) = lang_name.and_then(get_special_lang) {
+        return lines
+            .iter()
+            .map(|line| tokenize_special_line(line, special))
+            .collect();
+    }
     let Some(lang) = lang_name.and_then(get_lang) else {
         return lines
             .iter()
@@ -1678,6 +2542,82 @@ pub fn tokenize(lines: &[String], lang_name: Option<&str>) -> Vec<Vec<Token>> {
         .iter()
         .map(|line| tokenize_line(line, lang, &mut state))
         .collect()
+}
+
+fn tokenize_special_line(line: &str, special: SpecialLang) -> Vec<Token> {
+    match special {
+        SpecialLang::Diff => tokenize_diff_line(line),
+        SpecialLang::Markdown => tokenize_markdown_line(line),
+        SpecialLang::Bf => tokenize_bf_line(line),
+    }
+}
+
+fn one_line(line: &str, kind: TokenKind) -> Vec<Token> {
+    vec![Token {
+        text: line.to_string(),
+        kind,
+    }]
+}
+
+fn tokenize_diff_line(line: &str) -> Vec<Token> {
+    if line.starts_with("@@") {
+        one_line(line, TokenKind::Keyword)
+    } else if line.starts_with("diff ")
+        || line.starts_with("index ")
+        || line.starts_with("+++")
+        || line.starts_with("---")
+    {
+        one_line(line, TokenKind::Comment)
+    } else if line.starts_with('+') {
+        one_line(line, TokenKind::String)
+    } else if line.starts_with('-') {
+        one_line(line, TokenKind::Attribute)
+    } else {
+        one_line(line, TokenKind::Default)
+    }
+}
+
+fn tokenize_markdown_line(line: &str) -> Vec<Token> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        one_line(line, TokenKind::String)
+    } else if trimmed.starts_with('#') {
+        one_line(line, TokenKind::Keyword)
+    } else if trimmed.starts_with('>') {
+        one_line(line, TokenKind::Comment)
+    } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        one_line(line, TokenKind::Attribute)
+    } else {
+        one_line(line, TokenKind::Default)
+    }
+}
+
+fn tokenize_bf_line(line: &str) -> Vec<Token> {
+    let mut tokens = Vec::new();
+    let mut buf = String::new();
+    let mut command = String::new();
+    for ch in line.chars() {
+        if matches!(ch, '+' | '-' | '<' | '>' | '[' | ']' | '.' | ',') {
+            flush(&mut tokens, &mut buf);
+            command.push(ch);
+        } else {
+            if !command.is_empty() {
+                tokens.push(Token {
+                    text: std::mem::take(&mut command),
+                    kind: TokenKind::Keyword,
+                });
+            }
+            buf.push(ch);
+        }
+    }
+    if !command.is_empty() {
+        tokens.push(Token {
+            text: command,
+            kind: TokenKind::Keyword,
+        });
+    }
+    flush(&mut tokens, &mut buf);
+    tokens
 }
 
 fn tokenize_line(line: &str, lang: &Lang, state: &mut State) -> Vec<Token> {
@@ -1991,4 +2931,98 @@ fn find_substr(chars: &[char], from: usize, needle: &[char]) -> Option<usize> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn has_kind(lang: &str, line: &str, kind: TokenKind) -> bool {
+        tokenize(&[line.to_string()], Some(lang))[0]
+            .iter()
+            .any(|token| token.kind == kind)
+    }
+
+    #[test]
+    fn new_language_aliases_highlight_tokens() {
+        for (lang, line, kind) in [
+            ("haskell", "main = do print True", TokenKind::Keyword),
+            ("bcpl", "LET start BE VALOF", TokenKind::Keyword),
+            (
+                "kotlin",
+                "data class User(val name: String)",
+                TokenKind::Keyword,
+            ),
+            ("scala", "case class User(name: String)", TokenKind::Keyword),
+            (
+                "csharp",
+                "public record User(string Name);",
+                TokenKind::Keyword,
+            ),
+            (
+                "terraform",
+                "resource \"aws_s3_bucket\" \"logs\" {}",
+                TokenKind::Keyword,
+            ),
+            (
+                "dockerfile",
+                "FROM rust:latest AS build",
+                TokenKind::Keyword,
+            ),
+            (
+                "powershell",
+                "function Invoke-Thing { return $true }",
+                TokenKind::Keyword,
+            ),
+            (
+                "graphql",
+                "query UserQuery { user { id } }",
+                TokenKind::Keyword,
+            ),
+            ("http", "GET /health HTTP/1.1", TokenKind::Keyword),
+            ("properties", "feature.enabled=true", TokenKind::Keyword),
+            ("vue", "<template><div /></template>", TokenKind::Default),
+            (
+                "svelte",
+                "<script>let count = 1;</script>",
+                TokenKind::Default,
+            ),
+            ("pl1", "HELLO: PROC OPTIONS(MAIN);", TokenKind::Keyword),
+            ("plx", "HELLO: PROC OPTIONS(MAIN);", TokenKind::Keyword),
+            ("rpg", "C           *IN99     IFEQ *OFF", TokenKind::Keyword),
+            (
+                "rpg2",
+                "C                     EXCPTDETAIL",
+                TokenKind::Keyword,
+            ),
+            ("rpg3", "C                     ENDIF", TokenKind::Keyword),
+            ("rpgle", "ctl-opt dftactgrp(*no);", TokenKind::Keyword),
+            ("rpgfree", "if %trim(customer) <> '';", TokenKind::Attribute),
+            ("cl", "CHGVAR VAR(&LIB) VALUE('*LIBL')", TokenKind::Keyword),
+            ("clle", "DCL VAR(&NAME) TYPE(*CHAR)", TokenKind::Attribute),
+        ] {
+            assert!(
+                has_kind(lang, line, kind),
+                "{lang} did not produce {kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn special_languages_are_line_aware() {
+        assert!(has_kind("diff", "+added line", TokenKind::String));
+        assert!(has_kind("diff", "-removed line", TokenKind::Attribute));
+        assert!(has_kind("markdown", "# Heading", TokenKind::Keyword));
+        assert!(has_kind("bf", "++[>++<-]", TokenKind::Keyword));
+    }
+
+    #[test]
+    fn rpg_fixed_column_comments_are_comments() {
+        let tokens = tokenize(
+            &["      * printer spacing used to matter".to_string()],
+            Some("rpg"),
+        );
+        assert_eq!(tokens[0].len(), 1);
+        assert_eq!(tokens[0][0].kind, TokenKind::Comment);
+    }
 }

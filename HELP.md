@@ -1,6 +1,6 @@
 ---
 title: md2any
-subtitle: One markdown source · five document formats
+subtitle: One markdown source · eight output formats
 author: md2any --help
 date: built from the embedded HELP.md
 theme: light
@@ -9,7 +9,7 @@ aspect: 16:9
 
 # Quick start
 
-## One command, five formats
+## One command, eight formats
 
 You wrote Markdown. md2any turns it into a polished deliverable — slides, documents, or PDF — without spawning Office, calling a JRE, or running a Python pipeline.
 
@@ -19,9 +19,31 @@ md2any talk.md -o talk.odp     # → talk.odp  (LibreOffice Impress)
 md2any talk.md -o talk.pdf     # → talk.pdf  (PDF 1.7)
 md2any talk.md -o talk.docx    # → talk.docx (Microsoft Word)
 md2any talk.md -o talk.odt     # → talk.odt  (LibreOffice Writer)
+md2any talk.md -o talk.html    # → talk.html (browser deck)
+md2any talk.md --format svg -o talk-svg/   # → one SVG per slide
+md2any talk.md --format png -o talk-png/   # → one PNG per slide
 ```
 
 One Rust binary. No runtime dependencies. Cross-platform.
+
+## What md2any can do now
+
+md2any is built for the boring part of technical publishing: one source file, many artifacts, repeatable in CI.
+
+| Area | Capabilities |
+|------|--------------|
+| Outputs | PPTX, ODP, PDF, DOCX, ODT, standalone HTML, SVG slide images, PNG slide images |
+| Slides | Section dividers, four deck layouts, light/dark themes, custom page sizes, transitions, TOC slides, presenter notes |
+| Documents | Report-style DOCX/ODT with title page, contents, headers/footers, styled code/tables, image captions, notes appendices |
+| Pagination | Smart continuation splitting for paragraphs, lists, code, columns, and tables; density control with `--break-fill` |
+| Tables | Auto table fitting, column-group splitting, key-column repeat, portrait transposition |
+| Code | Dark-by-default code blocks, independent code palette, 40+ syntax tags, filename captions, file/range includes, automatic line numbers, landscape two-up code flow |
+| Math | Native Unicode math, generated display SVG math, and full-page markup math with selectable PDF text |
+| Images | Local, remote, SVG rasterisation, remote cache/retry, full-page image slides, background images, width hints |
+| Fonts | Bundled DejaVu PDF fonts, custom PDF fonts, fallback fonts, CJK opt-in, glyph audit |
+| Workflow | `--watch`, live `--serve` preview in PDF/HTML/SVG/PNG, linting, outline, IR JSON, render-plan JSON |
+
+The design goal is not to be Pandoc, Quarto, TeX, or a presentation GUI. It is a deterministic artifact generator that keeps the common deck/document job small enough to ship as one binary.
 
 ## Self-documenting
 
@@ -33,6 +55,9 @@ md2any --help-pdf --theme dark           # dark PDF
 md2any --help-odp --layout studio        # studio layout, ODP
 md2any --help-docx                       # → Word document
 md2any --help-odt                        # → LibreOffice Writer document
+md2any --help-html                       # → standalone browser deck
+md2any --help-svg -o manual-svg/          # → one SVG per manual slide
+md2any --help-png -o manual-png/          # → one PNG per manual slide
 md2any --help-md > HELP.md               # raw markdown source
 ```
 
@@ -50,7 +75,7 @@ md2any turns Markdown headings into slides. Memorize three rules:
 - A horizontal rule `---` forces a slide break without changing the title
 - `### H3` and deeper render as inline headings on the current slide
 
-Long content auto-paginates into `(cont.)` slides. Lists with more than 12 items wrap into two columns automatically (except in portrait mode). Pagination is skipped in DOCX/ODT — those formats flow continuously and let the consumer paginate.
+Long content auto-paginates into `(cont.)` slides. Lists with more than 12 items wrap into two columns automatically (except in portrait mode). The default `--break-mode smart` splits overlong paragraphs, lists, code, tables, and columns at readable boundaries; use `--break-mode simple` for conservative block-level splitting or `--break-mode off` to disable automatic continuation splitting. `--break-fill PCT` controls density before a break: lower than 100 creates more, airier slides; higher values pack tighter. Pagination is skipped in DOCX/ODT — those formats flow continuously and let the consumer paginate.
 
 ## Front matter
 
@@ -66,6 +91,18 @@ theme: light            # light | dark
 aspect: 16:9            # see "Aspect ratios" below for all presets,
                         # or `WxH[unit]` e.g. 1920x1080, 300x200mm, 13.3x7.5in
 layout: clean           # clean | studio | frame | bold
+math: unicode           # unicode | source | svg
+math_scale: 1.0         # generated SVG display math scale
+math_block_align: center # left | center | right
+math_max_height: 180    # generated display math height cap
+math_macros:
+  '\RR': '\mathbb{R}'   # exact math substitutions before rendering
+doc_style: report       # plain | report | handout | speaker-notes
+break_mode: smart       # smart | simple | off
+break_fill: 100         # 50-120; lower breaks earlier, higher packs tighter
+table_fit: auto         # auto | split | transpose | off
+code_theme: dark        # dark | light | match; default is dark, independent of theme
+code_columns: single    # single | auto | two-up; landscape code flow
 font: Inter             # any installed font (PPTX/ODP/DOCX/ODT)
 logo: brand.png         # rendered in slide footer
 toc: true               # inject a Contents slide after the title
@@ -89,7 +126,7 @@ The usual:
 - `~~strikethrough~~` → ~~strikethrough~~
 - `[link text](url)` → [link text](https://example.com) — **clickable in every format**
 
-All five output formats render these natively — no HTML, no extension.
+All eight output formats render these natively — no raw-HTML workaround, no extension.
 
 ## Lists
 
@@ -114,12 +151,15 @@ If a list has more than 12 items, md2any auto-flows it into two columns (slide o
 
 ## Code blocks
 
-Fenced code blocks pick up syntax highlighting from the language tag. Twenty languages built in:
+Fenced code blocks pick up syntax highlighting from the language tag. Code blocks default to a dark editor-style palette even when the deck uses `theme: light`; use `--code-theme light` for light code blocks or `--code-theme match` to make code follow the main theme.
 
-- Mainstream: `rust`, `python`, `js` / `ts`, `go`, `c` / `cpp`, `java`, `ruby`, `bash`, `sql`
-- Data: `json`, `yaml`, `toml`
-- Markup: `html`, `xml`, `css`
-- Mainframe: `cobol`, `jcl`, `rexx`, `pli`, `hlasm`, `db2`
+40+ language tags built in:
+
+- Mainstream: `rust`, `python`, `js` / `ts` / `jsx` / `tsx`, `go`, `c` / `cpp`, `java`, `kotlin`, `scala`, `csharp`, `ruby`, `bash`, `powershell`, `sql`
+- Functional / retro: `haskell`, `bcpl`, `bf`
+- Data / config: `json`, `yaml`, `toml`, `ini`, `env`, `properties`, `terraform` / `hcl`, `dockerfile`
+- Web / API: `html`, `xml`, `css`, `vue`, `svelte`, `astro`, `graphql`, `http`, `diff`, `markdown`
+- Mainframe / IBM i: `cobol`, `jcl`, `rexx`, `pl1` / `pli` / `plx`, `hlasm`, `db2`, `rpg` / `rpg2` / `rpg3`, `rpgle` / `rpgfree`, `cl` / `clle`
 
 ## Code blocks (continued)
 
@@ -139,7 +179,62 @@ fn main() { println!("hi"); }
 ```
 ````
 
-Code blocks longer than five lines get line numbers automatically.
+Code blocks longer than five lines get line numbers automatically. When a long
+code block is split across continuation slides, numbering continues from the
+original source line instead of restarting at 1.
+
+Code theme is independent of the main deck theme:
+
+```bash
+md2any talk.md --code-theme dark   # default
+md2any talk.md --code-theme light
+md2any talk.md --code-theme match  # old behavior: follow --theme
+```
+
+Landscape code can flow left/right on one slide:
+
+```bash
+md2any talk.md --code-columns single  # default
+md2any talk.md --code-columns auto    # only when a block is long and readable
+md2any talk.md --code-columns two-up  # force eligible landscape blocks
+```
+
+Per-fence overrides use `columns=1`, `columns=auto`, or `columns=2`:
+
+````
+```rust columns=2 title="one method"
+fn parse(input: &str) {
+    // left column continues into right column with line numbers preserved
+}
+```
+````
+
+## Code — two-up / n-up
+
+For code, n-up currently means one-up or two-up. Use `columns=2` when a long, narrow listing reads better as left/right columns on a landscape slide. `columns=auto` lets md2any choose two-up only when the block is long enough and not too wide.
+
+```rust columns=2 title="src/window.rs" start=42
+pub fn visible_window(items: &[Item], selected: usize, height: usize) -> Range<usize> {
+    let height = height.max(1);
+    let len = items.len();
+    if len <= height {
+        return 0..len;
+    }
+    let half = height / 2;
+    let mut start = selected.saturating_sub(half);
+    if start + height > len {
+        start = len - height;
+    }
+    let end = (start + height).min(len);
+    start..end
+}
+
+pub fn clamp_selection(selected: usize, len: usize) -> usize {
+    selected.min(len.saturating_sub(1))
+}
+```
+
+Two-up is landscape-only. In portrait aspects, md2any keeps code one-up so the columns do not become unreadable. Three-up and wider code layouts are intentionally not exposed; code usually turns into eye chart territory before it becomes useful.
 
 ## Tables
 
@@ -179,7 +274,31 @@ Render with a vertical accent bar and italic body text.
 
 ## Math
 
-Inline `$...$` and display `$$...$$` math translate a useful subset of LaTeX to Unicode at parse time. No TeX engine, no `mathjax`, no extra binary — pure Rust pattern matching that turns common notation into the corresponding Unicode characters.
+md2any has native math support. It is deliberately not TeX: no TeX runtime, no MathJax, no shelling out, no bundled equation renderer. The implementation is a small deterministic parser/layout engine aimed at talks, technical notes, and CI-friendly output.
+
+There are three normal math modes:
+
+- `--math unicode` (default) translates inline `$...$` and display `$$...$$` spans into readable Unicode at parse time.
+- `--math source` leaves `$...$` and `$$...$$` untouched for a downstream tool, reviewer, or source-preserving workflow.
+- `--math svg` lays out display `$$...$$` blocks with md2any's built-in box model and embeds generated SVG image data. Inline `$...$` remains source text in this mode.
+
+`--math svg` understands multi-line display blocks, stacked fractions, square-root bars, positioned scripts, scalable delimiters, simple matrices, arrays, `cases`, and aligned equations. The generated SVG passes through the normal image pipeline for PPTX, ODP, PDF, HTML, SVG, PNG, DOCX, and ODT.
+
+Generated display math can be tuned without adding a TeX runtime:
+
+```bash
+md2any talk.md --math svg --math-scale 0.9 --math-block-align left --math-max-height 160
+```
+
+The same controls are available in front matter as `math_scale`, `math_block_align`, and `math_max_height`.
+
+For repeated notation, define exact substitutions in front matter. Use single quotes around TeX-style keys so YAML does not treat backslashes as escapes:
+
+```yaml
+math_macros:
+  '\RR': '\mathbb{R}'
+  '\NN': '\mathbb{N}'
+```
 
 ```markdown
 Einstein wrote $E = mc^2$.
@@ -187,7 +306,29 @@ Einstein wrote $E = mc^2$.
 $$\sum_{i=1}^{n} i = \frac{n(n+1)}{2}$$
 ```
 
-The next twelve slides walk through every construct md2any understands, with source on the left and what it renders to on the right.
+The next slides walk through every construct md2any understands, with source on the left and what it renders to on the right. `--check` reports unsupported rich constructs in the default Unicode mode before they silently degrade.
+
+## Math — full-page markup
+
+For dense formula pages, use `text-full` with a fenced `math` block. This is the path for "make this A4 page a formula, not a normal slide":
+
+````markdown
+---
+aspect: a4
+break_mode: off
+---
+
+<!-- layout: text-full -->
+
+```math
+\mathcal{L}_{SM} = -\frac{1}{2}\partial_\nu g^a_\mu\partial^\nu g^{a\mu}
+-g_s f^{abc}\partial_\mu g^a_\nu g^{b\mu}g^{c\nu}
+```
+````
+
+PDF renders this as selectable positioned text plus vector strokes for bars, radicals, and delimiters. SVG/PNG render the same positioned layout. It is useful for posters, paper-sized technical pages, and stress-test equations such as the Standard Model Lagrangian.
+
+This is still md2any-native math, not TeX typography. Expect readable deck-quality layout, not publication-grade mathematical typesetting.
 
 ## Math — Greek letters
 
@@ -222,7 +363,7 @@ Uppercase forms work the same way: `$\Gamma$` → $\Gamma$, `$\Delta$` → $\Del
 | `$\int_a^b f(x) dx$` | $\int_a^b f(x) dx$ |
 | `$\prod_{k=1}^{n} k$` | $\prod_{k=1}^{n} k$ |
 
-Subscripts and superscripts after a big operator render as small adjacent glyphs (no stacked above/below — that needs a real TeX engine).
+Subscripts and superscripts after a big operator render as small adjacent glyphs. Stacked above/below limits are outside md2any's small math layout model.
 
 ## Math — relations
 
@@ -303,7 +444,26 @@ $\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$
 
 Renders as: $\frac{-b \pm \sqrt{b^2 - 4ac}}{2a}$
 
-Fractions and roots render inline (no horizontal bar above the fraction, no extended radical sign). They read clearly but won't match a paper textbook visually — see "limitations" below.
+In `--math unicode` mode, fractions and roots render inline as readable Unicode/ASCII. In `--math svg` display blocks, the built-in layout engine draws a real fraction bar and radical overbar.
+
+## Math — accents, text, and alphabets
+
+| Source                       | Renders as                    |
+|------------------------------|-------------------------------|
+| `$\vec{x}$`                  | $\vec{x}$                     |
+| `$\bar{x}$`                  | $\bar{x}$                     |
+| `$\hat{\theta}$`             | $\hat{\theta}$                |
+| `$\tilde{A}$`                | $\tilde{A}$                   |
+| `$\dot{x}$`                  | $\dot{x}$                     |
+| `$\ddot{x}$`                 | $\ddot{x}$                    |
+| `$\overline{AB}$`            | $\overline{AB}$               |
+| `$\mathrm{rank}(A)$`         | $\mathrm{rank}(A)$            |
+| `$\text{score} = 1$`         | $\text{score} = 1$            |
+| `$\operatorname*{argmax}_x$` | $\operatorname*{argmax}_x$    |
+| `$\mathbb{R}^n$`             | $\mathbb{R}^n$                |
+| `$\mathcal{F}$`              | $\mathcal{F}$                 |
+
+Accents use Unicode combining marks, so they are readable and selectable but not TeX-positioned. `\mathbb{...}` maps common uppercase sets such as `\mathbb{N}`, `\mathbb{Z}`, `\mathbb{Q}`, `\mathbb{R}`, and `\mathbb{C}` to their blackboard Unicode forms. `\mathcal{...}` maps uppercase letters where Unicode has script codepoints.
 
 ## Math — operator names
 
@@ -323,11 +483,11 @@ LaTeX `\log` / `\sin` / etc. don't exist as Unicode characters; they're typeset 
 | `$\det A$`         | $\det A$             |
 | `$\gcd(a, b)$`     | $\gcd(a, b)$         |
 
-Also recognised: `\sec` `\csc` `\cot` `\sinh` `\cosh` `\tanh` `\arcsin` `\arccos` `\arctan` `\lg` `\sup` `\inf`.
+Also recognised: `\sec` `\csc` `\cot` `\sinh` `\cosh` `\tanh` `\arcsin` `\arccos` `\arctan` `\lg` `\sup` `\inf` `\argmax` `\argmin` `\rank` `\trace` `\tr` `\span`.
 
 ## Math — delimiters and spacing
 
-`\left( ... \right)` and `\big[ ... \Big|` style macros normally tell TeX to grow the delimiter to match its contents. md2any has no glyph stacker, so these macros collapse to *nothing* and the bare delimiter that follows renders at the body size. Equations still read correctly; they just don't grow.
+In `--math unicode`, delimiter sizing macros collapse to readable plain delimiters. In `--math svg`, `\left...\right` pairs around fractions, matrices, arrays, and cases use drawn scalable delimiters so tall content is bracketed cleanly. `\big` / `\Big` / `\bigg` / `\Bigg` still act as lightweight delimiter hints rather than full TeX sizing commands.
 
 | Source                          | Renders as                      |
 |---------------------------------|---------------------------------|
@@ -355,16 +515,14 @@ Render as: $x_1, x_2, \ldots, x_n$ and $x_1 + x_2 + \cdots + x_n$.
 
 ## Math — what md2any is *not*
 
-The math support is intentionally shallow. If you need any of the following, render the formula with a real TeX engine and embed it as a PNG via the regular image syntax.
+The default Unicode math support is intentionally shallow. If you need readable multi-line display math, stacked fractions, radical bars, scalable delimiters, simple matrices/arrays, `cases`, or aligned equations, use `--math svg`. If you need a full-page formula with selectable PDF text, use `<!-- layout: text-full -->` with a fenced `math` block.
 
-- **No stacked fractions** — `\frac{}{}` becomes inline `(a)/(b)`, not the textbook two-line form with a horizontal bar.
-- **No proper radical bars** — `\sqrt{}` becomes `√(...)`, not a glyph with an extended bar over the radicand.
-- **No matrices** — `\begin{matrix} ... \end{matrix}` and friends are not parsed.
-- **No aligned equations** — each `$$...$$` block is one visual row; multi-line `\\` alignment isn't supported.
-- **No equation numbering** — there's no `\label` / `\ref` mechanism.
-- **No `\vec` accents** — the macro isn't recognised; write the letter directly or use Unicode (`v⃗`).
+- **No TeX engine** — md2any does not run TeX, embed TeX, require TeX, or promise TeX-compatible spacing.
+- **No publication-grade equation typography** — the built-in box model is good enough for talk decks and technical pages, not a replacement for a dedicated mathematical typesetting system.
+- **No equation numbering** — there is no `\label` / `\ref` mechanism.
+- **Copy/paste is best-effort for positioned math** — PDF text remains selectable via `/ToUnicode`, but a reader may paste positioned superscripts/fractions in geometric order rather than source order.
 
-Everything *not* on that list works, and what works is enough for typical talk-deck math: equations, summations, integrals, set notation, predicate logic. For deeper notation, the image-embed escape hatch keeps your options open without bloating md2any.
+Everything *not* on that list works, and what works is enough for typical talk-deck math: equations, summations, integrals, set notation, predicate logic, accents, text labels, blackboard sets, simple rich display blocks, and dense A4 formula pages.
 
 ## Math — copy-paste from PDF
 
@@ -373,6 +531,8 @@ PDF text is copy-pasteable. md2any writes a `/ToUnicode` CMap with every embedde
 Try it: open the manual PDF, select `∑ᵢ₌₁ⁿ xᵢ²` from any math slide, paste somewhere. You'll get the actual Unicode characters back.
 
 This works for every glyph in every face: Greek, math operators, sub/superscripts, the CJK fallback if you passed `--cjk`, the line-drawing characters in the Unicode coverage slide.
+
+Full-page `math` fences use many positioned text runs so superscripts, subscripts, and fraction parts sit where they should visually. The glyphs remain selectable, but PDF readers may paste them in geometric order rather than the original source order.
 
 ## Diagrams
 
@@ -430,9 +590,9 @@ Append a Pandoc-style attribute to set the image to a fraction of the content co
 
 Valid range is 1–100. Unrecognised attributes are ignored silently. Without the attribute, the image fills the content column at its native aspect ratio.
 
-### Two-column image layouts
+### Image layout directives
 
-Two layout directives place a single image alongside the rest of the slide content:
+Use layout directives when an image should drive the slide geometry:
 
 ```markdown
 ## Architecture
@@ -446,6 +606,15 @@ then into the database tier. Each hop is observable via OpenTelemetry.
 ```
 
 `<!-- layout: image-left -->` puts the image on the left and everything else on the right. `<!-- layout: image-right -->` does the opposite. The directive triggers only when the slide has exactly one image; otherwise it's ignored.
+
+For a page that is itself an image, use `<!-- layout: image-full -->` on a slide with exactly one image. Slide renderers skip titles, rails, sidebars, and normal content image caps, then fit the image to the full page without distorting it. This is useful for source-image pages, posters, scanned handouts, or A4/Letter fixtures.
+
+For a page that should remain selectable text, use `<!-- layout: text-full -->` on a slide with exactly one fenced code block. Slide renderers skip titles, rails, and sidebars, then fit the block to the full page.
+
+- Fenced blocks tagged `text`, `rust`, `python`, and so on render as fitted text/code.
+- A fenced block tagged `math` uses md2any's math layout engine: PDF gets selectable positioned text plus vector fraction/radical/delimiter strokes, and SVG/PNG get the same visual layout.
+
+This is useful for dense code listings, source excerpts, formula pages, posters, and A4/Letter technical fixtures where keeping text selectable matters.
 
 Remote-image cache controls:
 
@@ -533,7 +702,7 @@ For brand-specific decks, override colors, fonts, and sizes with a YAML overlay.
 md2any talk.md --theme-file brand.yaml -o talk.pdf
 ```
 
-Hex colours accept `#RRGGBB` or bare `RRGGBB`. Sizes are in hundredths of a typographic point (so `1800` = 18 pt). Font names must exist on the consumer's machine for PPTX/ODP/DOCX/ODT; PDF always uses bundled DejaVu and ignores font overrides.
+Hex colours accept `#RRGGBB` or bare `RRGGBB`. Sizes are in hundredths of a typographic point (so `1800` = 18 pt). Font names must exist on the consumer's machine for PPTX/ODP/DOCX/ODT. PDF uses bundled DejaVu by default, but can load explicit TTF/OTF paths from CLI flags or from the theme file.
 
 ## --theme-file — colour keys
 
@@ -561,6 +730,9 @@ Hex colours accept `#RRGGBB` or bare `RRGGBB`. Sizes are in hundredths of a typo
 | `title_font`  | Title bar / heading typeface        | `Calibri Light`   |
 | `body_font`   | Paragraph + list typeface           | `Calibri`         |
 | `mono_font`   | Code / inline-code typeface         | `Consolas`        |
+| `pdf_font`    | PDF sans/body TTF/OTF path          | bundled DejaVu    |
+| `pdf_mono_font` | PDF mono/code TTF/OTF path        | bundled DejaVu Mono |
+| `font_fallback` | PDF fallback path or list         | none              |
 | `title_size`  | Title size, hundredths of pt        | `2800` (28 pt)    |
 | `body_size`   | Body size, hundredths of pt         | `1800` (18 pt)    |
 | `code_size`   | Code-block size, hundredths of pt   | `1500` (15 pt)    |
@@ -571,6 +743,8 @@ Portrait aspects (9:16, A4, A5, Letter) ship slightly smaller defaults: `2400 / 
 ## --theme-file — syntax highlighting
 
 Nested under a `syntax:` key. Each value is a hex colour applied to that token class across every supported language.
+
+By default, fenced code blocks use the dark code palette regardless of the main `--theme`. Set `code_theme: light` or pass `--code-theme light` to force light code blocks; set `match` to make code follow the main theme. Explicit `code_bg`, `code_text`, `code_accent`, or `syntax:` values in a theme file still override the selected code palette.
 
 | Key         | Role                              | Light default | Dark default |
 |-------------|-----------------------------------|---------------|--------------|
@@ -604,6 +778,10 @@ on_accent:    "#FFFCF7"
 title_font: "Inter"
 body_font:  "Inter"
 mono_font:  "JetBrains Mono"
+pdf_font: "fonts/Inter-Regular.ttf"
+pdf_mono_font: "fonts/JetBrainsMono-Regular.ttf"
+font_fallback:
+  - "fonts/NotoSansMath-Regular.ttf"
 
 title_size: 3000
 body_size:  1900
@@ -620,11 +798,11 @@ syntax:
   attribute: "#BE123C"
 ```
 
-Set only the keys you want to change — anything omitted inherits from the underlying `--theme`.
+Set only the keys you want to change — anything omitted inherits from the underlying `--theme`. Theme fonts are names for PPTX/ODP/DOCX/ODT; PDF font keys are file paths and are embedded/subset in the output PDF. Relative PDF font paths in a theme file resolve next to that theme file.
 
 # Aspect ratios
 
-## Five flavors
+## Built-in presets
 
 | Flag value         | Dimensions (mm)    | Dimensions (in)   | Use for                                  |
 |--------------------|--------------------|-------------------|------------------------------------------|
@@ -662,7 +840,7 @@ Portrait layouts adjust typography automatically — smaller titles, narrower co
 
 # Output formats
 
-## Five formats, one binary
+## Eight formats, one binary
 
 | Format | Extension | Opens in | Editable? |
 |--------|-----------|----------|-----------|
@@ -671,16 +849,36 @@ Portrait layouts adjust typography automatically — smaller titles, narrower co
 | PDF | `.pdf` | Anything that opens PDFs | no |
 | Microsoft Word | `.docx` | Word, LibreOffice Writer, Google Docs, Pages | yes |
 | OpenDocument Writer | `.odt` | LibreOffice Writer, Word, Google Docs | yes |
+| HTML | `.html` | Any modern browser | no |
+| SVG images | directory | Any SVG viewer/browser | no |
+| PNG images | directory | Any image viewer/browser | no |
 
-All five produced natively in pure Rust. No PDF library, no Office spawn, no external converter.
+All eight produced natively in pure Rust. No PDF library, no Office spawn, no external converter.
 
 ## Slides vs documents
 
-The five formats split into two families.
+The eight formats split into three families.
 
-**Slide formats** — `pptx`, `odp`, `pdf` — paginate one slide per page using the deck's aspect ratio. Each `# H1` is a section divider; each `## H2` starts a new slide. Long content auto-flows into `(cont.)` slides.
+**Slide formats** — `pptx`, `odp`, `pdf`, `html` — paginate one slide per page using the deck's aspect ratio. Each `# H1` is a section divider; each `## H2` starts a new slide. Long content auto-flows into `(cont.)` slides.
 
-**Document formats** — `docx`, `odt` — flow continuously. Same source markdown produces a flowing document: title page, then each `# H1` as a Heading 1 (with a page break), each `## H2` as Heading 2, and all body content as flowing paragraphs/lists/tables. Use these to produce the printed companion or handout for a deck.
+Pagination controls are shared by PPTX, ODP, PDF, HTML, `--check`, `--outline`, and `--serve`:
+
+- `--break-mode smart` (default) splits overlong paragraphs at sentence/clause/word boundaries, lists at item boundaries, code near blank/function lines, tables by row chunks, and columns independently.
+- `--break-mode simple` keeps paragraphs, lists, and columns atomic, but still chunks very long code blocks and tables.
+- `--break-mode off` disables automatic continuation splitting.
+- `--break-fill PCT` sets the estimated fill target from 50 to 120 percent. Use values below 100 for more whitespace and values above 100 when you prefer tighter packing.
+- `--table-fit auto` reshapes wide tables before pagination: compact portrait tables transpose, very wide tables split into column groups, and split tables repeat the first column as the key column. Use `split`, `transpose`, or `off` to force a specific strategy.
+
+Code fences can include source snippets while preserving their real source line numbers:
+
+````markdown
+```rust file=src/main.rs#L20-L80 title="CLI parsing"
+```
+````
+
+**Document formats** — `docx`, `odt` — flow continuously. The default `--doc-style report` produces a themed title page, contents, native headers/footers, section page breaks, styled tables/code, image captions, and flowing body content. Use `plain` for the older minimal flow, `handout` for slide labels, or `speaker-notes` to append a notes appendix.
+
+**Image sequence formats** — `svg`, `png` — write one file per slide into the output directory (`slide-001.svg`, `slide-002.svg`, ...). Use these for docs screenshots, visual testing, social cards, and CI artifacts. PNG export rasterizes the same SVG through md2any's optional `svg` feature.
 
 ## When to use which
 
@@ -689,9 +887,10 @@ The five formats split into two families.
 **ODP** when you're all-in on LibreOffice or want smaller files (~⅓ the size of PPTX). Same render quality.
 
 **PDF** when the deck needs to look identical on every machine. md2any
-embeds DejaVu Sans + DejaVu Sans Mono inside the binary and into every
-PDF, so output renders identically in every reader regardless of installed
-fonts. Speaker notes are dropped.
+embeds bundled DejaVu fonts by default, or your supplied `--pdf-font` /
+`--font-fallback` TTF/OTF files when configured, so output renders
+identically in every reader regardless of installed fonts. Speaker notes are
+dropped unless you render a notes PDF with `--with-notes`.
 
 **DOCX** to hand someone the deck's contents as a Word document — for marking up, commenting, or printing as a handout.
 
@@ -728,6 +927,22 @@ md2any talk.md --handout 4 -o talk-handout.pdf
 
 Slides become numbered thumbnails on the page. Layout, theme, and transitions remain untouched.
 
+# Speaker package
+
+`--speaker-package DIR` writes the common presentation bundle in one pass:
+the editable deck, a presenter-notes PDF, a printable handout PDF, and a JSON
+manifest. The deck defaults to PPTX; use `--format odp` or `--format pdf` when
+you want the package deck in another slide format. `--handout 2|4|6` controls
+the package handout density; the default is 4-up.
+
+```bash
+md2any talk.md --speaker-package release/
+md2any talk.md --speaker-package release/ --format odp --handout 6
+```
+
+The manifest lists the source file, theme/layout/aspect, slide count, notes
+count, generated artefacts, and image/logo assets referenced by the deck.
+
 # Workflow
 
 ## Watch mode
@@ -740,23 +955,39 @@ md2any talk.md -o talk.pdf --watch
 
 ## Live preview server
 
-`--serve` starts a tiny HTTP server on `localhost:8421` that hosts the PDF with auto-reload. Open the URL once, then just keep editing — the browser tab refreshes within ~500 ms of every save.
+`--serve` starts a tiny HTTP server on `localhost:8421` with auto-reload. Open the URL once, then just keep editing — the browser tab refreshes within ~500 ms of every save.
 
 ```bash
 md2any talk.md --serve --port 9000
+md2any talk.md --serve --serve-format html
+md2any talk.md --serve --serve-format svg
+md2any talk.md --serve --serve-format png
 ```
+
+The default preview format is `pdf`. `--serve-format html` previews the standalone HTML deck, while `svg` and `png` use the same one-file-per-slide image renderer behind the regular image-sequence outputs.
 
 No frontend dependencies. Pure std HTTP.
 
 ## Linting
 
-`--check` parses and paginates without writing output, then prints warnings about likely visual issues — long titles, narrow tables, code that won't fit, lists that pile too high. Exits with code 2 if any warnings.
+`--check` parses and paginates without writing output, then prints warnings about likely visual issues — long titles, narrow tables, code that won't fit, lists that pile too high, missing image alt text, duplicated titles, weak theme contrast, oversized tables, and uneven speaker-note coverage. Exits with code 2 if any warnings.
 
 ```bash
 md2any talk.md --check
 ```
 
 Useful in CI to catch decks that will render poorly before you ship them.
+
+## Diagnostics
+
+`--emit-ir PATH` writes the post-parse/post-pagination slide tree as JSON. `--emit-plan PATH` writes the estimated render plan: page geometry, content box, pagination budget, block weights, continuation flags, and line metadata. `--trace-layout` prints a compact render-plan summary to stderr.
+
+```bash
+md2any talk.md --emit-ir /tmp/talk.ir.json --emit-plan /tmp/talk.plan.json
+md2any talk.md --trace-layout --check
+```
+
+These diagnostics are meant for bug reports, CI artifacts, and renderer work. They are not available in `--serve` mode because the preview loop rebuilds continuously.
 
 ## Scaffolding
 
@@ -796,13 +1027,32 @@ md2any new <PATH>          Write a starter markdown file with example structure
 md2any doctor              Probe optional CLIs, bundled fonts, build features
 md2any licenses            Print the bundled-font licence notice
 
-  -o, --output <PATH>      Output file (default: from -o extension, else input.pptx)
-      --format <NAME>      pptx | odp | pdf | docx | odt
+  -o, --output <PATH>      Output file, or directory for svg/png
+                           (default: from -o extension, else input.pptx;
+                           image sequences default to input-svg/input-png)
+      --format <NAME>      pptx | odp | pdf | docx | odt | html | svg | png
       --theme <NAME>       light | dark
       --aspect <RATIO>     16:9 | 4:3 | 9:16 | a4[-landscape] | a3 | a5 |
                            letter[-landscape] | legal | tabloid |
                            WxH[unit] custom (px / mm / cm / in / pt / emu)
       --layout <NAME>      clean | studio | frame | bold
+      --break-mode <MODE>  smart | simple | off
+      --break-fill <PCT>   Fill target before breaking, 50-120 (default 100)
+      --table-fit <MODE>   auto | split | transpose | off
+      --code-theme <MODE>  dark | light | match (default: dark)
+                           Code block palette, independent of --theme
+      --code-columns <MODE>
+                           single | auto | two-up (default: single)
+                           Landscape two-up code flow; fences can set columns=2
+      --math <MODE>        unicode | source | svg (default: unicode)
+                           svg uses built-in display layout; no TeX runtime
+      --math-scale <N>     Scale generated display math, 0.35-3.0
+      --math-block-align <ALIGN>
+                           left | center | right for generated display math
+      --math-max-height <PX>
+                           Max generated display math height
+      --doc-style <STYLE>  plain | report | handout | speaker-notes
+                           DOCX/ODT document profile (default: report)
       --title <STRING>     Override deck title
       --author <STRING>    Override deck author
       --font <NAME>        Override body / title font (PPTX/ODP/DOCX/ODT)
@@ -816,8 +1066,19 @@ md2any licenses            Print the bundled-font licence notice
                            User-Agent sent when fetching remote images
       --theme-file <PATH>  YAML colour/font/size overlay
       --handout <N>        PDF only: 2/4/6 slides per A4 portrait page
-      --with-notes         PDF only: emit one A4 page per slide with
-                           the thumbnail + speaker notes underneath
+      --with-notes         PDF only: emit one notes page per slide
+      --notes-page-size <SIZE>
+                           slide | a4 (default: slide)
+      --notes-layout <LAYOUT>
+                           auto | below | side-by-side (default: auto)
+      --speaker-package <DIR>
+                           Deck + notes PDF + handout PDF + manifest
+      --pdf-font <PATH>    PDF only: TTF/OTF sans/body font
+      --pdf-mono-font <PATH>
+                           PDF only: TTF/OTF mono/code font
+      --font-fallback <PATH[,PATH...]>
+                           PDF only: fallback fonts for missing glyphs
+      --font-audit         Report PDF glyph coverage and exit
       --cjk <PATH>         PDF only: TTF/OTF font used as per-character
                            fallback when DejaVu can't render a glyph
                            (typically a Noto CJK or system CJK font)
@@ -825,10 +1086,14 @@ md2any licenses            Print the bundled-font licence notice
                            (external deps like images / theme-file / logo are
                            not tracked — restart if those change)
       --serve              Start localhost HTTP preview with hot reload
+      --serve-format <FMT> pdf | html | svg | png (default: pdf)
       --port <N>           Port for --serve (default 8421)
       --check              Lint mode; exit code 2 if any warnings
       --outline            Print one-line-per-slide outline (page, kind, blocks,
                            title) and exit. No output file is written.
+      --emit-ir <PATH>     Write post-pagination IR JSON
+      --emit-plan <PATH>   Write estimated render-plan JSON
+      --trace-layout       Print render-plan summary to stderr
   -q, --quiet              Suppress summary line
   -h, --help               Print this brief help
       --help-pptx          Generate the user manual as PPTX
@@ -836,6 +1101,9 @@ md2any licenses            Print the bundled-font licence notice
       --help-pdf           Generate the user manual as PDF
       --help-docx          Generate the user manual as Word DOCX
       --help-odt           Generate the user manual as LibreOffice ODT
+      --help-html          Generate the user manual as standalone HTML
+      --help-svg           Generate the user manual as one SVG per slide
+      --help-png           Generate the user manual as one PNG per slide
       --help-md            Print the user-manual Markdown source to stdout
   -V, --version            Print version
 ```
@@ -869,12 +1137,14 @@ Visible content here.
 
 Multiple `<!-- notes: -->` comments on one slide are concatenated.
 
-Notes attach in **PPTX** and **ODP** outputs (visible in Presenter View or printed as Notes Pages). DOCX and ODT outputs drop them.
+Notes attach in **PPTX** and **ODP** outputs (visible in Presenter View or printed as Notes Pages). For DOCX and ODT, use `--doc-style speaker-notes` to append the visible document with a speaker-notes appendix.
 
-For PDF, pass `--with-notes` to produce a presenter-friendly companion document: one A4 portrait page per slide with the slide thumbnail at the top and the speaker notes laid out below.
+For PDF, pass `--with-notes` to produce a presenter-friendly companion document: one notes page per slide with the slide thumbnail and speaker notes. By default, notes pages use the deck's own page size and aspect ratio, so a 16:9 deck produces 16:9 notes pages with the thumbnail and notes side by side. For print-oriented A4 pages, add `--notes-page-size a4`. Use `--notes-layout below` or `--notes-layout side-by-side` when you want to force the thumbnail/notes arrangement instead of the automatic aspect-based choice.
 
 ```bash
 md2any talk.md --with-notes -o talk-notes.pdf
+md2any talk.md --with-notes --notes-page-size a4 -o talk-notes-a4.pdf
+md2any talk.md --with-notes --notes-layout below -o talk-notes-below.pdf
 ```
 
 Mutually exclusive with `--handout` — pick one PDF post-processor at a time.
@@ -906,11 +1176,19 @@ embeds DejaVu Sans, which covers Arabic, Hebrew, and other complex
 scripts at the glyph level; full bidirectional reordering and joining
 behaviour still depends on the viewer's PDF text layout engine.
 
-## CJK fonts
+## PDF fonts and glyph audit
 
 For **PPTX / ODP / DOCX / ODT**, pass `--font` (or set `font:` in front matter) to a CJK-capable typeface — `Noto Sans CJK SC`, `Microsoft YaHei`, `Hiragino Sans`, `Yu Gothic`, etc. The slide consumer renders with that font, so Chinese / Japanese / Korean characters pass through unchanged.
 
-For **PDF**, point `--cjk` at any TrueType or OpenType CJK font on disk and md2any uses it as a per-character fallback whenever DejaVu Sans can't render a glyph:
+For **PDF**, md2any embeds and subsets bundled DejaVu Sans by default. Use `--pdf-font` and `--pdf-mono-font` to replace the sans/body and mono/code faces with user-supplied TTF/OTF files. Use `--font-fallback PATH[,PATH...]` for additional per-character fallback fonts when the primary face cannot render a glyph.
+
+```bash
+md2any talk.md -o talk.pdf \
+    --pdf-font ./fonts/Inter-Regular.ttf \
+    --pdf-mono-font ./fonts/JetBrainsMono-Regular.ttf
+```
+
+For Chinese/Japanese/Korean PDFs, `--cjk` remains the small-binary convenience alias for adding one large CJK fallback font:
 
 ```bash
 md2any talk.md -o talk.pdf \
@@ -919,19 +1197,30 @@ md2any talk.md -o talk.pdf \
 
 Only the glyphs your deck actually uses are embedded (subsetting handles the rest), so a 20 MB Noto CJK source typically turns into a small KB-scale addition to the output PDF.
 
+Use `--font-audit` before rendering to see which glyphs require fallback fonts and which glyphs are missing entirely:
+
+```bash
+md2any talk.md --font-audit
+md2any talk.md --font-audit --font-fallback ./fonts/NotoSansMath-Regular.ttf
+```
+
 # Performance
 
 ## How fast is fast
 
-| Deck size  | PPTX  | ODP   | DOCX  | ODT   | PDF    |
-|------------|-------|-------|-------|-------|--------|
-| 30 slides  | ~1 ms | ~1 ms | ~1 ms | ~1 ms | ~5 ms  |
-| 100 slides | ~3 ms | ~2 ms | ~2 ms | ~2 ms | ~12 ms |
-| 1000 slides | ~30 ms | ~25 ms | ~20 ms | ~20 ms | ~120 ms |
+Current `HELP.md`, rendered by the release binary on this machine:
 
-Numbers from a commodity x86-64. PDF is slower than PPTX/ODP/DOCX/ODT because of PNG decode and per-token text positioning.
+| Workload | PPTX | ODP | DOCX | ODT | HTML | PDF |
+|----------|------|-----|------|-----|------|-----|
+| 192-slide embedded manual | 15 ms | 9 ms | 5 ms | 4 ms | 2 ms | 70 ms |
+| Output size | 438 KB | 59 KB | 47 KB | 41 KB | 442 KB | 476 KB |
 
-Cold start is dominated by binary load, not parsing.
+Image-sequence outputs write one file per slide:
+
+| Workload | SVG | PNG |
+|----------|-----|-----|
+| 192-slide embedded manual | 4 ms / 192 files | 1086 ms / 192 files |
+| Output size | 665 KB | 46 MB |
 
 # Limitations
 
@@ -941,24 +1230,24 @@ md2any is a focused artifact generator, not a general-purpose document toolchain
 
 - **Not Pandoc.** No `--from`/`--to` arbitrary format conversion, no Lua filters, no templating engine, no bibliography/citation handling, no cross-reference tracking, no extension-rich Markdown dialects (CommonMark + GFM tables + the small md2any-specific directives are the whole grammar).
 - **Not Quarto.** No literate execution, no R/Python/Julia code execution at build time, no notebook ingestion, no website / book project structure, no observable cells.
-- **Not a TeX engine.** Math support is the Unicode subset documented in the Math reference — no stacked fractions, no matrix environments, no aligned equations, no equation numbering.
+- **Not a TeX engine.** Math support includes the Unicode subset documented in the Math reference, built-in SVG display math via `--math svg`, and full-page native math layout for `text-full` `math` blocks. It still does not run TeX, number equations, or solve cross-references.
 - **Not a layout DSL.** Per-slide layout has a couple of opt-in directives; if you need fine-grained per-element positioning, build the deck in PowerPoint or Keynote directly.
 
-Pandoc is the general converter. Quarto is a publishing system. md2any is a one-binary artifact generator for the narrower case of "I have one Markdown file and I want all five common deliverable formats out the other side."
+Pandoc is the general converter. Quarto is a publishing system. md2any is a one-binary artifact generator for the narrower case of "I have one Markdown file and I want all eight common deliverable formats out the other side."
 
 ## What's not supported
 
 - GIF and WebP images (PNG, JPEG, and SVG are supported)
 - Embedded HTML beyond the notes / bg / column-break / layout directives
-- Speaker notes inside DOCX / ODT (PPTX / ODP attach them natively; PDF gets them via `--with-notes`)
-- Custom font embedding in PDF — `--font` is honoured for PPTX / ODP / DOCX / ODT only; PDF always uses bundled DejaVu Sans + an optional `--cjk` fallback
+- Inline presenter-note pages inside DOCX / ODT. Use `--doc-style speaker-notes` for a notes appendix; PPTX / ODP attach notes natively and PDF gets notes pages via `--with-notes`.
+- Complex text shaping in PDF — custom PDF fonts and fallback glyphs are supported, but full script shaping/reordering still depends on viewer behaviour
 - Citations / bibliographies / cross-references — no `[@cite]` parsing, no `\ref{}`, no auto-generated reference list
 - Diagram rendering requires the corresponding CLI on `$PATH` (`dot` / `mmdc` / `plantuml`). When absent, the fence stays as a regular code block — md2any never bundles diagram engines
 - DOCX / ODT are flowing documents, not slide carriers. Section breaks come from H1; everything else flows. Pagination is the consumer app's job
 
 ## Honest tradeoffs in PDF
 
-PDF output uses DejaVu Sans + DejaVu Sans Mono, embedded inside the md2any binary (~3 MB of the binary footprint). This buys Unicode coverage across Greek, Cyrillic, math operators, sub/superscripts, and most of European Latin without depending on the viewer's installed fonts. Other font families (Calibri etc.) are not bundled; `--font` is honoured for PPTX/ODP/DOCX/ODT but not for PDF.
+PDF output uses DejaVu Sans + DejaVu Sans Mono by default, embedded inside the md2any binary (~3 MB of the binary footprint). This buys Unicode coverage across Greek, Cyrillic, math operators, sub/superscripts, and most of European Latin without depending on the viewer's installed fonts. Other font families are loaded only when you provide TTF/OTF paths with `--pdf-font`, `--pdf-mono-font`, `--font-fallback`, or `--cjk`; they are subset so only used glyphs enter the PDF.
 
 Font subsetting is automatic — each PDF embeds only the glyphs that deck actually uses, not the full 3 MB face. This manual (135 slides, heavy on tables and math) lands under 400 KB; a typical talk-sized deck is well under 200 KB even with code, tables, and the full Greek / math toolbox.
 
@@ -1021,9 +1310,10 @@ md2any talk.md -o talk.pptx                # speaker copy
 md2any talk.md -o talk.pdf                 # archive
 md2any talk.md -o talk.docx                # written companion
 md2any talk.md --handout 4 -o talk-handout.pdf  # printed handout
+md2any talk.md --speaker-package release/  # deck + notes + handout + manifest
 ```
 
-Same source, four artefacts. Update the markdown; everything regenerates in milliseconds.
+Same source, every artefact. Update the markdown; everything regenerates in milliseconds.
 
 # Showcase
 
@@ -1128,7 +1418,17 @@ if __name__ == "__main__":
     print(summary(pages))
 ```
 
-## Code — TypeScript
+## Code — JavaScript + TypeScript
+
+```javascript
+export function chooseAnswer(question) {
+  const normalized = question.trim().toLowerCase();
+  if (normalized.includes("life")) return 42;
+  return Math.floor(Math.random() * 10);
+}
+
+console.log(chooseAnswer("life, universe, everything"));
+```
 
 ```typescript
 type Result<T, E> = { ok: true; value: T } | { ok: false; err: E };
@@ -1178,6 +1478,65 @@ func main() {
 }
 ```
 
+## Code — C and C++
+
+```c
+#include <stdio.h>
+
+int clamp(int value, int min, int max) {
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+}
+
+int main(void) {
+    printf("%d\n", clamp(42, 0, 10));
+}
+```
+
+```cpp
+#include <algorithm>
+#include <ranges>
+#include <vector>
+
+std::vector<int> evens(std::vector<int> xs) {
+    auto view = xs | std::views::filter([](int n) { return n % 2 == 0; });
+    return {view.begin(), view.end()};
+}
+```
+
+## Code — JVM and .NET
+
+```java
+record User(String name, int score) {}
+
+class Leaderboard {
+    static boolean qualifies(User user) {
+        return user.score() >= 42;
+    }
+}
+```
+
+```kotlin
+data class Slide(val title: String, val lines: Int)
+
+fun Slide.isDense(): Boolean =
+    lines > 12 && title.isNotBlank()
+```
+
+```scala
+case class Build(name: String, passed: Boolean)
+
+val summary = builds.groupBy(_.passed).view.mapValues(_.size)
+```
+
+```csharp
+public record Slide(string Title, int Lines);
+
+public static bool Fits(Slide slide) =>
+    slide.Lines <= 12 && !string.IsNullOrWhiteSpace(slide.Title);
+```
+
 ## Code — SQL
 
 ```sql
@@ -1219,6 +1578,27 @@ for env in staging prod; do
 done
 ```
 
+```ruby
+Slide = Data.define(:title, :lines)
+
+deck = [
+  Slide.new("Intro", 5),
+  Slide.new("Implementation", 18)
+]
+
+puts deck.select { |slide| slide.lines > 12 }.map(&:title)
+```
+
+```powershell
+function Publish-Deck {
+    param([string] $Path, [string] $Target = "staging")
+    Write-Host "Publishing $Path to $Target"
+    Copy-Item $Path "\\fileserver\decks\$Target"
+}
+
+Publish-Deck -Path ".\talk.pdf" -Target "prod"
+```
+
 ## Code — JSON + YAML + TOML
 
 ```json
@@ -1256,9 +1636,160 @@ clap = { version = "4.5", features = ["derive"] }
 pulldown-cmark = "0.10"
 ```
 
+## Code — config and docs
+
+```dockerfile
+FROM rust:1.74 AS build
+WORKDIR /src
+COPY . .
+RUN cargo build --release
+
+FROM debian:stable-slim
+COPY --from=build /src/target/release/md2any /usr/local/bin/md2any
+ENTRYPOINT ["md2any"]
+```
+
+```properties
+spring.application.name=deck-service
+feature.remote-images=true
+render.timeout.seconds=30
+```
+
+```ini
+[server]
+host = 127.0.0.1
+port = 8080
+```
+
+```env
+MD2ANY_THEME=light
+MD2ANY_FORMAT=pdf
+```
+
+```markdown
+## Release checklist
+
+- Build the binary
+- Render `--help-pdf`
+- Check the output before tagging
+```
+
+## Code — Haskell, BCPL, and BF
+
+```haskell
+loop :: IO ()
+loop = do
+  print (0 == 0)
+  loop
+```
+
+```bcpl
+GET "LIBHDR"
+
+LET start() BE
+$(
+  FOR i = 1 TO 3 DO writes("BCPL still has opinions!*N")
+  RESULTIS 0
+$)
+```
+
+```bf
+++++++[>+++++++<-]>.
+```
+
+## Code — web components
+
+```html
+<article class="slide-card">
+  <h2>One source, many outputs</h2>
+  <p>Markdown in, deck out.</p>
+</article>
+```
+
+```css
+.slide-card {
+  display: grid;
+  gap: 0.75rem;
+  border: 1px solid var(--divider);
+}
+```
+
+```xml
+<deck title="Release notes">
+  <slide id="intro">Ship it</slide>
+</deck>
+```
+
+```vue
+<template>
+  <button @click="count++">count: {{ count }}</button>
+</template>
+
+<script setup lang="ts">
+import { ref } from "vue";
+const count = ref(0);
+</script>
+```
+
+```svelte
+<script lang="ts">
+  let answer = 42;
+</script>
+
+<button on:click={() => answer += 1}>
+  answer = {answer}
+</button>
+```
+
+```astro
+---
+const title = "Static by default";
+---
+<h1>{title}</h1>
+<p>Hydrate only what needs it.</p>
+```
+
+## Code — API and config
+
+```graphql
+query Talk($id: ID!) {
+  talk(id: $id) {
+    title
+    speaker { name }
+  }
+}
+```
+
+```http
+POST /api/talks HTTP/1.1
+Host: example.test
+Content-Type: application/json
+
+{"title":"Markdown everywhere","slides":42}
+```
+
+```terraform
+resource "aws_s3_bucket" "slides" {
+  bucket = "md2any-release-artifacts"
+}
+```
+
+```hcl
+variable "region" {
+  type    = string
+  default = "eu-central-1"
+}
+```
+
+```diff
+@@ syntax coverage @@
+- twenty languages
++ forty-plus tags across modern and vintage stacks
+```
+
 ## Code — mainframe
 
-md2any ships syntax tables for COBOL, JCL, REXX, PL/I, HLASM, and DB2 alongside the modern languages. Handy when documentation has to live in the same deck as a mainframe migration story.
+md2any ships syntax tables for COBOL, JCL, REXX, PL/1 (also tagged `pli` or `plx`), HLASM, DB2, fixed-form RPG/RPG II/RPG III, free-form RPGLE, and IBM i CL alongside the modern languages. Handy when documentation has to live in the same deck as a mainframe migration story.
 
 ```cobol
        IDENTIFICATION DIVISION.
@@ -1277,6 +1808,73 @@ md2any ships syntax tables for COBOL, JCL, REXX, PL/I, HLASM, and DB2 alongside 
 /*
 ```
 
+```rexx
+say 'REXX can still glue the night shift together'
+parse arg dataset
+if dataset = '' then dataset = 'PROD.PAYROLL.MASTER'
+say 'checking' dataset
+```
+
+```pl1
+HELLO: PROC OPTIONS(MAIN);
+  PUT SKIP LIST('PL/I says hello, and probably means it.');
+END HELLO;
+```
+
+```rpg2
+     FSALES   IF   E           K DISK
+     C           *ENTRY    PLIST
+     C                     PARM           CUSTNO            6 0
+     C           CUSTNO    CHAINSALESR              99
+     C           *IN99     IFEQ *OFF
+     C                     EXCPTDETAIL
+     C                     ENDIF
+```
+
+```rpgle
+**free
+ctl-opt dftactgrp(*no) option(*srcstmt:*nodebugio);
+
+dcl-s customer char(10) inz('S/38');
+if %trim(customer) <> '';
+  dsply ('Order for ' + customer);
+endif;
+```
+
+```cl
+PGM PARM(&LIB &FILE)
+  DCL VAR(&LIB) TYPE(*CHAR) LEN(10)
+  DCL VAR(&FILE) TYPE(*CHAR) LEN(10)
+  MONMSG MSGID(CPF0000) EXEC(GOTO CMDLBL(ERROR))
+  IF COND(&LIB *EQ '*LIBL') THEN(DO)
+    SNDPGMMSG MSG('Library list still wins')
+  ENDDO
+  CALL PGM(&LIB/LOADORDERS) PARM(&FILE)
+  RETURN
+ERROR:
+  SNDPGMMSG MSGID(CPF9898) MSGF(QCPFMSG) MSGTYPE(*ESCAPE)
+ENDPGM
+```
+
+```hlasm
+HELLO    CSECT
+         WTO   'HELLO FROM HLASM'
+         BR    14
+         END   HELLO
+```
+
+```db2
+CREATE TABLE audit_event (
+  id BIGINT GENERATED ALWAYS AS IDENTITY,
+  event_time TIMESTAMP NOT NULL,
+  payload CLOB
+);
+
+SELECT id, event_time
+FROM audit_event
+WHERE event_time >= CURRENT TIMESTAMP - 1 DAY;
+```
+
 ## Tables
 
 | Format | Editable | Slides | Docs | Notes |
@@ -1293,7 +1891,7 @@ md2any ships syntax tables for COBOL, JCL, REXX, PL/I, HLASM, and DB2 alongside 
 
 ## Pros and cons
 
-Markdown source on the left, polished output on the right. Author once, deliver to five formats, no Office on the build machine, no JRE, no Python pipeline. Fast cold start, fast warm rebuild.
+Markdown source on the left, polished output on the right. Author once, deliver to eight formats, no Office on the build machine, no JRE, no Python pipeline. Fast cold start, fast warm rebuild.
 
 :::
 
@@ -1348,7 +1946,7 @@ You can drop *multiple* references on one slide[^multi] and md2any will collect 
 digraph pipeline {
   rankdir=LR;
   node [shape=box, style=rounded];
-  Markdown -> Parser -> Paginator -> Renderer -> "{pptx, odp, pdf, docx, odt}";
+  Markdown -> Parser -> Paginator -> Renderer -> "{pptx, odp, pdf, docx, odt, html, svg, png}";
 }
 ```
 ````
@@ -1385,5 +1983,5 @@ md2any my-talk.md
 If you want to see this manual again in any format, just run:
 
 ```bash
-md2any --help-pptx       # or --help-odp, --help-pdf, --help-docx, --help-odt, --help-md
+md2any --help-pptx       # or --help-odp, --help-pdf, --help-docx, --help-odt, --help-html, --help-svg, --help-png, --help-md
 ```

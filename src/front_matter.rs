@@ -10,6 +10,8 @@
 //! original input untouched.
 
 use crate::ir::FrontMatter;
+use serde_yaml::Value;
+use std::collections::BTreeMap;
 
 /// Split markdown source into `(front_matter, body)`.
 ///
@@ -53,11 +55,42 @@ pub fn extract(input: &str) -> (FrontMatter, String) {
                     FrontMatter::default()
                 }
             };
+            resolve_math_macros(&mut front, &yaml);
             resolve_dynamic(&mut front);
             return (front, body);
         }
     }
     (FrontMatter::default(), input.to_string())
+}
+
+fn resolve_math_macros(front: &mut FrontMatter, yaml: &str) {
+    if front.math_macros.is_some() {
+        return;
+    }
+    let Ok(Value::Mapping(map)) = serde_yaml::from_str::<Value>(yaml) else {
+        return;
+    };
+    let Some(value) = map
+        .get(Value::String("math_macros".into()))
+        .or_else(|| map.get(Value::String("math-macros".into())))
+    else {
+        return;
+    };
+    let Value::Mapping(macros) = value else {
+        return;
+    };
+    let mut parsed = BTreeMap::new();
+    for (key, value) in macros {
+        let (Value::String(key), Value::String(value)) = (key, value) else {
+            continue;
+        };
+        if !key.is_empty() {
+            parsed.insert(key.clone(), value.clone());
+        }
+    }
+    if !parsed.is_empty() {
+        front.math_macros = Some(parsed);
+    }
 }
 
 fn resolve_dynamic(front: &mut FrontMatter) {

@@ -26,6 +26,36 @@ const EMU_PER_PT: f32 = 12700.0;
 // Public entry
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotesPageSize {
+    /// Use the deck's own page size/aspect for presenter notes.
+    Slide,
+    /// Use A4 portrait pages for print-oriented notes.
+    A4,
+}
+
+impl Default for NotesPageSize {
+    fn default() -> Self {
+        NotesPageSize::Slide
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotesLayout {
+    /// Choose side-by-side for wide pages and below for portrait/tall pages.
+    Auto,
+    /// Place the slide thumbnail on the left and notes on the right.
+    SideBySide,
+    /// Place the slide thumbnail above the notes.
+    Below,
+}
+
+impl Default for NotesLayout {
+    fn default() -> Self {
+        NotesLayout::Auto
+    }
+}
+
 pub fn write(
     slides: &[Slide],
     theme: &Theme,
@@ -39,7 +69,49 @@ pub fn write(
     transition_dur: f32,
     direction: Option<&str>,
     with_notes: bool,
+    notes_page_size: NotesPageSize,
+    notes_layout: NotesLayout,
     cjk_font: Option<&Path>,
+) -> Result<Vec<u8>> {
+    let mut font_options = crate::font::PdfFontOptions::default();
+    if let Some(path) = cjk_font {
+        font_options.fallback_fonts.push(path);
+    }
+    write_with_font_options(
+        slides,
+        theme,
+        layout,
+        deck_title,
+        author,
+        base_dir,
+        logo,
+        handout,
+        transition,
+        transition_dur,
+        direction,
+        with_notes,
+        notes_page_size,
+        notes_layout,
+        font_options,
+    )
+}
+
+pub fn write_with_font_options(
+    slides: &[Slide],
+    theme: &Theme,
+    layout: &Layout,
+    deck_title: &str,
+    author: &str,
+    base_dir: &Path,
+    logo: Option<&Path>,
+    handout: Option<u32>,
+    transition: Option<&str>,
+    transition_dur: f32,
+    direction: Option<&str>,
+    with_notes: bool,
+    notes_page_size: NotesPageSize,
+    notes_layout: NotesLayout,
+    font_options: crate::font::PdfFontOptions<'_>,
 ) -> Result<Vec<u8>> {
     // RTL note kept brief — DejaVu Sans (embedded for PDF) covers Arabic
     // and Hebrew glyphs, so the only missing piece for full RTL PDF is
@@ -106,7 +178,7 @@ pub fn write(
 
     // Load TTF metrics + (optional) CJK fallback once per render and share
     // across slides.
-    let fonts = PdfFonts::load(cjk_font)?;
+    let fonts = PdfFonts::load_with_options(font_options)?;
 
     // Allocate Type0 font ids for the optional CJK face. The first
     // FACE_COUNT ids were allocated earlier; any extras come now.
@@ -153,6 +225,8 @@ pub fn write(
             &notes,
             page_w_pt,
             page_h_pt,
+            notes_page_size,
+            notes_layout,
             &fonts,
         )?;
     } else {
@@ -344,36 +418,91 @@ fn write_handout(
     Ok(())
 }
 
-/// Per-slide notes pages. Each output page is A4 portrait with the slide
-/// thumbnail at the top (using the same Form XObject trick as handout
-/// mode) and the speaker notes laid out below. Pages exist for every
-/// slide; slides with no notes get a friendly `— no notes —` placeholder
-/// so the page count matches the deck.
+/// Per-slide notes pages. By default each output page uses the deck page
+/// size/aspect so a widescreen deck gets widescreen notes pages instead of
+/// wasting space on A4 portrait. A4 remains available for print workflows.
+/// `notes_layout` controls whether the thumbnail and notes sit side by side
+/// or stack vertically; auto mode chooses based on the output page aspect.
+/// Pages exist for every slide; slides with no notes get a friendly
+/// `— no notes —` placeholder so the page count matches the deck.
 fn write_notes_pages(
     pdf: &mut PdfWriter,
     all_contents: &[Vec<u8>],
     notes: &[Option<&str>],
     slide_w_pt: u32,
     slide_h_pt: u32,
+    notes_page_size: NotesPageSize,
+    notes_layout: NotesLayout,
     fonts: &PdfFonts,
 ) -> Result<()> {
-    let page_w: f32 = 595.0; // A4 portrait
-    let page_h: f32 = 842.0;
-    let margin: f32 = 36.0;
+    let (page_w, page_h) = match notes_page_size {
+        NotesPageSize::Slide => (slide_w_pt as f32, slide_h_pt as f32),
+        NotesPageSize::A4 => (595.0, 842.0),
+    };
+    let margin: f32 = page_w.min(page_h) * 0.055;
+    let margin = margin.clamp(24.0, 42.0);
     let header_h: f32 = 16.0;
-    let thumb_max_h: f32 = page_h * 0.45;
-    let thumb_max_w: f32 = page_w - 2.0 * margin;
-    let scale = (thumb_max_w / slide_w_pt as f32).min(thumb_max_h / slide_h_pt as f32);
-    let thumb_w = scale * slide_w_pt as f32;
-    let thumb_h = scale * slide_h_pt as f32;
-    let thumb_x = (page_w - thumb_w) / 2.0;
-    let thumb_y = page_h - margin - header_h - thumb_h;
+    let gap: f32 = (page_w.min(page_h) * 0.035).clamp(14.0, 26.0);
+    let content_top = page_h - margin - header_h - gap;
+    let content_bottom = margin;
+    let content_h = (content_top - content_bottom).max(80.0);
+    let side_by_side = match notes_layout {
+        NotesLayout::Auto => page_w > page_h * 1.15,
+        NotesLayout::SideBySide => true,
+        NotesLayout::Below => false,
+    };
 
-    let notes_top = thumb_y - 18.0;
-    let notes_left = margin;
-    let notes_right = page_w - margin;
-    let notes_bottom = margin;
-    let notes_w_pt = notes_right - notes_left;
+    let (scale, thumb_x, thumb_y, notes_left, notes_right, notes_top, notes_bottom, divider) =
+        if side_by_side {
+            let thumb_max_w = (page_w - 2.0 * margin - gap) * 0.58;
+            let thumb_max_h = content_h;
+            let scale = (thumb_max_w / slide_w_pt as f32).min(thumb_max_h / slide_h_pt as f32);
+            let thumb_w = scale * slide_w_pt as f32;
+            let thumb_h = scale * slide_h_pt as f32;
+            let thumb_x = margin;
+            let thumb_y = content_bottom + (content_h - thumb_h) / 2.0;
+            let notes_left = thumb_x + thumb_w + gap;
+            let notes_right = page_w - margin;
+            (
+                scale,
+                thumb_x,
+                thumb_y,
+                notes_left,
+                notes_right,
+                content_top,
+                content_bottom,
+                NotesDivider::Vertical {
+                    x: notes_left - gap / 2.0,
+                    y: content_bottom,
+                    h: content_h,
+                },
+            )
+        } else {
+            let thumb_max_w = page_w - 2.0 * margin;
+            let thumb_max_h = content_h * 0.48;
+            let scale = (thumb_max_w / slide_w_pt as f32).min(thumb_max_h / slide_h_pt as f32);
+            let thumb_w = scale * slide_w_pt as f32;
+            let thumb_h = scale * slide_h_pt as f32;
+            let thumb_x = (page_w - thumb_w) / 2.0;
+            let thumb_y = content_top - thumb_h;
+            let notes_top = thumb_y - gap;
+            (
+                scale,
+                thumb_x,
+                thumb_y,
+                margin,
+                page_w - margin,
+                notes_top,
+                content_bottom,
+                NotesDivider::Horizontal {
+                    x: margin,
+                    y: notes_top + gap * 0.35,
+                    w: page_w - 2.0 * margin,
+                },
+            )
+        };
+
+    let notes_w_pt = (notes_right - notes_left).max(80.0);
     let notes_size_pt: f32 = 10.0;
     let notes_line_h: f32 = notes_size_pt * 1.4;
 
@@ -411,14 +540,26 @@ fn write_notes_pages(
             idx = i + 1,
         );
 
-        // Thin divider between thumb and notes.
-        let _ = write!(
-            &mut ops,
-            "0.85 0.89 0.94 rg\n{x:.3} {y:.3} {w:.3} 0.8 re f\n",
-            x = notes_left,
-            y = notes_top + 6.0,
-            w = notes_w_pt,
-        );
+        match divider {
+            NotesDivider::Horizontal { x, y, w } => {
+                let _ = write!(
+                    &mut ops,
+                    "0.85 0.89 0.94 rg\n{x:.3} {y:.3} {w:.3} 0.8 re f\n",
+                    x = x,
+                    y = y,
+                    w = w,
+                );
+            }
+            NotesDivider::Vertical { x, y, h } => {
+                let _ = write!(
+                    &mut ops,
+                    "0.85 0.89 0.94 rg\n{x:.3} {y:.3} 0.8 {h:.3} re f\n",
+                    x = x,
+                    y = y,
+                    h = h,
+                );
+            }
+        }
 
         // Notes text — word-wrapped.
         let body = notes[i].unwrap_or("— no notes —");
@@ -459,6 +600,12 @@ fn write_notes_pages(
 
     pdf.write_pages_tree(&page_ids);
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+enum NotesDivider {
+    Horizontal { x: f32, y: f32, w: f32 },
+    Vertical { x: f32, y: f32, h: f32 },
 }
 
 // ---------------------------------------------------------------------------
@@ -738,7 +885,7 @@ impl<'a> Imgs<'a> {
 // Fonts
 // ---------------------------------------------------------------------------
 
-use crate::font::{FaceKind, FaceMetrics, PdfFonts, CJK_FACE, FACE_COUNT};
+use crate::font::{FaceKind, FaceMetrics, PdfFonts, FACE_COUNT};
 
 const FONT_COUNT: usize = FACE_COUNT;
 // Slot indices reused throughout the renderer. Map to `FaceKind`'s discriminant.
@@ -789,17 +936,7 @@ fn text_width_pt(fonts: &PdfFonts, text: &str, font_idx: usize, size_pt: f32) ->
 /// fallback. Returns (face_idx, glyph_id); on total miss, returns the
 /// primary face with .notdef so the caller still emits *something*.
 fn pick_face(fonts: &PdfFonts, primary: usize, c: char) -> (usize, u16) {
-    let face = &fonts.metrics[primary];
-    if let Some(gid) = face.glyph_for_char(&fonts.bytes[primary], c) {
-        return (primary, gid);
-    }
-    if fonts.has_cjk() {
-        let cjk = &fonts.metrics[CJK_FACE];
-        if let Some(gid) = cjk.glyph_for_char(&fonts.bytes[CJK_FACE], c) {
-            return (CJK_FACE, gid);
-        }
-    }
-    (primary, 0)
+    fonts.face_for_char(primary, c).unwrap_or((primary, 0))
 }
 
 /// PDF `/ToUnicode` CMap stream body. Maps each glyph ID present in the
@@ -1862,6 +1999,304 @@ impl<'a> SlideRenderer<'a> {
         lines.len()
     }
 
+    fn text_at_baseline_pt(
+        &mut self,
+        x_pt: f32,
+        baseline_pt: f32,
+        text: &str,
+        size_pt: f32,
+        color_hex: &str,
+        italic: bool,
+    ) {
+        if text.trim().is_empty() || !x_pt.is_finite() || !baseline_pt.is_finite() {
+            return;
+        }
+        let (r, g, b) = hex_to_rgb_f(color_hex);
+        let font_idx = if italic { FONT_HELV_OBL } else { FONT_HELV };
+        let runs = glyph_hex_runs(self.fonts, text, font_idx, size_pt.max(1.0));
+        let mut cur_x = x_pt;
+        for (face, hex, adv) in runs {
+            record_glyphs_from_hex(&mut self.used_glyphs[face], &hex);
+            let _ = write!(
+                &mut self.ops,
+                "BT\n/F{} {:.2} Tf\n{:.3} {:.3} {:.3} rg\n{:.3} {:.3} Td\n{} Tj\nET\n",
+                face + 1,
+                size_pt.max(1.0),
+                r,
+                g,
+                b,
+                cur_x,
+                baseline_pt,
+                hex,
+            );
+            cur_x += adv;
+        }
+    }
+
+    fn draw_math_text_layout(
+        &mut self,
+        layout: &crate::math::MathTextLayout,
+        origin_x_pt: f32,
+        top_y_pt: f32,
+        scale: f32,
+        color_hex: &str,
+    ) {
+        for draw in &layout.draws {
+            match draw {
+                crate::math::MathLayoutDraw::Text { x, y, size, text } => {
+                    let (x_pt, baseline_pt) =
+                        self.math_local_to_pdf_pt(origin_x_pt, top_y_pt, scale, *x, *y);
+                    self.text_at_baseline_pt(
+                        x_pt,
+                        baseline_pt,
+                        text,
+                        size * scale,
+                        color_hex,
+                        true,
+                    );
+                }
+                crate::math::MathLayoutDraw::Line {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    stroke_width,
+                } => {
+                    let p1 = self.math_local_to_pdf_pt(origin_x_pt, top_y_pt, scale, *x1, *y1);
+                    let p2 = self.math_local_to_pdf_pt(origin_x_pt, top_y_pt, scale, *x2, *y2);
+                    self.stroke_line_pt(p1, p2, (stroke_width * scale).max(0.22), color_hex);
+                }
+                crate::math::MathLayoutDraw::Polyline {
+                    points,
+                    stroke_width,
+                } => {
+                    let points = points
+                        .iter()
+                        .map(|(x, y)| {
+                            self.math_local_to_pdf_pt(origin_x_pt, top_y_pt, scale, *x, *y)
+                        })
+                        .collect::<Vec<_>>();
+                    self.stroke_polyline_pt(&points, (stroke_width * scale).max(0.22), color_hex);
+                }
+                crate::math::MathLayoutDraw::Delimiter {
+                    x,
+                    y,
+                    width,
+                    height,
+                    token,
+                    stroke_width,
+                } => self.draw_math_delimiter_pt(
+                    origin_x_pt,
+                    top_y_pt,
+                    scale,
+                    (*x, *y, *width, *height),
+                    token,
+                    (stroke_width * scale).max(0.22),
+                    color_hex,
+                ),
+            }
+        }
+    }
+
+    fn math_local_to_pdf_pt(
+        &self,
+        origin_x_pt: f32,
+        top_y_pt: f32,
+        scale: f32,
+        x: f32,
+        y: f32,
+    ) -> (f32, f32) {
+        (
+            origin_x_pt + x * scale,
+            self.page_h as f32 - (top_y_pt + y * scale),
+        )
+    }
+
+    fn stroke_line_pt(
+        &mut self,
+        p1: (f32, f32),
+        p2: (f32, f32),
+        stroke_width_pt: f32,
+        color_hex: &str,
+    ) {
+        self.stroke_path_pt(
+            &format!("{:.3} {:.3} m\n{:.3} {:.3} l\n", p1.0, p1.1, p2.0, p2.1),
+            stroke_width_pt,
+            color_hex,
+        );
+    }
+
+    fn stroke_polyline_pt(&mut self, points: &[(f32, f32)], stroke_width_pt: f32, color_hex: &str) {
+        if points.len() < 2 {
+            return;
+        }
+        let mut path = format!("{:.3} {:.3} m\n", points[0].0, points[0].1);
+        for (x, y) in &points[1..] {
+            path.push_str(&format!("{x:.3} {y:.3} l\n"));
+        }
+        self.stroke_path_pt(&path, stroke_width_pt, color_hex);
+    }
+
+    fn stroke_path_pt(&mut self, path: &str, stroke_width_pt: f32, color_hex: &str) {
+        if !stroke_width_pt.is_finite() || stroke_width_pt <= 0.0 {
+            return;
+        }
+        let (r, g, b) = hex_to_rgb_f(color_hex);
+        let _ = write!(
+            &mut self.ops,
+            "q\n{:.3} {:.3} {:.3} RG\n{:.3} w\n1 J\n1 j\n{}S\nQ\n",
+            r, g, b, stroke_width_pt, path,
+        );
+    }
+
+    fn draw_math_delimiter_pt(
+        &mut self,
+        origin_x_pt: f32,
+        top_y_pt: f32,
+        scale: f32,
+        rect: (f32, f32, f32, f32),
+        token: &str,
+        stroke_width_pt: f32,
+        color_hex: &str,
+    ) {
+        let (x, y, width, height) = rect;
+        let page_h = self.page_h as f32;
+        let pt = |lx: f32, ly: f32| -> (f32, f32) {
+            (origin_x_pt + lx * scale, page_h - (top_y_pt + ly * scale))
+        };
+        match token {
+            "(" => {
+                let p0 = pt(x + width * 0.86, y);
+                let c1 = pt(x + width * 0.10, y + height * 0.20);
+                let c2 = pt(x + width * 0.10, y + height * 0.80);
+                let p1 = pt(x + width * 0.86, y + height);
+                let path = format!(
+                    "{:.3} {:.3} m\n{:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c\n",
+                    p0.0, p0.1, c1.0, c1.1, c2.0, c2.1, p1.0, p1.1
+                );
+                self.stroke_path_pt(&path, stroke_width_pt, color_hex);
+            }
+            ")" => {
+                let p0 = pt(x + width * 0.14, y);
+                let c1 = pt(x + width * 0.90, y + height * 0.20);
+                let c2 = pt(x + width * 0.90, y + height * 0.80);
+                let p1 = pt(x + width * 0.14, y + height);
+                let path = format!(
+                    "{:.3} {:.3} m\n{:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c\n",
+                    p0.0, p0.1, c1.0, c1.1, c2.0, c2.1, p1.0, p1.1
+                );
+                self.stroke_path_pt(&path, stroke_width_pt, color_hex);
+            }
+            "[" => self.stroke_polyline_pt(
+                &[
+                    pt(x + width, y),
+                    pt(x, y),
+                    pt(x, y + height),
+                    pt(x + width, y + height),
+                ],
+                stroke_width_pt,
+                color_hex,
+            ),
+            "]" => self.stroke_polyline_pt(
+                &[
+                    pt(x, y),
+                    pt(x + width, y),
+                    pt(x + width, y + height),
+                    pt(x, y + height),
+                ],
+                stroke_width_pt,
+                color_hex,
+            ),
+            "{" => {
+                let p0 = pt(x + width, y);
+                let c1 = pt(x + width * 0.18, y);
+                let c2 = pt(x + width * 0.20, y + height * 0.28);
+                let p1 = pt(x + width * 0.56, y + height * 0.38);
+                let c3 = pt(x + width * 0.82, y + height * 0.46);
+                let c4 = pt(x + width * 0.18, y + height * 0.45);
+                let p2 = pt(x + width * 0.18, y + height * 0.50);
+                let c5 = pt(x + width * 0.18, y + height * 0.55);
+                let c6 = pt(x + width * 0.82, y + height * 0.54);
+                let p3 = pt(x + width * 0.56, y + height * 0.62);
+                let c7 = pt(x + width * 0.20, y + height * 0.72);
+                let c8 = pt(x + width * 0.18, y + height);
+                let p4 = pt(x + width, y + height);
+                let path = format!(
+                    "{:.3} {:.3} m\n{:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c\n{:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c\n{:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c\n{:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c\n",
+                    p0.0, p0.1,
+                    c1.0, c1.1, c2.0, c2.1, p1.0, p1.1,
+                    c3.0, c3.1, c4.0, c4.1, p2.0, p2.1,
+                    c5.0, c5.1, c6.0, c6.1, p3.0, p3.1,
+                    c7.0, c7.1, c8.0, c8.1, p4.0, p4.1
+                );
+                self.stroke_path_pt(&path, stroke_width_pt, color_hex);
+            }
+            "}" => {
+                let p0 = pt(x, y);
+                let c1 = pt(x + width * 0.82, y);
+                let c2 = pt(x + width * 0.80, y + height * 0.28);
+                let p1 = pt(x + width * 0.44, y + height * 0.38);
+                let c3 = pt(x + width * 0.18, y + height * 0.46);
+                let c4 = pt(x + width * 0.82, y + height * 0.45);
+                let p2 = pt(x + width * 0.82, y + height * 0.50);
+                let c5 = pt(x + width * 0.82, y + height * 0.55);
+                let c6 = pt(x + width * 0.18, y + height * 0.54);
+                let p3 = pt(x + width * 0.44, y + height * 0.62);
+                let c7 = pt(x + width * 0.80, y + height * 0.72);
+                let c8 = pt(x + width * 0.82, y + height);
+                let p4 = pt(x, y + height);
+                let path = format!(
+                    "{:.3} {:.3} m\n{:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c\n{:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c\n{:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c\n{:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c\n",
+                    p0.0, p0.1,
+                    c1.0, c1.1, c2.0, c2.1, p1.0, p1.1,
+                    c3.0, c3.1, c4.0, c4.1, p2.0, p2.1,
+                    c5.0, c5.1, c6.0, c6.1, p3.0, p3.1,
+                    c7.0, c7.1, c8.0, c8.1, p4.0, p4.1
+                );
+                self.stroke_path_pt(&path, stroke_width_pt, color_hex);
+            }
+            "|" => self.stroke_line_pt(
+                pt(x + width * 0.5, y),
+                pt(x + width * 0.5, y + height),
+                stroke_width_pt,
+                color_hex,
+            ),
+            "‖" => {
+                self.stroke_line_pt(
+                    pt(x + width * 0.35, y),
+                    pt(x + width * 0.35, y + height),
+                    stroke_width_pt,
+                    color_hex,
+                );
+                self.stroke_line_pt(
+                    pt(x + width * 0.65, y),
+                    pt(x + width * 0.65, y + height),
+                    stroke_width_pt,
+                    color_hex,
+                );
+            }
+            "⟨" => self.stroke_polyline_pt(
+                &[
+                    pt(x + width, y),
+                    pt(x, y + height * 0.5),
+                    pt(x + width, y + height),
+                ],
+                stroke_width_pt,
+                color_hex,
+            ),
+            "⟩" => self.stroke_polyline_pt(
+                &[pt(x, y), pt(x + width, y + height * 0.5), pt(x, y + height)],
+                stroke_width_pt,
+                color_hex,
+            ),
+            _ => {
+                let (x_pt, baseline_pt) =
+                    self.math_local_to_pdf_pt(origin_x_pt, top_y_pt, scale, x, y + height * 0.82);
+                self.text_at_baseline_pt(x_pt, baseline_pt, token, height * scale, color_hex, true);
+            }
+        }
+    }
+
     /// EMU equivalent of one line at the given font size, matching the
     /// 1.25 leading used inside [`text_line`]. Lets title-slide layouts
     /// push the subtitle / author down by exactly the right amount when
@@ -2028,6 +2463,13 @@ impl<'a> SlideRenderer<'a> {
             }
         }
 
+        if self.render_full_page_image_slide(slide, imgs) {
+            return;
+        }
+        if self.render_full_page_code_slide(slide) {
+            return;
+        }
+
         match &slide.kind {
             SlideKind::Title {
                 subtitle,
@@ -2046,6 +2488,126 @@ impl<'a> SlideRenderer<'a> {
             }
             SlideKind::Content => {
                 self.render_content_slide(slide, num, total, deck_title, imgs);
+            }
+        }
+    }
+
+    fn render_full_page_image_slide(&mut self, slide: &Slide, imgs: &Imgs) -> bool {
+        let Some((src, _, _)) = slide.full_page_image() else {
+            return false;
+        };
+
+        let (display_w, display_h) = if let Some((iw, ih)) = imgs.dims(src) {
+            fit_image(iw, ih, self.theme.slide_w, self.theme.slide_h)
+        } else {
+            (self.theme.slide_w, self.theme.slide_h)
+        };
+        let x = self.theme.slide_w.saturating_sub(display_w) / 2;
+        let y = self.theme.slide_h.saturating_sub(display_h) / 2;
+        self.draw_image(src, x, y, display_w, display_h, imgs);
+        true
+    }
+
+    fn render_full_page_code_slide(&mut self, slide: &Slide) -> bool {
+        let Some((lines, lang)) = slide.full_page_code() else {
+            return false;
+        };
+
+        let math_markup = crate::math::is_markup_text_language(lang);
+        if math_markup {
+            self.render_full_page_math_markup(lines);
+            return true;
+        }
+
+        let rendered_lines = crate::math::translate_markup_lines(lines, lang);
+        let margin_x = if self.theme.portrait { 280000 } else { 360000 };
+        let margin_y = if self.theme.portrait { 320000 } else { 300000 };
+        let max_w = self.theme.slide_w.saturating_sub(margin_x * 2);
+        let max_h = self.theme.slide_h.saturating_sub(margin_y * 2);
+        let base_size = self
+            .theme
+            .code_size
+            .min(if self.theme.portrait { 850 } else { 950 });
+        let base_pt = base_size as f32 / 100.0;
+        let font_idx = if math_markup {
+            FONT_HELV_OBL
+        } else {
+            FONT_COUR
+        };
+        let max_line_pt = rendered_lines
+            .iter()
+            .map(|line| text_width_pt(self.fonts, line, font_idx, base_pt))
+            .fold(1.0_f32, f32::max);
+        let max_w_pt = self.pt(max_w).max(1.0);
+        let line_count = rendered_lines.len().max(1) as f32;
+        let max_h_pt = self.pt(max_h).max(1.0);
+        let line_h_factor = if math_markup { 1.10_f32 } else { 1.18_f32 };
+        let scale_w = max_w_pt / max_line_pt;
+        let scale_h = max_h_pt / (line_count * base_pt * line_h_factor);
+        let scale = scale_w.min(scale_h).min(1.0);
+        let size = ((base_size as f32) * scale).clamp(450.0, base_size as f32) as u32;
+        let line_h = (size as f32 * line_h_factor * EMU_PER_PT / 100.0) as u32;
+        let total_h = line_h.saturating_mul(rendered_lines.len().max(1) as u32);
+        let mut y = margin_y + max_h.saturating_sub(total_h) / 2;
+        let color = self.theme.title_color.clone();
+        for line in &rendered_lines {
+            self.text_line(
+                margin_x,
+                y,
+                line,
+                size,
+                &color,
+                false,
+                math_markup,
+                !math_markup,
+                if math_markup {
+                    TextAlign::Center
+                } else {
+                    TextAlign::Left
+                },
+                if math_markup { max_w } else { 0 },
+            );
+            y = y.saturating_add(line_h);
+        }
+        true
+    }
+
+    fn render_full_page_math_markup(&mut self, lines: &[String]) {
+        let margin_x = if self.theme.portrait { 230000 } else { 320000 };
+        let margin_y = if self.theme.portrait { 260000 } else { 260000 };
+        let max_w = self.theme.slide_w.saturating_sub(margin_x * 2);
+        let max_h = self.theme.slide_h.saturating_sub(margin_y * 2);
+        let max_w_pt = self.pt(max_w).max(1.0);
+        let max_h_pt = self.pt(max_h).max(1.0);
+        let margin_x_pt = self.pt(margin_x);
+        let margin_y_pt = self.pt(margin_y);
+        let base_size = 28.0_f32;
+        let gap = base_size * 0.035;
+
+        let raw_layouts = math_markup_line_layouts(lines);
+        let layouts = fit_packed_math_markup_line_layouts(
+            lines,
+            raw_layouts,
+            base_size,
+            gap,
+            max_w_pt / max_h_pt,
+        );
+        let (max_line_w, total_h) = math_markup_metrics(&layouts, base_size, gap);
+        let scale_w = max_w_pt / max_line_w;
+        let scale_h = max_h_pt / total_h.max(1.0);
+        let scale = scale_w.min(scale_h).min(1.0).max(0.045);
+        let rendered_h = total_h * scale;
+        let mut top_y_pt = margin_y_pt + (max_h_pt - rendered_h).max(0.0) / 2.0;
+        let color = self.theme.title_color.clone();
+
+        for layout in &layouts {
+            if let Some(layout) = layout {
+                let line_w_pt = layout.width * scale;
+                let x_pt = margin_x_pt + (max_w_pt - line_w_pt).max(0.0) / 2.0;
+                self.draw_math_text_layout(layout, x_pt, top_y_pt, scale, &color);
+                top_y_pt += layout.height * scale + gap * scale;
+            } else {
+                top_y_pt += base_size * 0.65 * scale + gap * scale;
             }
         }
     }
@@ -2511,13 +3073,19 @@ impl<'a> SlideRenderer<'a> {
 
         let underline_y = if matches!(layout.kind, LayoutKind::Clean) {
             let y = title_y + title_h + 30000;
-            self.rect(content_x, y, 400000, 50000, &theme.accent.clone());
             self.rect(
-                content_x + 420000,
+                content_x,
                 y + 18000,
-                content_w - 420000,
+                content_w,
                 14000,
                 &theme.divider.clone(),
+            );
+            self.rect(
+                content_x,
+                y,
+                progress_width(content_w, num, total),
+                50000,
+                &theme.accent.clone(),
             );
             y
         } else {
@@ -2534,7 +3102,7 @@ impl<'a> SlideRenderer<'a> {
         let content_max_y = footer_y - 100000;
         let content_h = content_max_y.saturating_sub(content_y_start);
 
-        self.render_blocks(
+        let _ = self.render_blocks(
             &slide.blocks,
             content_x,
             content_y_start,
@@ -2601,7 +3169,7 @@ impl<'a> SlideRenderer<'a> {
         w: u32,
         _h_total: u32,
         imgs: &Imgs,
-    ) {
+    ) -> u32 {
         let mut y = y_start;
         for block in blocks {
             match block {
@@ -2623,7 +3191,17 @@ impl<'a> SlideRenderer<'a> {
                     y += 120000;
                 }
                 Block::List(items) => {
-                    y = self.render_list(items, x, y, w);
+                    if items.len() > crate::theme::LONG_LIST_THRESHOLD && !self.theme.portrait {
+                        let half = items.len().div_ceil(2);
+                        let (l, r) = items.split_at(half);
+                        let gap: u32 = 200000;
+                        let col_w = (w.saturating_sub(gap)) / 2;
+                        let left_y = self.render_list(l, x, y, col_w);
+                        let right_y = self.render_list(r, x + col_w + gap, y, col_w);
+                        y = left_y.max(right_y);
+                    } else {
+                        y = self.render_list(items, x, y, w);
+                    }
                     y += 80000;
                 }
                 Block::CodeBlock {
@@ -2631,12 +3209,15 @@ impl<'a> SlideRenderer<'a> {
                     title,
                     lines,
                     line_numbers,
+                    start_line,
+                    ..
                 } => {
                     y = self.render_code_block(
                         lines,
                         title.as_deref(),
                         lang.as_deref(),
                         *line_numbers,
+                        *start_line,
                         x,
                         y,
                         w,
@@ -2655,8 +3236,8 @@ impl<'a> SlideRenderer<'a> {
                     let gap: u32 = 280000;
                     let half = w.saturating_sub(gap) / 2;
                     let start_y = y;
-                    self.render_blocks(left, x, start_y, half, _h_total, imgs);
-                    self.render_blocks(
+                    let left_y = self.render_blocks(left, x, start_y, half, _h_total, imgs);
+                    let right_y = self.render_blocks(
                         right,
                         x + half + gap,
                         start_y,
@@ -2664,7 +3245,7 @@ impl<'a> SlideRenderer<'a> {
                         _h_total,
                         imgs,
                     );
-                    y += 4_000_000;
+                    y = left_y.max(right_y);
                 }
                 Block::ColumnBreak => {}
                 Block::Image {
@@ -2685,6 +3266,7 @@ impl<'a> SlideRenderer<'a> {
                 }
             }
         }
+        y
     }
 
     fn render_footnotes(&mut self, items: &[ListItem], x: u32, y_start: u32, w: u32) -> u32 {
@@ -2817,6 +3399,7 @@ impl<'a> SlideRenderer<'a> {
         title: Option<&str>,
         lang: Option<&str>,
         line_numbers: bool,
+        start_line: usize,
         x: u32,
         y_start: u32,
         w: u32,
@@ -2881,8 +3464,9 @@ impl<'a> SlideRenderer<'a> {
 
         let highlighted: Vec<Vec<Token>> = syntax::tokenize(lines, lang);
 
+        let last_line = start_line.saturating_add(lines.len().saturating_sub(1));
         let gutter_w = if line_numbers {
-            Some(lines.len().to_string().len())
+            Some(last_line.to_string().len())
         } else {
             None
         };
@@ -2910,7 +3494,7 @@ impl<'a> SlideRenderer<'a> {
             }
         }
         let gutter_text_w_pt = if let Some(width) = gutter_w {
-            let n = format!("{:>w$}", lines.len(), w = width);
+            let n = format!("{:>w$}", last_line, w = width);
             text_width_pt(self.fonts, &n, FONT_COUR, base_code_size as f32 / 100.0)
         } else {
             0.0
@@ -2937,7 +3521,7 @@ impl<'a> SlideRenderer<'a> {
             - 2.0 * self.pt(pad)
             - text_width_pt(
                 self.fonts,
-                &format!("{:>w$}", lines.len(), w = gutter_w.unwrap_or(0)),
+                &format!("{:>w$}", last_line, w = gutter_w.unwrap_or(0)),
                 FONT_COUR,
                 code_size_pt,
             )
@@ -3044,7 +3628,7 @@ impl<'a> SlideRenderer<'a> {
 
         let muted = theme.muted_color.clone();
         let continuation_indent_emu: u32 = (2.0 * 0.6 * code_size_pt * EMU_PER_PT) as u32;
-        let mut orig_line_idx: usize = 0;
+        let mut orig_line_idx = start_line.saturating_sub(1);
         for (visual_idx, (line_tokens, is_continuation)) in visual_lines.iter().enumerate() {
             let line_y = body_y + pad + visual_idx as u32 * line_h_scaled;
             let mut text_x = x + pad;
@@ -3360,11 +3944,12 @@ impl<'a> SlideRenderer<'a> {
         }
         // Render body rows.
         let mut ry = y_start + header_h;
+        let table_band_bg = theme.table_band_bg();
         for (i, row_cells) in row_wrapped.iter().enumerate() {
             let rh = row_heights[i];
             let banded = i % 2 == 1;
             let bg = if banded {
-                theme.code_bg.clone()
+                table_band_bg.clone()
             } else {
                 theme.bg.clone()
             };
@@ -3396,7 +3981,8 @@ impl<'a> SlideRenderer<'a> {
         w: u32,
         imgs: &Imgs,
     ) -> u32 {
-        let caption_h = if alt.is_empty() { 0 } else { 260000 };
+        let caption_alt = crate::math::visible_image_alt(src, alt);
+        let caption_h = if caption_alt.is_empty() { 0 } else { 260000 };
         // Cap image to 65% of the slide height so titles and surrounding
         // content stay visible. Deriving from `theme.slide_h` keeps this
         // sane on portrait + paper-size aspects, where a hardcoded EMU
@@ -3405,20 +3991,20 @@ impl<'a> SlideRenderer<'a> {
             / crate::theme::IMAGE_MAX_HEIGHT_FRACTION_DEN;
         let max_image_h = max_h.saturating_sub(caption_h + 80000);
         let (display_w, display_h) = if let Some((iw, ih)) = imgs.dims(src) {
-            fit_image(iw, ih, w, max_image_h)
+            fit_image_for_block(src, alt, iw, ih, w, max_image_h, self.theme.slide_h)
         } else {
             (w, max_image_h)
         };
-        let img_x = x + (w.saturating_sub(display_w)) / 2;
+        let img_x = image_x_for_block(src, alt, x, w, display_w);
         self.draw_image(src, img_x, y_start, display_w, display_h, imgs);
         let mut y = y_start + display_h;
-        if !alt.is_empty() {
+        if !caption_alt.is_empty() {
             y += 80000;
             let muted = self.theme.muted_color.clone();
             self.text_line(
                 x,
                 y,
-                alt,
+                caption_alt,
                 1300,
                 &muted,
                 false,
@@ -3564,6 +4150,126 @@ enum TextAlign {
     Right,
 }
 
+fn math_markup_line_layouts(lines: &[String]) -> Vec<Option<crate::math::MathTextLayout>> {
+    lines
+        .iter()
+        .map(|line| {
+            if line.trim().is_empty() {
+                None
+            } else {
+                Some(crate::math::layout_markup_text(line, 100))
+            }
+        })
+        .collect()
+}
+
+fn pack_math_markup_line_layouts(
+    lines: &[String],
+    target_width: f32,
+) -> Vec<Option<crate::math::MathTextLayout>> {
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut current_layout = None;
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if let Some(layout) = current_layout.take() {
+                out.push(Some(layout));
+                current.clear();
+            }
+            out.push(None);
+            continue;
+        }
+
+        if current.is_empty() {
+            current.push_str(trimmed);
+            current_layout = Some(crate::math::layout_markup_text(&current, 100));
+            continue;
+        }
+
+        let candidate = format!("{current} {trimmed}");
+        let candidate_layout = crate::math::layout_markup_text(&candidate, 100);
+        if candidate_layout.width <= target_width {
+            current = candidate;
+            current_layout = Some(candidate_layout);
+        } else {
+            if let Some(layout) = current_layout.take() {
+                out.push(Some(layout));
+            }
+            current.clear();
+            current.push_str(trimmed);
+            current_layout = Some(crate::math::layout_markup_text(&current, 100));
+        }
+    }
+
+    if let Some(layout) = current_layout {
+        out.push(Some(layout));
+    }
+    out
+}
+
+fn fit_packed_math_markup_line_layouts(
+    lines: &[String],
+    raw_layouts: Vec<Option<crate::math::MathTextLayout>>,
+    base_size: f32,
+    gap: f32,
+    page_ratio: f32,
+) -> Vec<Option<crate::math::MathTextLayout>> {
+    let (raw_max_line_w, raw_total_h) = math_markup_metrics(&raw_layouts, base_size, gap);
+    let raw_ratio = raw_max_line_w / raw_total_h.max(1.0);
+    let desired_ratio = page_ratio * 0.72;
+    if lines.len() <= 20 || raw_ratio >= desired_ratio * 0.75 {
+        return raw_layouts;
+    }
+
+    let mut best = raw_layouts.clone();
+    let mut best_err = (raw_ratio - desired_ratio).abs();
+    let mut low = raw_max_line_w;
+    let mut high = (raw_total_h * desired_ratio * 2.0).max(raw_max_line_w * 1.05);
+
+    for _ in 0..9 {
+        let target = (low + high) / 2.0;
+        let packed = pack_math_markup_line_layouts(lines, target);
+        let (packed_w, packed_h) = math_markup_metrics(&packed, base_size, gap);
+        let ratio = packed_w / packed_h.max(1.0);
+        let err = (ratio - desired_ratio).abs();
+        if err < best_err {
+            best = packed;
+            best_err = err;
+        }
+        if ratio < desired_ratio {
+            low = target;
+        } else {
+            high = target;
+        }
+    }
+
+    best
+}
+
+fn math_markup_metrics(
+    layouts: &[Option<crate::math::MathTextLayout>],
+    base_size: f32,
+    gap: f32,
+) -> (f32, f32) {
+    let max_line_w = layouts
+        .iter()
+        .filter_map(|layout| layout.as_ref().map(|layout| layout.width))
+        .fold(1.0_f32, f32::max);
+    let total_h = layouts
+        .iter()
+        .map(|layout| {
+            layout
+                .as_ref()
+                .map(|layout| layout.height)
+                .unwrap_or(base_size * 0.65)
+        })
+        .sum::<f32>()
+        + gap * layouts.len().saturating_sub(1) as f32;
+    (max_line_w, total_h)
+}
+
 fn hex_to_rgb_f(hex: &str) -> (f32, f32, f32) {
     if hex.len() != 6 {
         return (0.0, 0.0, 0.0);
@@ -3589,6 +4295,53 @@ fn fit_image(iw: u32, ih: u32, max_w: u32, max_h: u32) -> (u32, u32) {
         let w_at_mh = mh * iw / ih;
         (w_at_mh as u32, mh as u32)
     }
+}
+
+fn fit_image_for_block(
+    src: &str,
+    alt: &str,
+    iw: u32,
+    ih: u32,
+    max_w: u32,
+    max_h: u32,
+    slide_h: u32,
+) -> (u32, u32) {
+    let Some(math_meta) = crate::math::math_image_meta(src, alt) else {
+        return fit_image(iw, ih, max_w, max_h);
+    };
+    let natural_w = ((iw.max(1) as u64 * 12_700) / 2).min(u32::MAX as u64) as u32;
+    let natural_h = ((ih.max(1) as u64 * 12_700) / 2).min(u32::MAX as u64) as u32;
+    let configured_max_h = math_meta
+        .max_height_px
+        .map(|px| u32::from(px).saturating_mul(12_700));
+    let math_max_h = configured_max_h
+        .unwrap_or(slide_h * 28 / 100)
+        .min(max_h)
+        .max(1)
+        .min(natural_h.max(1));
+    fit_image(
+        natural_w,
+        natural_h,
+        max_w.min(natural_w.max(1)),
+        math_max_h,
+    )
+}
+
+fn image_x_for_block(src: &str, alt: &str, x: u32, w: u32, display_w: u32) -> u32 {
+    match crate::math::math_image_meta(src, alt).map(|meta| meta.align) {
+        Some(crate::math::MathBlockAlign::Left) => x,
+        Some(crate::math::MathBlockAlign::Right) => x + w.saturating_sub(display_w),
+        Some(crate::math::MathBlockAlign::Center) | None => x + w.saturating_sub(display_w) / 2,
+    }
+}
+
+fn progress_width(width: u32, num: usize, total: usize) -> u32 {
+    if width == 0 || total == 0 {
+        return 0;
+    }
+    ((width as u64 * num.max(1) as u64) / total as u64)
+        .min(width as u64)
+        .max(1) as u32
 }
 
 fn letterspaced(s: &str) -> String {
