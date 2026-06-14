@@ -4239,6 +4239,37 @@ impl<'a> SlideRenderer<'a> {
 // Text wrapping
 // ---------------------------------------------------------------------------
 
+/// Hard-break a single token (no spaces) into chunks that each fit `max_w_pt`,
+/// for emergency wrapping of long unbreakable tokens (URLs, hashes, CamelCase)
+/// that would otherwise run off the slide edge.
+fn break_token_to_width(
+    fonts: &PdfFonts,
+    tok: &str,
+    font_idx: usize,
+    size_pt: f32,
+    max_w_pt: f32,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0.0;
+    for ch in tok.chars() {
+        let cw = text_width_pt(fonts, ch.encode_utf8(&mut [0u8; 4]), font_idx, size_pt);
+        if !cur.is_empty() && cur_w + cw > max_w_pt {
+            out.push(std::mem::take(&mut cur));
+            cur_w = 0.0;
+        }
+        cur.push(ch);
+        cur_w += cw;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
 fn wrap_text_simple(
     fonts: &PdfFonts,
     text: &str,
@@ -4273,6 +4304,25 @@ fn wrap_text_simple(
     for tok in tokens {
         let tok_w = text_width_pt(fonts, &tok, font_idx, size_pt);
         let only_space = tok.chars().all(|c| c == ' ' || c == '\t');
+        // A token wider than the whole line can't be placed as-is — hard-break
+        // it so it wraps instead of overflowing the edge.
+        if !only_space && tok_w > max_w_pt && max_w_pt > 0.0 {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                current_w = 0.0;
+            }
+            let chunks = break_token_to_width(fonts, &tok, font_idx, size_pt, max_w_pt);
+            let n = chunks.len();
+            for (i, chunk) in chunks.into_iter().enumerate() {
+                if i + 1 < n {
+                    lines.push(chunk);
+                } else {
+                    current_w = text_width_pt(fonts, &chunk, font_idx, size_pt);
+                    current = chunk;
+                }
+            }
+            continue;
+        }
         if !current.is_empty() && current_w + tok_w > max_w_pt && !only_space {
             lines.push(std::mem::take(&mut current));
             current_w = 0.0;
@@ -4332,6 +4382,35 @@ fn wrap_runs(
         for tok in tokens {
             let tok_w = text_width_pt(fonts, &tok, font_idx, size_pt);
             let only_space = tok.chars().all(|c| c == ' ');
+            let mk_run = |text: String| Run {
+                text,
+                bold: r.bold,
+                italic: r.italic,
+                code: r.code,
+                strike: r.strike,
+                link: r.link.clone(),
+            };
+            // Hard-break a token wider than the whole line so it wraps instead
+            // of overflowing the slide edge.
+            if !only_space && tok_w > max_w_pt && max_w_pt > 0.0 {
+                if !lines.last().unwrap().is_empty() {
+                    lines.push(Vec::new());
+                    cur_width = 0.0;
+                }
+                let chunks = break_token_to_width(fonts, &tok, font_idx, size_pt, max_w_pt);
+                let n = chunks.len();
+                for (i, chunk) in chunks.into_iter().enumerate() {
+                    let cw = text_width_pt(fonts, &chunk, font_idx, size_pt);
+                    lines.last_mut().unwrap().push(mk_run(chunk));
+                    if i + 1 < n {
+                        lines.push(Vec::new());
+                        cur_width = 0.0;
+                    } else {
+                        cur_width = cw;
+                    }
+                }
+                continue;
+            }
             if cur_width + tok_w > max_w_pt && !lines.last().unwrap().is_empty() && !only_space {
                 lines.push(Vec::new());
                 cur_width = 0.0;
@@ -4340,15 +4419,7 @@ fn wrap_runs(
                     continue;
                 }
             }
-            let last = lines.last_mut().unwrap();
-            last.push(Run {
-                text: tok,
-                bold: r.bold,
-                italic: r.italic,
-                code: r.code,
-                strike: r.strike,
-                link: r.link.clone(),
-            });
+            lines.last_mut().unwrap().push(mk_run(tok));
             cur_width += tok_w;
         }
     }

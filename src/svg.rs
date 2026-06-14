@@ -1314,6 +1314,26 @@ fn wrap_text(text: &str, width: f32, font_size: f32) -> Vec<String> {
     for raw_line in text.lines() {
         let mut current = String::new();
         for word in raw_line.split_whitespace() {
+            // Hard-break a word longer than a whole line so it wraps instead of
+            // overflowing the slide edge.
+            if word.chars().count() > max_chars {
+                if !current.is_empty() {
+                    lines.push(std::mem::take(&mut current));
+                }
+                let chars: Vec<char> = word.chars().collect();
+                let mut i = 0;
+                while i < chars.len() {
+                    let end = (i + max_chars).min(chars.len());
+                    let chunk: String = chars[i..end].iter().collect();
+                    if end < chars.len() {
+                        lines.push(chunk);
+                    } else {
+                        current = chunk;
+                    }
+                    i = end;
+                }
+                continue;
+            }
             let next_len = current.chars().count()
                 + if current.is_empty() { 0 } else { 1 }
                 + word.chars().count();

@@ -291,6 +291,29 @@ fn content_page_count(slides: &[md2any::ir::Slide]) -> usize {
 }
 
 #[test]
+fn nested_blockquotes_keep_all_levels() {
+    // `>`/`>>`/`>>>` must keep every level, not just the deepest.
+    let md = "---\n---\n## Q\n> Level one\n>> Level two\n>>> Level three\n";
+    let (front, body) = md2any::front_matter::extract(md);
+    let slides = md2any::parser::parse(&body, &front, "test");
+    let paras = slides
+        .iter()
+        .flat_map(|s| &s.blocks)
+        .find_map(|b| match b {
+            md2any::ir::Block::Quote(paras) => Some(paras.clone()),
+            _ => None,
+        })
+        .expect("quote present");
+    let text: String = paras
+        .iter()
+        .flat_map(|p| p.iter().map(|r| r.text.clone()))
+        .collect();
+    assert!(text.contains("Level one"), "outer level dropped: {text:?}");
+    assert!(text.contains("Level two"), "{text:?}");
+    assert!(text.contains("Level three"), "{text:?}");
+}
+
+#[test]
 fn table_column_alignment_is_captured() {
     let md = "---\n---\n## T\n| L | C | R |\n|:--|:-:|--:|\n| a | b | c |\n";
     let (front, body) = md2any::front_matter::extract(md);

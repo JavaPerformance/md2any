@@ -582,8 +582,13 @@ impl<'a> State<'a> {
             }
             Tag::BlockQuote => {
                 self.flush_paragraph();
+                // Only reset the accumulator when entering the OUTERMOST quote;
+                // a nested `>>`/`>>>` must keep the outer levels' paragraphs
+                // (resetting here dropped everything but the deepest level).
+                if self.in_blockquote == 0 {
+                    self.quote_paragraphs = Vec::new();
+                }
                 self.in_blockquote += 1;
-                self.quote_paragraphs = Vec::new();
             }
             Tag::CodeBlock(kind) => {
                 self.flush_paragraph();

@@ -633,7 +633,7 @@ fn css(theme: &Theme, layout: &Layout, rtl: bool) -> String {
 }}
 * {{ box-sizing: border-box; }}
 html, body {{ margin: 0; min-height: 100%; background: #111827; color: var(--body); }}
-body {{ font-family: var(--body-font); overflow: hidden; }}
+body {{ font-family: var(--body-font); overflow: hidden; overflow-wrap: anywhere; }}
 .deck {{ min-height: 100vh; display: grid; place-items: center; padding: 2.25vh 2.25vw; }}
 .slide {{
   display: none;
