@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by the `corporate`/`contrast` themes), honoured in PDF/SVG/PNG/HTML.
 - **`--list-themes`** prints the built-in theme names; new theming reference at
   `docs/theming.md`.
+- **Customisable layout geometry** (v1 of the custom-layout system): a `layout:`
+  block in a `--theme-file` overrides a base layout's knobs — `rail_width`,
+  `sidebar_width`, `title_underline`, `section_full_bg` — layered on the chosen
+  `--layout`. `Layout` is now data-driven for these knobs rather than hardcoded
+  per kind.
 - **AI deck drafting** (`--generate "prompt"`): draft a deck with a chat model,
   then render it through the normal pipeline. Speaks the OpenAI-compatible
   `/v1/chat/completions` API; endpoint, model, and key (`$MD2ANY_API_KEY` /

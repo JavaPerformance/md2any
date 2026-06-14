@@ -68,6 +68,10 @@ pub struct ThemeOverride {
     pub hero_size: Option<u32>,
 
     pub syntax: Option<SyntaxOverride>,
+
+    /// Optional layout geometry overlay (rail/sidebar width, title underline,
+    /// section background) applied over the chosen `--layout`.
+    pub layout: Option<crate::layout::LayoutOverride>,
 }
 
 #[derive(Debug, Default, Deserialize)]

@@ -879,11 +879,17 @@ fn build_once(
         .and_then(|p| p.parent())
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.to_path_buf());
-    if let Some(path) = &cli.theme_file {
-        let ov = theme::load_override(path)?;
+    let theme_override = match &cli.theme_file {
+        Some(path) => Some(
+            theme::load_override(path)
+                .with_context(|| format!("load theme overlay {}", path.display()))?,
+        ),
+        None => None,
+    };
+    if let Some(ov) = &theme_override {
         theme
-            .apply_override(&ov)
-            .with_context(|| format!("apply theme overlay {}", path.display()))?;
+            .apply_override(ov)
+            .with_context(|| "apply theme overlay")?;
     }
 
     let layout_name = cli
@@ -891,7 +897,10 @@ fn build_once(
         .clone()
         .or_else(|| front.layout.clone())
         .unwrap_or_else(|| "clean".into());
-    let layout = layout::Layout::resolve(&layout_name).with_context(|| "resolve layout")?;
+    let mut layout = layout::Layout::resolve(&layout_name).with_context(|| "resolve layout")?;
+    if let Some(lo) = theme_override.as_ref().and_then(|ov| ov.layout.as_ref()) {
+        layout.apply_override(lo);
+    }
     let pagination = resolve_pagination_options(
         cli.break_mode,
         cli.break_fill,
@@ -2245,18 +2254,27 @@ fn build_artifact_for_serve(inputs: &[PathBuf], cli: &ServeCli) -> Result<serve:
         .and_then(|p| p.parent())
         .filter(|p| !p.as_os_str().is_empty())
         .map(|p| p.to_path_buf());
-    if let Some(path) = &cli.theme_file {
-        let ov = theme::load_override(path)?;
+    let theme_override = match &cli.theme_file {
+        Some(path) => Some(
+            theme::load_override(path)
+                .with_context(|| format!("load theme overlay {}", path.display()))?,
+        ),
+        None => None,
+    };
+    if let Some(ov) = &theme_override {
         theme
-            .apply_override(&ov)
-            .with_context(|| format!("apply theme overlay {}", path.display()))?;
+            .apply_override(ov)
+            .with_context(|| "apply theme overlay")?;
     }
     let layout_name = cli
         .layout
         .clone()
         .or_else(|| front.layout.clone())
         .unwrap_or_else(|| "clean".into());
-    let layout = layout::Layout::resolve(&layout_name).with_context(|| "resolve layout")?;
+    let mut layout = layout::Layout::resolve(&layout_name).with_context(|| "resolve layout")?;
+    if let Some(lo) = theme_override.as_ref().and_then(|ov| ov.layout.as_ref()) {
+        layout.apply_override(lo);
+    }
     let pagination = resolve_pagination_options(
         cli.break_mode,
         cli.break_fill,

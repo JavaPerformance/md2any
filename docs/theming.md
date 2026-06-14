@@ -63,6 +63,14 @@ hero_size:     5400   # title-slide / section hero
 # Layout knobs
 title_align:   center   # left (default) | center — aligns ## slide titles
 
+# Customise the chosen --layout's geometry (layered on the base layout).
+# Widths are in EMU (914,400 per inch); e.g. 2,200,000 ≈ 2.4 in.
+layout:
+  rail_width:      120000    # studio: width of the left accent rail
+  sidebar_width:   3400000   # frame: width of the title sidebar
+  title_underline: false     # clean: draw the title rule under the heading
+  section_full_bg: true      # full-bleed section-divider background
+
 # Syntax highlighting
 syntax:
   keyword:   "#9333EA"
