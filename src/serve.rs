@@ -13,6 +13,12 @@
 //!
 //! Designed for the common dev loop: edit in your editor, save, see the
 //! browser tab refresh automatically.
+//!
+//! The `--edit` shell goes further: it previews the deck as live HTML in an
+//! iframe and *morphs* each rebuild into the existing DOM (see `EDITOR_HTML`),
+//! so only the changed slide's nodes update — scroll position is preserved and
+//! the slide under the caret is highlighted and scrolled into view using the
+//! per-slide `data-line` attributes the HTML renderer emits in editor mode.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -72,6 +78,26 @@ pub struct ServedFile {
     pub bytes: Vec<u8>,
 }
 
+/// A single rendered file produced on demand by the editor's "Generate to…"
+/// menu (`GET /export?format=…`).
+pub struct ExportFile {
+    pub filename: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Renders the current source to the requested single-file format. Called from
+/// request-handler threads, so it must be `Send + Sync`.
+pub type Exporter = Arc<dyn Fn(&str) -> Result<ExportFile, String> + Send + Sync>;
+
+/// Handles an AI-dock chat turn: takes the raw `POST /chat` request body
+/// (JSON `{messages:[…]}`) and streams the assistant's reply by invoking the
+/// `on_delta` sink with each text fragment as it arrives. Called from
+/// request-handler threads, so it must be `Send + Sync`.
+pub type ChatHandler = Arc<
+    dyn Fn(&str, &mut dyn FnMut(&str) -> Result<(), String>) -> Result<(), String> + Send + Sync,
+>;
+
 #[derive(Clone, Debug)]
 pub enum ServedArtifact {
     Pdf(Vec<u8>),
@@ -106,6 +132,10 @@ struct State {
     /// When the editor is enabled, the source file that `GET/POST /source`
     /// reads and writes (the first input). `None` in preview-only mode.
     edit_source: Option<PathBuf>,
+    /// Renders the current source to a requested format for `GET /export`.
+    export: Exporter,
+    /// Handles `POST /chat` turns for the AI dock.
+    chat: ChatHandler,
 }
 
 pub fn run<F>(
@@ -113,6 +143,8 @@ pub fn run<F>(
     paths: Vec<PathBuf>,
     format: ServeFormat,
     mut build: F,
+    export: Exporter,
+    chat: ChatHandler,
 ) -> std::io::Result<()>
 where
     F: FnMut() -> Result<ServedArtifact, String> + Send + 'static,
@@ -130,6 +162,8 @@ where
             version: 1,
             error: None,
             edit_source: edit_source.clone(),
+            export: export.clone(),
+            chat: chat.clone(),
         },
         Err(e) => {
             eprintln!("md2any: initial build failed: {e}");
@@ -138,6 +172,8 @@ where
                 version: 1,
                 error: Some(e),
                 edit_source: edit_source.clone(),
+                export: export.clone(),
+                chat: chat.clone(),
             }
         }
     };
@@ -251,6 +287,56 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()
                 write_response(&mut stream, 404, "Not Found", "text/plain", b"not found")?;
             }
         }
+        // Editor "Generate to…": render the current source to a single-file
+        // format and stream it back as a download.
+        ("GET", "/export") => {
+            let fmt = query_param(&raw_path, "format").unwrap_or_default();
+            let export = state.lock().unwrap().export.clone();
+            match export(&fmt) {
+                Ok(file) => {
+                    write_download(&mut stream, &file.content_type, &file.filename, &file.bytes)?
+                }
+                Err(e) => {
+                    write_response(&mut stream, 400, "Bad Request", "text/plain", e.as_bytes())?
+                }
+            }
+        }
+        // AI dock: one chat turn, streamed. Body is `{messages:[…]}`; the
+        // response is newline-delimited JSON — `{"delta":"…"}` per fragment,
+        // then `{"done":true}` or `{"error":"…"}`.
+        ("POST", "/chat") => {
+            let chat = state.lock().unwrap().chat.clone();
+            let body_str = String::from_utf8_lossy(&body).into_owned();
+            // Flush each fragment promptly so the browser shows it streaming.
+            let _ = stream.set_nodelay(true);
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\n\
+                  Content-Type: application/x-ndjson; charset=utf-8\r\n\
+                  Cache-Control: no-store\r\n\
+                  Connection: close\r\n\r\n",
+            )?;
+            // Scope the sink so its &mut borrow of `stream` ends before the
+            // final status line is written.
+            let result = {
+                let mut sink = |delta: &str| -> Result<(), String> {
+                    let line = format!("{{\"delta\":\"{}\"}}\n", escape_json(delta));
+                    stream
+                        .write_all(line.as_bytes())
+                        .and_then(|_| stream.flush())
+                        .map_err(|e| e.to_string())
+                };
+                chat(&body_str, &mut sink)
+            };
+            match result {
+                Ok(()) => {
+                    let _ = stream.write_all(b"{\"done\":true}\n");
+                }
+                Err(e) => {
+                    let _ = stream
+                        .write_all(format!("{{\"error\":\"{}\"}}\n", escape_json(&e)).as_bytes());
+                }
+            }
+        }
         // Editor: read the current source markdown.
         ("GET", "/source") => {
             let src = state.lock().unwrap().edit_source.clone();
@@ -362,6 +448,42 @@ fn read_request<R: Read>(stream: &mut R) -> std::io::Result<(String, String, Vec
 
 fn find_subseq(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Pull a single query-string value out of a raw request path, e.g.
+/// `query_param("/export?format=pdf", "format") == Some("pdf")`. Only handles
+/// the plain `key=value` form the editor sends — no percent-decoding.
+fn query_param(raw_path: &str, key: &str) -> Option<String> {
+    let query = raw_path.split('?').nth(1)?;
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| v.to_string())
+    })
+}
+
+fn write_download(
+    stream: &mut TcpStream,
+    content_type: &str,
+    filename: &str,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    // Strip anything that could break out of the quoted filename.
+    let safe: String = filename
+        .chars()
+        .filter(|c| !matches!(c, '"' | '\\' | '\r' | '\n'))
+        .collect();
+    let header = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: {content_type}\r\n\
+         Content-Length: {len}\r\n\
+         Content-Disposition: attachment; filename=\"{safe}\"\r\n\
+         Cache-Control: no-store\r\n\
+         Connection: close\r\n\r\n",
+        len = bytes.len(),
+    );
+    stream.write_all(header.as_bytes())?;
+    stream.write_all(bytes)?;
+    Ok(())
 }
 
 fn write_response(
@@ -532,6 +654,7 @@ const EDITOR_HTML: &str = r##"<!DOCTYPE html>
   #bar b { color: #fff; }
   #status { color: #93c5fd; }
   #status.err { color: #fca5a5; }
+  #pos { color: #6b7280; }
   #fmt { margin-left: auto; color: #9ca3af; }
   #main { flex: 1 1 auto; display: flex; min-height: 0; }
   #edit { width: 44%; min-width: 220px; display: flex; }
@@ -542,114 +665,272 @@ const EDITOR_HTML: &str = r##"<!DOCTYPE html>
     tab-size: 2; white-space: pre; overflow: auto;
   }
   #divider { width: 1px; background: #1f2937; }
-  /* The preview is a scrollable strip of per-slide images we own, so a rebuild
-     swaps image sources in place (scroll preserved) instead of reloading a
-     whole document and snapping to the top. */
-  #view { flex: 1 1 auto; overflow: auto; background: #1a1a1a; min-width: 0; }
+  /* Live-DOM preview: the iframe holds the rendered deck and we morph each
+     rebuild into its existing DOM, so only the changed slide's nodes update —
+     scroll position and image-load state on every other slide are preserved. */
+  #view { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; background: #1a1a1a; }
   #error {
-    display: none; position: sticky; top: 0; margin: 8px;
+    display: none; margin: 8px;
     padding: 10px 12px; background: #7f1d1d; color: #fff; font-size: 12px;
-    border-radius: 4px; z-index: 4; white-space: pre-wrap;
+    border-radius: 4px; z-index: 4; white-space: pre-wrap; flex: 0 0 auto;
   }
-  #deck { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 16px; }
-  .pslide {
-    width: 100%; max-width: 980px; border-radius: 2px; outline: 2px solid transparent;
-    outline-offset: 3px; transition: outline-color .15s; box-shadow: 0 2px 10px rgba(0,0,0,.45);
-  }
-  .pslide.active { outline-color: #2563eb; }
-  .pslide img { width: 100%; display: block; background: #fff; }
-  #deck > embed, #deck > iframe { width: 100%; height: 80vh; border: 0; background: #fff; }
+  #host { flex: 1 1 auto; min-height: 0; overflow: auto; }
+  #host iframe, #host embed { width: 100%; height: 100%; border: 0; background: #fff; display: block; }
+  #host img { width: 100%; display: block; background: #fff; }
+  #bar button.tool { background: #1f2937; color: #e5e7eb; border: 0; border-radius: 4px; padding: 4px 9px; cursor: pointer; font-size: 12px; }
+  #bar button.tool:hover { background: #374151; }
+  #menu { position: relative; }
+  #genMenu { display: none; position: absolute; right: 0; top: 30px; background: #0b1220; border: 1px solid #1f2937; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.45); min-width: 168px; z-index: 30; padding: 4px; }
+  #genMenu.open { display: block; }
+  #genMenu button { display: block; width: 100%; text-align: left; background: none; border: 0; color: #cbd5e1; padding: 6px 10px; font-size: 12px; cursor: pointer; border-radius: 4px; }
+  #genMenu button:hover { background: #1f2937; }
+  #genMenu .sep { height: 1px; background: #1f2937; margin: 4px 2px; }
+  /* Slide-in style panel: front-matter-backed theme/colour/size controls. */
+  #panel { position: fixed; top: 0; right: 0; height: 100%; width: 286px; box-sizing: border-box;
+    background: #0b1220; border-left: 1px solid #1f2937; box-shadow: -8px 0 24px rgba(0,0,0,.4);
+    transform: translateX(100%); transition: transform .18s ease; z-index: 20; overflow: auto; padding: 14px; }
+  #panel.open { transform: none; }
+  #panel h3 { margin: 16px 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #6b7280; }
+  #panel h3:first-child { margin-top: 0; }
+  #panel .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; color: #cbd5e1; }
+  #panel .row label { flex: 1 1 auto; }
+  #panel .swatches { display: flex; flex-wrap: wrap; gap: 6px; }
+  #panel .swatch { width: 26px; height: 26px; border-radius: 4px; border: 2px solid transparent; cursor: pointer; }
+  #panel .swatch.sel { border-color: #fff; }
+  #panel .seg { display: flex; flex-wrap: wrap; gap: 4px; }
+  #panel .seg button { background: #1f2937; color: #cbd5e1; border: 0; border-radius: 4px; padding: 3px 8px; font-size: 12px; cursor: pointer; }
+  #panel .seg button.sel { background: #2563eb; color: #fff; }
+  #panel input[type=range] { flex: 1 1 auto; min-width: 0; }
+  #panel input[type=color] { width: 34px; height: 24px; border: 0; background: none; padding: 0; cursor: pointer; }
+  #panel .val { width: 30px; text-align: right; color: #9ca3af; }
+  #panel .clear { background: none; border: 0; color: #6b7280; cursor: pointer; font-size: 13px; padding: 0 2px; }
+  #panel .clear:hover { color: #e5e7eb; }
+  #panel input[type=text] { width: 100%; background: #111827; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 4px; padding: 5px 7px; font-size: 12px; box-sizing: border-box; }
+  /* AI assistant dock (bottom). */
+  #ai { flex: 0 0 auto; display: flex; flex-direction: column; border-top: 1px solid #1f2937; background: #0b1220; max-height: 44%; }
+  #ai.collapsed { max-height: none; }
+  #ai.collapsed #chat, #ai.collapsed #airow { display: none; }
+  #aibar { display: flex; align-items: center; gap: 10px; padding: 7px 12px; background: #111827; font-size: 13px; color: #e5e7eb; cursor: pointer; flex: 0 0 auto; }
+  #aibar #aihint { color: #6b7280; font-size: 12px; }
+  #aibar button { margin-left: auto; }
+  #chat { flex: 1 1 auto; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 9px; min-height: 140px; }
+  .msg { max-width: 82%; padding: 8px 11px; border-radius: 11px; font-size: 13px; line-height: 1.46; white-space: pre-wrap; word-break: break-word; }
+  .msg.user { align-self: flex-end; background: #2563eb; color: #fff; }
+  .msg.bot { align-self: flex-start; background: #1f2937; color: #e5e7eb; }
+  .msg.err { align-self: flex-start; background: #7f1d1d; color: #fff; }
+  .msg.busy { opacity: .6; font-style: italic; }
+  .msg .apply { margin-top: 9px; }
+  .msg .apply button { background: #16a34a; color: #fff; border: 0; border-radius: 6px; padding: 6px 11px; font-size: 12px; cursor: pointer; }
+  .msg .apply button:disabled { background: #374151; cursor: default; }
+  #aichips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; flex: 0 0 auto; }
+  #ai.collapsed #aichips { display: none; }
+  .chip { background: #1f2937; color: #cbd5e1; border: 1px solid #374151; border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+  .chip:hover { background: #374151; color: #fff; }
+  #airow { display: flex; gap: 8px; padding: 9px 12px; border-top: 1px solid #1f2937; flex: 0 0 auto; }
+  #aiInput { flex: 1 1 auto; resize: none; background: #0b1220; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 6px; padding: 8px 10px; font: 13px/1.4 system-ui, sans-serif; }
+  #aiInput:focus { outline: none; border-color: #2563eb; }
 </style>
 </head>
 <body>
-<div id="bar"><b>md2any</b> editor <span id="status">ready</span><span id="fmt"></span></div>
+<div id="bar"><b>md2any</b> editor <span id="status">ready</span><span id="pos"></span><span id="fmt"></span><div id="menu"><button class="tool" id="genBtn">Generate &#9662;</button><div id="genMenu">
+  <button data-md>Save .md</button>
+  <div class="sep"></div>
+  <button data-fmt="pptx">PowerPoint (.pptx)</button>
+  <button data-fmt="odp">Impress (.odp)</button>
+  <button data-fmt="pdf">PDF (.pdf)</button>
+  <button data-fmt="docx">Word (.docx)</button>
+  <button data-fmt="odt">Writer (.odt)</button>
+  <button data-fmt="html">HTML (.html)</button>
+</div></div><button class="tool" id="styleBtn" title="Style panel">🎨 Style</button></div>
 <div id="main">
   <div id="edit"><textarea id="src" spellcheck="false" placeholder="# Type markdown here…"></textarea></div>
   <div id="divider"></div>
   <div id="view">
     <div id="error"></div>
-    <div id="deck"></div>
+    <div id="host"></div>
   </div>
+</div>
+<div id="ai" class="collapsed">
+  <div id="aibar"><span>🤖 Assistant</span><span id="aihint">ask about or edit this deck — it can see your markdown</span><button class="tool" id="aiToggle" title="Toggle assistant">&#9650;</button></div>
+  <div id="chat"></div>
+  <div id="aichips">
+    <button class="chip">Proofread the whole deck</button>
+    <button class="chip">Make it more concise</button>
+    <button class="chip">Add a summary slide at the end</button>
+    <button class="chip">Add speaker notes to each slide</button>
+    <button class="chip">Suggest a better title</button>
+  </div>
+  <div id="airow">
+    <textarea id="aiInput" rows="1" placeholder="e.g. “add a slide summarising the key points” or “tighten the intro”…"></textarea>
+    <button class="tool" id="aiSend">Send</button>
+  </div>
+</div>
+<div id="panel">
+  <h3>Theme</h3>
+  <div class="swatches" id="themes"></div>
+  <h3>Aspect</h3>
+  <div class="seg" id="aspect"></div>
+  <h3>Transition</h3>
+  <div class="seg" id="transition"></div>
+  <h3>Colours</h3>
+  <div class="row"><label>Accent</label><input type="color" data-skey="accent"><button class="clear" data-clear="accent" title="Reset">&#x21ba;</button></div>
+  <div class="row"><label>Background</label><input type="color" data-skey="bg"><button class="clear" data-clear="bg" title="Reset">&#x21ba;</button></div>
+  <div class="row"><label>Title</label><input type="color" data-skey="title_color"><button class="clear" data-clear="title_color" title="Reset">&#x21ba;</button></div>
+  <div class="row"><label>Text</label><input type="color" data-skey="body_color"><button class="clear" data-clear="body_color" title="Reset">&#x21ba;</button></div>
+  <h3>Type</h3>
+  <div class="row"><label>Title size</label><input type="range" min="22" max="60" data-srange="title_size"><span class="val" data-val="title_size"></span><button class="clear" data-clear="title_size" title="Reset">&#x21ba;</button></div>
+  <div class="row"><label>Body size</label><input type="range" min="12" max="30" data-srange="body_size"><span class="val" data-val="body_size"></span><button class="clear" data-clear="body_size" title="Reset">&#x21ba;</button></div>
+  <h3>Font family</h3>
+  <div class="row"><input type="text" id="fontInput" placeholder="e.g. Georgia, Inter…"></div>
 </div>
 <script>
 const ta = document.getElementById('src');
 const statusEl = document.getElementById('status');
 const fmtEl = document.getElementById('fmt');
-const deck = document.getElementById('deck');
+const host = document.getElementById('host');
 const errorBox = document.getElementById('error');
-let known = null, ver = 0, fmt = 'svg', count = 0, isImage = true, saveTimer = null;
+const posEl = document.getElementById('pos');
+let known = null, ver = 0, fmt = 'html', frame = null, frameReady = false, saveTimer = null;
 
 function setStatus(t, err) { statusEl.textContent = t; statusEl.className = err ? 'err' : ''; }
 function showError(m) { errorBox.style.display = m ? 'block' : 'none'; errorBox.textContent = m || ''; }
-function srcFor(i) { return '/slides/slide-' + String(i + 1).padStart(3, '0') + '.' + fmt + '?v=' + ver; }
 
-// Match the DOM slide-count, reusing existing nodes so scroll is preserved.
-function ensureSlides(n) {
-  while (deck.children.length < n) {
-    const d = document.createElement('div');
-    d.className = 'pslide';
-    const img = document.createElement('img');
-    img.alt = 'Slide ' + (deck.children.length + 1);
-    d.appendChild(img);
-    deck.appendChild(d);
+// --- Minimal in-place DOM morph (vendored, no CDN / no deps) ---------------
+// Mutates `from` to match `to`, touching only the nodes that actually differ:
+// unchanged elements (and their scroll/focus/loaded-image state) are left as-is.
+function imported(from, node) { return from.ownerDocument.importNode(node, true); }
+function morphAttrs(from, to) {
+  for (let i = from.attributes.length - 1; i >= 0; i--) {
+    const n = from.attributes[i].name;
+    if (!to.hasAttribute(n)) from.removeAttribute(n);
   }
-  while (deck.children.length > n) deck.removeChild(deck.lastChild);
-}
-function refreshSrcs() {
-  for (let i = 0; i < deck.children.length; i++) {
-    const img = deck.children[i].querySelector('img');
-    if (!img) continue;
-    const s = srcFor(i);
-    if (img.getAttribute('src') !== s) img.setAttribute('src', s);
+  for (let i = 0; i < to.attributes.length; i++) {
+    const a = to.attributes[i];
+    if (from.getAttribute(a.name) !== a.value) from.setAttribute(a.name, a.value);
   }
 }
-// Map the caret to a slide: count slide-start markers (#, ##, --- rule) before
-// it, skipping a leading front-matter block. Approximate (the paginator may add
-// continuation slides), but enough to keep the edited slide in view.
-function activeIndex() {
-  const before = ta.value.slice(0, ta.selectionStart);
-  const lines = before.split('\n');
-  let start = 0;
+function morph(from, to) {
+  if (from.nodeName !== to.nodeName) { from.replaceWith(imported(from, to)); return; }
+  if (from.nodeType === 1) morphAttrs(from, to);
+  let f = from.firstChild, t = to.firstChild;
+  while (t) {
+    const nt = t.nextSibling;
+    if (!f) { from.appendChild(imported(from, t)); t = nt; continue; }
+    const nf = f.nextSibling;
+    if (f.nodeType !== t.nodeType || f.nodeName !== t.nodeName) {
+      from.replaceChild(imported(from, t), f);
+    } else if (f.nodeType === 3 || f.nodeType === 8) {
+      if (f.nodeValue !== t.nodeValue) f.nodeValue = t.nodeValue;
+    } else if (f.nodeType === 1) {
+      morph(f, t);
+    }
+    f = nf; t = nt;
+  }
+  while (f) { const nf = f.nextSibling; from.removeChild(f); f = nf; }
+}
+
+// --- Caret → slide (exact, via data-line) ----------------------------------
+// source_line counts from the start of the markdown *body*, so first subtract
+// the leading front-matter block from the caret's textarea line.
+function frontMatterLines(text) {
+  const lines = text.split('\n');
   if (lines[0] && lines[0].trim() === '---') {
     for (let j = 1; j < lines.length; j++) {
-      if (lines[j].trim() === '---') { start = j + 1; break; }
+      if (lines[j].trim() === '---') return j + 1;
     }
   }
-  let idx = 0;
-  for (let j = start; j < lines.length; j++) {
-    if (/^#{1,2}\s/.test(lines[j]) || /^---\s*$/.test(lines[j])) idx++;
-  }
-  const zero = ta.value.startsWith('---') ? idx : Math.max(0, idx - 1);
-  return Math.min(Math.max(zero, 0), Math.max(0, count - 1));
+  return 0;
 }
-function focusActive(scroll) {
-  if (!isImage || count === 0) return;
-  const i = activeIndex();
-  for (let k = 0; k < deck.children.length; k++) {
-    deck.children[k].classList.toggle('active', k === i);
-  }
-  if (scroll && deck.children[i]) deck.children[i].scrollIntoView({ block: 'nearest' });
+function caretBodyLine() {
+  const before = ta.value.slice(0, ta.selectionStart);
+  const line = before.split('\n').length - 1;
+  return Math.max(0, line - frontMatterLines(ta.value));
 }
-async function loadManifest() {
+function focusCaret(scroll) {
+  if (!frame || !frameReady) return;
+  const doc = frame.contentDocument;
+  if (!doc) return;
+  const slides = Array.from(doc.querySelectorAll('.slide'));
+  if (!slides.length) return;
+  const bl = caretBodyLine();
+  let pick = slides[0];
+  for (const s of slides) {
+    if (Number(s.getAttribute('data-line') || 0) <= bl) pick = s;
+    else break;
+  }
+  slides.forEach(s => s.classList.toggle('caret', s === pick));
+  posEl.textContent = (slides.indexOf(pick) + 1) + ' / ' + slides.length;
+  if (scroll) pick.scrollIntoView({ block: 'nearest' });
+}
+
+// Reverse of caretBodyLine: the byte offset of the start of a body line in the
+// textarea, so clicking a slide can drop the caret onto its source.
+function lineToOffset(bodyLine) {
+  const target = bodyLine + frontMatterLines(ta.value);
+  const lines = ta.value.split('\n');
+  let pos = 0;
+  for (let i = 0; i < target && i < lines.length; i++) pos += lines[i].length + 1;
+  return Math.min(pos, ta.value.length);
+}
+// Two-way binding: click a slide in the preview to move the source caret to the
+// line that produced it. Delegated on the iframe document, which survives morph.
+function bindFrameClicks() {
+  const doc = frame.contentDocument;
+  if (!doc) return;
+  doc.addEventListener('click', (e) => {
+    const s = e.target.closest ? e.target.closest('.slide') : null;
+    if (!s) return;
+    const off = lineToOffset(Number(s.getAttribute('data-line') || 0));
+    ta.focus();
+    ta.selectionStart = ta.selectionEnd = off;
+    const lh = parseFloat(getComputedStyle(ta).lineHeight) || 20;
+    const ln = ta.value.slice(0, off).split('\n').length - 1;
+    ta.scrollTop = Math.max(0, ln * lh - ta.clientHeight / 2);
+    focusCaret(true);
+  });
+}
+
+function ensureFrame() {
+  frame = document.createElement('iframe');
+  frame.title = 'md2any live preview';
+  frame.addEventListener('load', () => { frameReady = true; bindFrameClicks(); focusCaret(true); });
+  host.innerHTML = '';
+  host.appendChild(frame);
+  frame.src = '/deck.html?v=' + ver;
+}
+async function applyHtml() {
+  const doc = frame && frame.contentDocument;
+  if (!doc || !doc.documentElement) { frameReady = false; ensureFrame(); return; }
+  const html = await (await fetch('/deck.html?v=' + ver, { cache: 'no-store' })).text();
+  const next = new DOMParser().parseFromString(html, 'text/html');
+  morph(doc.documentElement, next.documentElement);
+  focusCaret(false);
+}
+// Non-HTML preview formats can't be morphed per slide — reload on each version.
+function applyFallback() {
+  frame = null; frameReady = false;
+  if (fmt === 'pdf') host.innerHTML = '<embed src="/deck.pdf?v=' + ver + '" type="application/pdf"/>';
+  else if (fmt === 'svg' || fmt === 'png') host.innerHTML = '<img src="/slides/slide-001.' + fmt + '?v=' + ver + '" alt="Slide 1"/>';
+  else host.innerHTML = '<iframe src="/deck.html?v=' + ver + '" title="preview"></iframe>';
+}
+async function loadManifest(initial) {
   const m = await (await fetch('/manifest.json', { cache: 'no-store' })).json();
-  ver = m.version; known = String(m.version); fmtEl.textContent = m.format;
+  ver = m.version; known = String(m.version); fmt = m.format; fmtEl.textContent = m.format;
   showError(m.error || '');
-  if (m.format === 'svg' || m.format === 'png') {
-    isImage = true; fmt = m.format; count = Math.max(1, m.slide_count || 1);
-    ensureSlides(count); refreshSrcs(); focusActive(true);
+  if (fmt === 'html') {
+    if (initial || !frame) ensureFrame();
+    // On a build error keep the last good deck on screen (just show the
+    // banner) — a transient typo shouldn't wipe the slide you're editing.
+    else if (!m.error) await applyHtml();
   } else {
-    // pdf/html can't be focused per slide — single embed, reloaded on change.
-    isImage = false; count = 0;
-    deck.innerHTML = m.format === 'pdf'
-      ? '<embed src="/deck.pdf?v=' + ver + '" type="application/pdf"/>'
-      : '<iframe src="/deck.html?v=' + ver + '" title="preview"></iframe>';
+    applyFallback();
   }
 }
 async function tick() {
   try {
     const v = (await (await fetch('/version', { cache: 'no-store' })).text()).trim();
     if (known === null) known = v;
-    else if (v !== known) { known = v; await loadManifest(); }
+    else if (v !== known) { known = v; await loadManifest(false); }
   } catch (e) {}
 }
 async function save() {
@@ -659,9 +940,18 @@ async function save() {
     setStatus(r.ok ? 'saved' : 'save failed', !r.ok);
   } catch (e) { setStatus('save failed', true); }
 }
-ta.addEventListener('input', () => { setStatus('editing…'); focusActive(true); clearTimeout(saveTimer); saveTimer = setTimeout(save, 450); });
-ta.addEventListener('keyup', () => focusActive(true));
-ta.addEventListener('click', () => focusActive(true));
+function scheduleSave() { clearTimeout(saveTimer); saveTimer = setTimeout(() => { saveTimer = null; save(); }, 450); }
+// Flush a pending debounced save so edits aren't lost when the tab is hidden
+// or closed. sendBeacon survives unload where a normal fetch would be aborted.
+function flush(beacon) {
+  if (saveTimer === null) return;
+  clearTimeout(saveTimer); saveTimer = null;
+  if (beacon && navigator.sendBeacon) navigator.sendBeacon('/source', new Blob([ta.value], { type: 'text/plain; charset=utf-8' }));
+  else save();
+}
+ta.addEventListener('input', () => { setStatus('editing…'); focusCaret(true); scheduleSave(); });
+ta.addEventListener('keyup', () => focusCaret(true));
+ta.addEventListener('click', () => focusCaret(true));
 ta.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     e.preventDefault();
@@ -670,9 +960,254 @@ ta.addEventListener('keydown', (e) => {
     ta.selectionStart = ta.selectionEnd = s + 2;
   }
 });
-fetch('/source', { cache: 'no-store' }).then(r => r.text()).then(t => { ta.value = t; }).catch(() => {});
+window.addEventListener('beforeunload', () => flush(true));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flush(true); });
+
+// --- Style panel: reads & writes the document's front-matter -----------------
+// `style:` is an inline ThemeOverride (colours/sizes/fonts); theme/aspect/etc.
+// are top-level keys. The panel rewrites these in place and lets the normal
+// save → rebuild → morph path apply them, so choices persist in the file.
+const MANAGED_TOP = ['theme', 'aspect', 'transition', 'font'];
+const THEMES = [['light','#2563eb'],['dark','#3b82f6'],['corporate','#1e3a8a'],['sepia','#a16207'],['contrast','#111111'],['midnight','#6366f1'],['terminal','#22c55e'],['pastel','#f472b6']];
+let style = { style: {} };
+
+function splitDoc() {
+  const lines = ta.value.split('\n');
+  if (lines[0] && lines[0].trim() === '---') {
+    for (let i = 1; i < lines.length; i++) {
+      if (lines[i].trim() === '---') return { pre: lines.slice(1, i), bodyFrom: i + 1, lines };
+    }
+  }
+  return { pre: [], bodyFrom: 0, lines };
+}
+function unquote(s) { return s.trim().replace(/^["']|["']$/g, ''); }
+function readStyle() {
+  const d = splitDoc(); const st = { style: {} }; let inStyle = false;
+  for (const l of d.pre) {
+    if (/^style:\s*$/.test(l)) { inStyle = true; continue; }
+    if (inStyle) {
+      const m = l.match(/^\s+([A-Za-z_]+):\s*(.*)$/);
+      if (m) { st.style[m[1]] = unquote(m[2]); continue; }
+      inStyle = false;
+    }
+    const m = l.match(/^([A-Za-z_]+):\s*(.*)$/);
+    if (m && MANAGED_TOP.includes(m[1])) st[m[1]] = unquote(m[2]);
+  }
+  style = st;
+}
+function writeStyle() {
+  const d = splitDoc(); const keep = []; let inStyle = false;
+  for (const l of d.pre) {
+    if (/^style:\s*$/.test(l)) { inStyle = true; continue; }
+    if (inStyle) { if (/^\s+\S/.test(l)) continue; inStyle = false; }
+    const m = l.match(/^([A-Za-z_]+):/);
+    if (m && MANAGED_TOP.includes(m[1])) continue;
+    keep.push(l);
+  }
+  for (const k of MANAGED_TOP) if (style[k]) keep.push(k + ': ' + style[k]);
+  const sk = Object.keys(style.style).filter(k => style.style[k] !== '' && style.style[k] != null);
+  if (sk.length) {
+    keep.push('style:');
+    for (const k of sk) {
+      const v = style.style[k];
+      const q = typeof v === 'string' && /[#:]/.test(v);
+      keep.push('  ' + k + ': ' + (q ? '"' + v + '"' : v));
+    }
+  }
+  const body = d.lines.slice(d.bodyFrom);
+  const head = (keep.length || body.length) ? ['---', ...keep, '---'] : [];
+  const sel = ta.selectionStart;
+  ta.value = head.concat(body).join('\n');
+  ta.selectionStart = ta.selectionEnd = Math.min(sel, ta.value.length);
+  setStatus('editing…'); scheduleSave(); focusCaret(true);
+}
+function syncControls() {
+  document.querySelectorAll('#themes .swatch').forEach(s => s.classList.toggle('sel', s.dataset.theme === (style.theme || 'light')));
+  document.querySelectorAll('#aspect button').forEach(b => b.classList.toggle('sel', b.dataset.v === (style.aspect || '16:9')));
+  document.querySelectorAll('#transition button').forEach(b => b.classList.toggle('sel', b.dataset.v === (style.transition || 'none')));
+  document.querySelectorAll('input[data-skey]').forEach(inp => { const v = style.style[inp.dataset.skey]; if (v) inp.value = v; });
+  document.querySelectorAll('input[data-srange]').forEach(inp => {
+    const k = inp.dataset.srange, has = style.style[k] != null && style.style[k] !== '';
+    inp.value = has ? style.style[k] : inp.min;
+    const val = document.querySelector('[data-val="' + k + '"]'); if (val) val.textContent = has ? style.style[k] : '–';
+  });
+  const fi = document.getElementById('fontInput'); if (fi) fi.value = style.font || '';
+}
+function buildPanel() {
+  const th = document.getElementById('themes');
+  THEMES.forEach(([name, col]) => {
+    const b = document.createElement('div');
+    b.className = 'swatch'; b.style.background = col; b.title = name; b.dataset.theme = name;
+    b.onclick = () => { style.theme = name; writeStyle(); syncControls(); };
+    th.appendChild(b);
+  });
+  const seg = (id, opts) => {
+    const el = document.getElementById(id);
+    opts.forEach(o => {
+      const b = document.createElement('button'); b.textContent = o; b.dataset.v = o;
+      b.onclick = () => { style[id] = o; writeStyle(); syncControls(); };
+      el.appendChild(b);
+    });
+  };
+  seg('aspect', ['16:9', '4:3', '16:10']);
+  seg('transition', ['none', 'fade', 'push', 'wipe', 'cover']);
+  document.querySelectorAll('input[data-skey]').forEach(inp =>
+    inp.addEventListener('input', () => { style.style[inp.dataset.skey] = inp.value; writeStyle(); }));
+  document.querySelectorAll('input[data-srange]').forEach(inp =>
+    inp.addEventListener('input', () => {
+      style.style[inp.dataset.srange] = Number(inp.value);
+      const val = document.querySelector('[data-val="' + inp.dataset.srange + '"]'); if (val) val.textContent = inp.value;
+      writeStyle();
+    }));
+  document.querySelectorAll('[data-clear]').forEach(b =>
+    b.addEventListener('click', () => { delete style.style[b.dataset.clear]; writeStyle(); syncControls(); }));
+  const fi = document.getElementById('fontInput');
+  if (fi) fi.addEventListener('input', () => { style.font = fi.value.trim(); writeStyle(); });
+}
+document.getElementById('styleBtn').addEventListener('click', () => {
+  const p = document.getElementById('panel');
+  if (!p.classList.contains('open')) { readStyle(); syncControls(); }
+  p.classList.toggle('open');
+});
+buildPanel();
+
+// --- Generate / Save menu ----------------------------------------------------
+const genBtn = document.getElementById('genBtn');
+const genMenu = document.getElementById('genMenu');
+genBtn.addEventListener('click', (e) => { e.stopPropagation(); genMenu.classList.toggle('open'); });
+document.addEventListener('click', () => genMenu.classList.remove('open'));
+function triggerDownload(href, name) {
+  const a = document.createElement('a');
+  a.href = href; if (name) a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+}
+function saveMd() {
+  const url = URL.createObjectURL(new Blob([ta.value], { type: 'text/markdown' }));
+  triggerDownload(url, 'deck.md');
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function exportAs(fmt) {
+  // Flush any pending edit to disk first so the export reflects the latest text.
+  clearTimeout(saveTimer); saveTimer = null;
+  setStatus('generating ' + fmt + '…');
+  try {
+    await save();
+    triggerDownload('/export?format=' + encodeURIComponent(fmt), '');
+    setStatus('generated ' + fmt);
+  } catch (e) { setStatus('generate failed', true); }
+}
+genMenu.querySelectorAll('[data-fmt]').forEach(b =>
+  b.addEventListener('click', () => { genMenu.classList.remove('open'); exportAs(b.dataset.fmt); }));
+genMenu.querySelector('[data-md]').addEventListener('click', () => { genMenu.classList.remove('open'); saveMd(); });
+
+// --- AI assistant dock -------------------------------------------------------
+const aiEl = document.getElementById('ai');
+const aiToggle = document.getElementById('aiToggle');
+const aibar = document.getElementById('aibar');
+const chatEl = document.getElementById('chat');
+const aiInput = document.getElementById('aiInput');
+const aiSend = document.getElementById('aiSend');
+let chatHistory = [];   // [{role:'user'|'assistant', content}]
+let chatBusy = false;
+
+function toggleAi() {
+  aiEl.classList.toggle('collapsed');
+  const open = !aiEl.classList.contains('collapsed');
+  aiToggle.innerHTML = open ? '&#9660;' : '&#9650;';
+  if (open) aiInput.focus();
+}
+aibar.addEventListener('click', (e) => { if (e.target === aiToggle) return; toggleAi(); });
+aiToggle.addEventListener('click', (e) => { e.stopPropagation(); toggleAi(); });
+
+function addMsg(cls, text) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls; d.textContent = text;
+  chatEl.appendChild(d); chatEl.scrollTop = chatEl.scrollHeight;
+  return d;
+}
+// Pull the updated-document block out of a reply, if any. The document itself
+// can contain ``` code fences, so prefer an unambiguous outer fence (four
+// backticks or ~~~); fall back to a *greedy* triple-backtick match that runs to
+// the LAST fence, so inner code blocks don't terminate it early.
+function extractDoc(reply) {
+  const tag = '(?:md2any|markdown|md)?[ \\t]*\\r?\\n';
+  let m = reply.match(new RegExp('````' + tag + '([\\s\\S]*?)````'))
+       || reply.match(new RegExp('~~~' + tag + '([\\s\\S]*?)~~~'))
+       || reply.match(new RegExp('```' + tag + '([\\s\\S]*)```')); // greedy → last ```
+  if (!m) return null;
+  const explain = reply.slice(0, m.index).trim();
+  return { explain: explain || 'Here is the updated document.', doc: m[1].replace(/\s+$/, '') };
+}
+function applyDoc(doc) {
+  ta.value = doc;
+  ta.selectionStart = ta.selectionEnd = 0;
+  setStatus('applying…'); scheduleSave(); readStyle(); syncControls(); focusCaret(true);
+}
+// Replace a finished bot bubble's raw text with a clean explanation + an
+// "Apply" button when the reply carried a document block.
+function finalizeBotMsg(bubble, reply) {
+  const ext = extractDoc(reply);
+  if (!ext) { bubble.textContent = reply; return; }
+  bubble.textContent = ext.explain;
+  const wrap = document.createElement('div'); wrap.className = 'apply';
+  const btn = document.createElement('button'); btn.textContent = '✓ Apply to document';
+  btn.onclick = () => { applyDoc(ext.doc); btn.textContent = '✓ Applied'; btn.disabled = true; };
+  wrap.appendChild(btn); bubble.appendChild(wrap);
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+async function sendChat() {
+  const text = aiInput.value.trim();
+  if (!text || chatBusy) return;
+  aiInput.value = ''; aiInput.style.height = 'auto';
+  addMsg('user', text);
+  chatHistory.push({ role: 'user', content: text });
+  chatBusy = true; aiSend.disabled = true;
+  const bubble = addMsg('bot busy', 'thinking…');
+  let acc = '', errored = null;
+  try {
+    const r = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: chatHistory }) });
+    const reader = r.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line) continue;
+        let obj; try { obj = JSON.parse(line); } catch (e) { continue; }
+        if (obj.delta != null) {
+          if (!acc) bubble.classList.remove('busy');
+          acc += obj.delta; bubble.textContent = acc;
+          chatEl.scrollTop = chatEl.scrollHeight;
+        } else if (obj.error) {
+          errored = obj.error;
+        }
+      }
+    }
+  } catch (e) {
+    errored = 'request failed: ' + e.message;
+  }
+  if (errored) {
+    bubble.remove(); addMsg('err', errored);
+  } else {
+    chatHistory.push({ role: 'assistant', content: acc });
+    bubble.classList.remove('busy');
+    finalizeBotMsg(bubble, acc);
+  }
+  chatBusy = false; aiSend.disabled = false; aiInput.focus();
+}
+aiSend.addEventListener('click', sendChat);
+aiInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } });
+document.querySelectorAll('#aichips .chip').forEach(c =>
+  c.addEventListener('click', () => { if (chatBusy) return; aiInput.value = c.textContent; sendChat(); }));
+aiInput.addEventListener('input', () => { aiInput.style.height = 'auto'; aiInput.style.height = Math.min(aiInput.scrollHeight, 120) + 'px'; });
+
+fetch('/source', { cache: 'no-store' }).then(r => r.text()).then(t => { ta.value = t; focusCaret(true); }).catch(() => {});
 setInterval(tick, 500);
-loadManifest().catch(() => showError('unable to load preview manifest'));
+loadManifest(true).catch(() => showError('unable to load preview manifest'));
 </script>
 </body>
 </html>
@@ -792,6 +1327,12 @@ mod tests {
             version: 7,
             error: None,
             edit_source: None,
+            export: Arc::new(|_: &str| -> Result<ExportFile, String> { Err("n/a".into()) }),
+            chat: Arc::new(
+                |_: &str, _: &mut dyn FnMut(&str) -> Result<(), String>| -> Result<(), String> {
+                    Err("n/a".into())
+                },
+            ),
         };
 
         let json = manifest_json(&state);
@@ -827,6 +1368,12 @@ mod tests {
             version: 2,
             error: Some("bad \"quote\"\nnext".into()),
             edit_source: None,
+            export: Arc::new(|_: &str| -> Result<ExportFile, String> { Err("n/a".into()) }),
+            chat: Arc::new(
+                |_: &str, _: &mut dyn FnMut(&str) -> Result<(), String>| -> Result<(), String> {
+                    Err("n/a".into())
+                },
+            ),
         };
 
         let json = manifest_json(&state);

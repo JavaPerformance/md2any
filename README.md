@@ -180,8 +180,9 @@ md2any --generate "a 5-slide intro to Rust ownership" -o intro.pptx  # AI draft 
 | **Speaker notes** | `<!-- notes: -->` HTML comments |
 | **Transitions** | `fade`, `push`, `wipe`, `cover`, `split` (PPTX/ODP/PDF) |
 | **RTL / CJK** | `direction: rtl` right-aligns Arabic/Hebrew (no full bidi reordering of mixed runs yet); CJK & emoji need `--cjk <font>` for PDF |
-| **Workflow** | `--watch` for rebuild-on-save, `--serve` for live preview with hot reload, `--serve --edit` for an in-browser editor (edit + live preview side by side), `--check` for lint mode |
-| **AI drafting** | `--generate "prompt"` drafts a deck via an OpenAI-compatible chat API and renders it natively. Endpoint/model/key all configurable (`--ai-endpoint`, `--ai-model`, `$MD2ANY_API_KEY`); `--save-md` keeps the markdown. Optional — drop the default `ai` feature for a network-free binary |
+| **Workflow** | `--watch` for rebuild-on-save, `--serve` for live preview with hot reload, `--check` for lint mode |
+| **In-browser editor** | `--serve --edit`: true live-DOM editing (each rebuild morphs into the preview, preserving scroll), caret↔slide sync both ways, a 🎨 style panel (theme/colour/size controls written to front-matter), a Generate ▾ menu to export any format, and a 🤖 AI dock that reads the deck and applies edits with one click. No external runtime — all served from the single binary |
+| **AI drafting** | `--generate "prompt"` drafts a deck via an OpenAI-compatible chat API and renders it natively. Endpoint/model/key all configurable (`--ai-endpoint`, `--ai-model`, `$MD2ANY_API_KEY` or a gitignored key file); `--save-md` keeps the markdown. Optional — drop the default `ai` feature for a network-free binary |
 | **Handouts** | `--handout 2|4|6` for N-up A4 printable PDF |
 | **Multi-file** | Concat multiple `.md` files; `-` reads stdin |
 | **Images** | Local PNG/JPEG/SVG plus cached remote `http(s)` image URLs |

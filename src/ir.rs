@@ -72,6 +72,11 @@ pub struct FrontMatter {
     /// Affects paragraph direction + alignment in PPTX/ODP. PDF glyph shaping
     /// of right-to-left scripts requires an embedded font (not supplied).
     pub direction: Option<String>,
+    /// Inline theme overrides (colours, fonts, sizes, title alignment, layout
+    /// geometry) equivalent to a `--theme-file`, layered over the named
+    /// `theme`. The `--serve --edit` style panel reads and writes this block,
+    /// but it can also be authored by hand.
+    pub style: Option<crate::theme::ThemeOverride>,
 }
 
 /// A contiguous span of text with uniform styling. The parser splits
@@ -221,6 +226,11 @@ pub struct Slide {
     pub kind: SlideKind,
     pub title: String,
     pub blocks: Vec<Block>,
+    /// 0-based line in the markdown *body* (front-matter excluded) where this
+    /// slide begins — the heading/rule that opened it, or 0 for the title and
+    /// auto-injected slides. Continuation slides inherit their parent's line.
+    /// Used by the `--serve --edit` editor to focus the slide under the caret.
+    pub source_line: u32,
     /// Speaker notes from `<!-- notes: -->` HTML comments in the source.
     /// Rendered in PPTX/ODP only — PDF/DOCX/ODT drop them.
     pub notes: Option<String>,

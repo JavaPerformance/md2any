@@ -2123,6 +2123,7 @@ fn html_code_gutter_uses_block_start_line() {
         notes: None,
         bg_image: None,
         layout_hint: None,
+        source_line: 0,
     }];
     let bytes = md2any::html::write(
         &slides,
@@ -2290,6 +2291,7 @@ fn png_image_sequence_rasterizes_svg_slides() {
         notes: None,
         bg_image: None,
         layout_hint: None,
+        source_line: 0,
     }];
     let files = md2any::svg::write_files(
         &slides,
@@ -2597,6 +2599,7 @@ fn deck_doctor_reports_accessibility_and_structure_warnings() {
             notes: Some("Only one slide has notes".into()),
             bg_image: None,
             layout_hint: None,
+            source_line: 0,
         },
         Slide {
             kind: SlideKind::Content,
@@ -2605,6 +2608,7 @@ fn deck_doctor_reports_accessibility_and_structure_warnings() {
             notes: None,
             bg_image: None,
             layout_hint: None,
+            source_line: 0,
         },
         Slide {
             kind: SlideKind::Content,
@@ -2613,6 +2617,7 @@ fn deck_doctor_reports_accessibility_and_structure_warnings() {
             notes: None,
             bg_image: None,
             layout_hint: None,
+            source_line: 0,
         },
     ];
 

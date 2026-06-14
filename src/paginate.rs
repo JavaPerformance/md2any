@@ -255,6 +255,7 @@ fn paginate_inner(
             let title = slide.title.clone();
             let notes = slide.notes.clone();
             let bg = slide.bg_image.clone();
+            let src_line = slide.source_line;
             out.push(slide);
             if !blocks.is_empty() {
                 let follow = Slide {
@@ -264,6 +265,7 @@ fn paginate_inner(
                     notes,
                     bg_image: bg,
                     layout_hint: None,
+                    source_line: src_line,
                 };
                 for s in paginate_inner(vec![follow], theme, budget, wscale, options) {
                     out.push(s);
@@ -296,6 +298,8 @@ fn paginate_inner(
             notes: None,
             bg_image: slide.bg_image.clone(),
             layout_hint: slide.layout_hint.clone(),
+
+            source_line: slide.source_line,
         };
         let mut weight = 0.0_f32;
         // The "(cont.)" suffix only applies once a real first page has
@@ -333,6 +337,8 @@ fn paginate_inner(
                     notes: None,
                     bg_image: slide.bg_image.clone(),
                     layout_hint: slide.layout_hint.clone(),
+
+                    source_line: slide.source_line,
                 };
                 weight = 0.0;
 
@@ -442,6 +448,8 @@ fn paginate_inner(
                                 notes: None,
                                 bg_image: slide.bg_image.clone(),
                                 layout_hint: slide.layout_hint.clone(),
+
+                                source_line: slide.source_line,
                             };
                             weight = 0.0;
                         }
@@ -490,6 +498,8 @@ fn paginate_inner(
                                 notes: None,
                                 bg_image: slide.bg_image.clone(),
                                 layout_hint: slide.layout_hint.clone(),
+
+                                source_line: slide.source_line,
                             };
                             weight = 0.0;
                         }
@@ -919,6 +929,7 @@ fn continuation_slide(source: &Slide, emitted_first: bool) -> Slide {
         notes: None,
         bg_image: source.bg_image.clone(),
         layout_hint: source.layout_hint.clone(),
+        source_line: source.source_line,
     }
 }
 

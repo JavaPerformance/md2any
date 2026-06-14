@@ -891,6 +891,14 @@ fn build_once(
             .apply_override(ov)
             .with_context(|| "apply theme overlay")?;
     }
+    // Inline `style:` front-matter layers over both the named theme and any
+    // `--theme-file`, so a document (or the editor's style panel) can tune its
+    // own colours/fonts/sizes.
+    if let Some(ov) = &front.style {
+        theme
+            .apply_override(ov)
+            .with_context(|| "apply inline style")?;
+    }
 
     let layout_name = cli
         .layout
@@ -899,6 +907,9 @@ fn build_once(
         .unwrap_or_else(|| "clean".into());
     let mut layout = layout::Layout::resolve(&layout_name).with_context(|| "resolve layout")?;
     if let Some(lo) = theme_override.as_ref().and_then(|ov| ov.layout.as_ref()) {
+        layout.apply_override(lo);
+    }
+    if let Some(lo) = front.style.as_ref().and_then(|ov| ov.layout.as_ref()) {
         layout.apply_override(lo);
     }
     let pagination = resolve_pagination_options(
@@ -2125,13 +2136,73 @@ fn run_serve(cli: &Cli) -> Result<()> {
     let inputs = cli.inputs.clone();
     let watch_paths = inputs.clone();
     let mut cli_snapshot = serve_cli_snapshot(cli);
-    // The editor previews a per-slide image strip (so it can keep the slide
-    // you're editing in view); default that to SVG when the user didn't pick a
-    // specific preview format.
+    // The editor previews live HTML and morphs each rebuild into the iframe's
+    // DOM (true live-DOM editing), so default the preview to HTML when the user
+    // didn't pick a specific format. The image/PDF formats still work in the
+    // editor but reload per change rather than morphing.
     if cli.edit && matches!(cli_snapshot.serve_format, ServeFormatArg::Pdf) {
-        cli_snapshot.serve_format = ServeFormatArg::Svg;
+        cli_snapshot.serve_format = ServeFormatArg::Html;
     }
     let serve_format: serve::ServeFormat = cli_snapshot.serve_format.into();
+    // Clone what the on-demand exporter needs before `build` moves the
+    // originals.
+    let export_inputs = inputs.clone();
+    let export_cli = cli_snapshot.clone();
+    let export_stem = inputs
+        .first()
+        .and_then(|p| p.file_stem())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "deck".into());
+    let exporter: serve::Exporter = std::sync::Arc::new(move |fmt: &str| {
+        let (format, ext, content_type) = match fmt {
+            "pptx" => (
+                Format::Pptx,
+                "pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ),
+            "odp" => (
+                Format::Odp,
+                "odp",
+                "application/vnd.oasis.opendocument.presentation",
+            ),
+            "pdf" => (Format::Pdf, "pdf", "application/pdf"),
+            "docx" => (
+                Format::Docx,
+                "docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            "odt" => (
+                Format::Odt,
+                "odt",
+                "application/vnd.oasis.opendocument.text",
+            ),
+            "html" => (Format::Html, "html", "text/html; charset=utf-8"),
+            other => return Err(format!("cannot export to '{other}'")),
+        };
+        let bytes =
+            export_for_serve(&export_inputs, &export_cli, format).map_err(|e| format!("{e:#}"))?;
+        Ok(serve::ExportFile {
+            filename: format!("{export_stem}.{ext}"),
+            content_type: content_type.to_string(),
+            bytes,
+        })
+    });
+    // AI dock chat handler: reads the live document each turn and proxies to
+    // the configured chat model. Key comes from env or a gitignored key file.
+    let chat_input = inputs.first().cloned();
+    let chat_endpoint = cli.ai_endpoint.clone();
+    let chat_model = cli.ai_model.clone();
+    let chat: serve::ChatHandler = std::sync::Arc::new(
+        move |body: &str, on_delta: &mut dyn FnMut(&str) -> Result<(), String>| {
+            chat_turn(
+                chat_input.as_deref(),
+                chat_endpoint.clone(),
+                chat_model.clone(),
+                body,
+                on_delta,
+            )
+        },
+    );
     let build = move || -> Result<serve::ServedArtifact, String> {
         build_artifact_for_serve(&inputs, &cli_snapshot).map_err(|e| format!("{e:#}"))
     };
@@ -2150,8 +2221,44 @@ fn run_serve(cli: &Cli) -> Result<()> {
                 .unwrap_or_default()
         );
     }
-    serve::run(opts, watch_paths, serve_format, build).with_context(|| "preview server")?;
+    serve::run(opts, watch_paths, serve_format, build, exporter, chat)
+        .with_context(|| "preview server")?;
     Ok(())
+}
+
+/// Handle one AI-dock chat turn. Parses `{messages:[{role,content}…]}`, reads
+/// the current document fresh, prepends the editor system prompt and the live
+/// document as context, and streams the model's reply through `on_delta`.
+fn chat_turn(
+    doc_path: Option<&Path>,
+    endpoint: Option<String>,
+    model: Option<String>,
+    body: &str,
+    on_delta: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let req: serde_json::Value =
+        serde_json::from_str(body).map_err(|e| format!("bad chat request: {e}"))?;
+    let history = req
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let document = doc_path
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    let opts = md2any::ai::AiOptions::resolve(endpoint, model)?;
+    let mut messages = vec![
+        serde_json::json!({ "role": "system", "content": md2any::ai::editor_system_prompt() }),
+        serde_json::json!({
+            "role": "system",
+            "content": format!(
+                "Here is the user's current md2any document, between <doc> tags. \
+                 Base your answers and edits on it.\n<doc>\n{document}\n</doc>"
+            ),
+        }),
+    ];
+    messages.extend(history);
+    md2any::ai::chat_stream(&opts, &messages, on_delta)
 }
 
 #[derive(Clone)]
@@ -2182,6 +2289,9 @@ struct ServeCli {
     font_fallback: Option<String>,
     cjk: Option<PathBuf>,
     serve_format: ServeFormatArg,
+    /// True in `--serve --edit`: HTML output is rendered in continuous-scroll
+    /// editor mode (stacked slides + `data-line` for caret-follow morphing).
+    edit: bool,
 }
 
 fn serve_cli_snapshot(cli: &Cli) -> ServeCli {
@@ -2212,10 +2322,29 @@ fn serve_cli_snapshot(cli: &Cli) -> ServeCli {
         font_fallback: cli.font_fallback.clone(),
         cjk: cli.cjk.clone(),
         serve_format: cli.serve_format,
+        edit: cli.edit,
     }
 }
 
-fn build_artifact_for_serve(inputs: &[PathBuf], cli: &ServeCli) -> Result<serve::ServedArtifact> {
+/// Everything needed to render the current deck in any format — built once
+/// from the live source, then dispatched to a writer by the preview or the
+/// `/export` route.
+struct ServeDeck {
+    slides: Vec<md2any::ir::Slide>,
+    theme: theme::Theme,
+    layout: layout::Layout,
+    deck_title: String,
+    author: String,
+    base_dir: PathBuf,
+    logo_path: Option<PathBuf>,
+    transition: Option<String>,
+    trans_dur: f32,
+    direction: Option<String>,
+    pdf_font_paths: PdfFontPaths,
+    doc_options: document::DocumentOptions,
+}
+
+fn build_serve_deck(inputs: &[PathBuf], cli: &ServeCli) -> Result<ServeDeck> {
     if inputs.is_empty() {
         anyhow::bail!("no inputs");
     }
@@ -2272,6 +2401,11 @@ fn build_artifact_for_serve(inputs: &[PathBuf], cli: &ServeCli) -> Result<serve:
             .apply_override(ov)
             .with_context(|| "apply theme overlay")?;
     }
+    if let Some(ov) = &front.style {
+        theme
+            .apply_override(ov)
+            .with_context(|| "apply inline style")?;
+    }
     let layout_name = cli
         .layout
         .clone()
@@ -2279,6 +2413,9 @@ fn build_artifact_for_serve(inputs: &[PathBuf], cli: &ServeCli) -> Result<serve:
         .unwrap_or_else(|| "clean".into());
     let mut layout = layout::Layout::resolve(&layout_name).with_context(|| "resolve layout")?;
     if let Some(lo) = theme_override.as_ref().and_then(|ov| ov.layout.as_ref()) {
+        layout.apply_override(lo);
+    }
+    if let Some(lo) = front.style.as_ref().and_then(|ov| ov.layout.as_ref()) {
         layout.apply_override(lo);
     }
     let pagination = resolve_pagination_options(
@@ -2362,9 +2499,9 @@ fn build_artifact_for_serve(inputs: &[PathBuf], cli: &ServeCli) -> Result<serve:
         None
     };
 
-    let transition = front.transition.as_deref();
+    let transition = front.transition.clone();
     let trans_dur = front.transition_duration.unwrap_or(0.4);
-    let direction = front.direction.as_deref();
+    let direction = front.direction.clone();
     let pdf_font_paths = resolve_pdf_font_paths_from_parts(
         cli.pdf_font.as_ref(),
         cli.pdf_mono_font.as_ref(),
@@ -2373,33 +2510,53 @@ fn build_artifact_for_serve(inputs: &[PathBuf], cli: &ServeCli) -> Result<serve:
         &theme,
         theme_file_dir.as_deref(),
     )?;
+    let doc_options = resolve_document_options(None, &front)?;
+    Ok(ServeDeck {
+        slides,
+        theme,
+        layout,
+        deck_title,
+        author,
+        base_dir,
+        logo_path,
+        transition,
+        trans_dur,
+        direction,
+        pdf_font_paths,
+        doc_options,
+    })
+}
+
+fn build_artifact_for_serve(inputs: &[PathBuf], cli: &ServeCli) -> Result<serve::ServedArtifact> {
+    let d = build_serve_deck(inputs, cli)?;
     match cli.serve_format {
         ServeFormatArg::Pdf => Ok(serve::ServedArtifact::Pdf(pdf::write_with_font_options(
-            &slides,
-            &theme,
-            &layout,
-            &deck_title,
-            &author,
-            &base_dir,
-            logo_path.as_deref(),
+            &d.slides,
+            &d.theme,
+            &d.layout,
+            &d.deck_title,
+            &d.author,
+            &d.base_dir,
+            d.logo_path.as_deref(),
             cli.handout,
-            transition,
-            trans_dur,
-            direction,
+            d.transition.as_deref(),
+            d.trans_dur,
+            d.direction.as_deref(),
             cli.with_notes,
             cli.notes_page_size.into(),
             cli.notes_layout.into(),
-            pdf_font_paths.as_options(),
+            d.pdf_font_paths.as_options(),
         )?)),
-        ServeFormatArg::Html => Ok(serve::ServedArtifact::Html(html::write(
-            &slides,
-            &theme,
-            &layout,
-            &deck_title,
-            &author,
-            &base_dir,
-            logo_path.as_deref(),
-            direction,
+        ServeFormatArg::Html => Ok(serve::ServedArtifact::Html(html::write_opts(
+            &d.slides,
+            &d.theme,
+            &d.layout,
+            &d.deck_title,
+            &d.author,
+            &d.base_dir,
+            d.logo_path.as_deref(),
+            d.direction.as_deref(),
+            cli.edit,
         )?)),
         ServeFormatArg::Svg | ServeFormatArg::Png => {
             let format = match cli.serve_format {
@@ -2408,14 +2565,14 @@ fn build_artifact_for_serve(inputs: &[PathBuf], cli: &ServeCli) -> Result<serve:
                 _ => unreachable!(),
             };
             let files = svg::write_files(
-                &slides,
-                &theme,
-                &layout,
-                &deck_title,
-                &author,
-                &base_dir,
-                logo_path.as_deref(),
-                direction,
+                &d.slides,
+                &d.theme,
+                &d.layout,
+                &d.deck_title,
+                &d.author,
+                &d.base_dir,
+                d.logo_path.as_deref(),
+                d.direction.as_deref(),
                 format,
             )?
             .into_iter()
@@ -2431,6 +2588,34 @@ fn build_artifact_for_serve(inputs: &[PathBuf], cli: &ServeCli) -> Result<serve:
             })
         }
     }
+}
+
+/// Render the current deck to a single-file format for the editor's
+/// "Generate to…" menu. Multi-file formats (SVG/PNG) are not exported here.
+fn export_for_serve(inputs: &[PathBuf], cli: &ServeCli, format: Format) -> Result<Vec<u8>> {
+    let d = build_serve_deck(inputs, cli)?;
+    let pdf_options = PdfRenderOptions {
+        handout: cli.handout,
+        with_notes: cli.with_notes,
+        notes_page_size: cli.notes_page_size.into(),
+        notes_layout: cli.notes_layout.into(),
+        font_options: d.pdf_font_paths.as_options(),
+    };
+    render_format_bytes(
+        format,
+        &d.slides,
+        &d.theme,
+        &d.layout,
+        &d.deck_title,
+        &d.author,
+        &d.base_dir,
+        d.logo_path.as_deref(),
+        d.transition.as_deref(),
+        d.trans_dur,
+        d.direction.as_deref(),
+        &pdf_options,
+        &d.doc_options,
+    )
 }
 
 /// Dump one line per paginated slide. Intended for debugging pagination

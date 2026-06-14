@@ -63,11 +63,26 @@ pub fn parse_with_options(
     opts.insert(Options::ENABLE_FOOTNOTES);
 
     let math_options = resolve_math_options(front, &options);
-    let preprocessed = preprocess(input, &math_options);
+    let (preprocessed, line_map) = preprocess(input, &math_options);
+    // Byte offset of each output line's start, for offset → line lookups.
+    let mut line_starts: Vec<usize> = vec![0];
+    for (i, b) in preprocessed.bytes().enumerate() {
+        if b == b'\n' {
+            line_starts.push(i + 1);
+        }
+    }
+    let body_line_at = |byte: usize| -> u32 {
+        let prep_line = match line_starts.binary_search(&byte) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        line_map.get(prep_line).copied().unwrap_or(0)
+    };
     let parser = Parser::new_ext(&preprocessed, opts);
 
     let mut st = State::new(front, fallback_title, options.include_base_dir.as_deref());
-    for event in parser {
+    for (event, range) in parser.into_offset_iter() {
+        st.cur_source_line = body_line_at(range.start);
         st.handle(event);
     }
     let mut slides = st.finish();
@@ -134,21 +149,37 @@ fn resolve_math_options(front: &FrontMatter, options: &ParseOptions) -> MathOpti
     }
 }
 
-fn preprocess(input: &str, math_options: &MathOptions) -> String {
+/// Preprocess the body and return `(transformed, line_map)`, where
+/// `line_map[i]` is the source body line that produced output line `i`. The
+/// map lets the parser stamp each slide with its original source line even
+/// though the `:::` rewrite (1 line → 3) shifts line numbers. Math translation
+/// is line-preserving except in `math: svg` display blocks, where the map is a
+/// best-effort approximation.
+fn preprocess(input: &str, math_options: &MathOptions) -> (String, Vec<u32>) {
     // First pass: math preprocessing (skips fenced code blocks itself).
     let math_translated = crate::math::translate_with_options(input, math_options);
     let mut out = String::with_capacity(math_translated.len());
+    let mut map: Vec<u32> = Vec::new();
     let mut in_code = false;
-    for line in math_translated.lines() {
+    // Each completed output line (terminated by '\n') maps to `src` — push one
+    // entry per newline appended in this iteration.
+    let push = |out: &mut String, text: &str, map: &mut Vec<u32>, src: usize| {
+        let before = out.len();
+        out.push_str(text);
+        let added = out[before..].bytes().filter(|&b| b == b'\n').count();
+        for _ in 0..added {
+            map.push(src as u32);
+        }
+    };
+    for (src, line) in math_translated.lines().enumerate() {
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_code = !in_code;
-            out.push_str(line);
-            out.push('\n');
+            push(&mut out, &format!("{line}\n"), &mut map, src);
             continue;
         }
         if !in_code && line.trim() == ":::" {
-            out.push_str("\n<!--md2any-col-->\n\n");
+            push(&mut out, "\n<!--md2any-col-->\n\n", &mut map, src);
             continue;
         }
         if !in_code {
@@ -156,14 +187,17 @@ fn preprocess(input: &str, math_options: &MathOptions) -> String {
             // Strip the `{...}` from the source (pulldown-cmark would
             // emit it as literal text) and replace with a custom HTML
             // comment that the parser dispatches to the preceding image.
-            out.push_str(&extract_image_attrs(line));
-            out.push('\n');
+            push(
+                &mut out,
+                &format!("{}\n", extract_image_attrs(line)),
+                &mut map,
+                src,
+            );
             continue;
         }
-        out.push_str(line);
-        out.push('\n');
+        push(&mut out, &format!("{line}\n"), &mut map, src);
     }
-    out
+    (out, map)
 }
 
 /// Walks `line` looking for `]({...){width=NN%}` patterns immediately
@@ -234,6 +268,8 @@ struct State<'a> {
     include_base_dir: Option<&'a Path>,
     slides: Vec<Slide>,
     current: Slide,
+    /// Body line of the event currently being handled (updated each event).
+    cur_source_line: u32,
     started_real_content: bool,
     first_h1_consumed: bool,
 
@@ -310,6 +346,7 @@ impl<'a> State<'a> {
                 notes: None,
                 bg_image: None,
                 layout_hint: None,
+                source_line: 0,
             }
         } else {
             Slide {
@@ -319,6 +356,7 @@ impl<'a> State<'a> {
                 notes: None,
                 bg_image: None,
                 layout_hint: None,
+                source_line: 0,
             }
         };
         State {
@@ -327,6 +365,7 @@ impl<'a> State<'a> {
             include_base_dir,
             slides: Vec::new(),
             current: initial,
+            cur_source_line: 0,
             started_real_content: front.title.is_some(),
             first_h1_consumed: false,
             runs: Vec::new(),
@@ -444,11 +483,13 @@ impl<'a> State<'a> {
                     notes: None,
                     bg_image: None,
                     layout_hint: None,
+                    source_line: self.cur_source_line,
                 },
             ));
         } else {
             self.current.kind = kind;
             self.current.title = title;
+            self.current.source_line = self.cur_source_line;
         }
         self.started_real_content = true;
     }

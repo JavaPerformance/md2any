@@ -27,7 +27,7 @@ pub enum LayoutKind {
 /// `layout:` block in a `--theme-file`. Only keys present are applied, so a
 /// user can e.g. widen the `frame` sidebar or turn off the `clean` underline
 /// without redefining the whole layout. Widths are in EMU (914,400 per inch).
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct LayoutOverride {
     pub rail_width: Option<u32>,
     pub sidebar_width: Option<u32>,

@@ -32,6 +32,7 @@ pub fn inject(slides: Vec<Slide>) -> Vec<Slide> {
         notes: None,
         bg_image: None,
         layout_hint: None,
+        source_line: 0,
     };
 
     let title_idx = slides

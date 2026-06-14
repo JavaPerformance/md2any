@@ -24,6 +24,29 @@ pub fn write(
     logo: Option<&Path>,
     direction: Option<&str>,
 ) -> Result<Vec<u8>> {
+    write_opts(
+        slides, theme, layout, deck_title, author, base_dir, logo, direction, false,
+    )
+}
+
+/// As [`write`], but `editor: true` emits the deck in a continuous-scroll
+/// layout (all slides stacked and visible, presenter navigation disabled) for
+/// the `--serve --edit` live-DOM preview. The `--serve --edit` client morphs
+/// each rebuild of this document into the iframe's live DOM, so only the
+/// changed slide's nodes update; every `.slide` carries `data-line` (its source
+/// line) so the caret can be mapped to the slide it sits in.
+#[allow(clippy::too_many_arguments)]
+pub fn write_opts(
+    slides: &[Slide],
+    theme: &Theme,
+    layout: &Layout,
+    deck_title: &str,
+    author: &str,
+    base_dir: &Path,
+    logo: Option<&Path>,
+    direction: Option<&str>,
+    editor: bool,
+) -> Result<Vec<u8>> {
     let rtl = matches!(direction, Some("rtl"));
     let logo_uri = logo.map(|path| image_data_uri(base_dir, path.to_string_lossy().as_ref()));
 
@@ -54,13 +77,17 @@ pub fn write(
     }
     out.push_str("<style>\n");
     out.push_str(&css(theme, layout, rtl));
+    if editor {
+        out.push_str(EDITOR_CSS);
+    }
     out.push_str("</style>\n</head>\n");
     write!(
         out,
-        "<body class=\"layout-{} theme-{}{}\" data-slide-count=\"{}\">\n",
+        "<body class=\"layout-{} theme-{}{}{}\" data-slide-count=\"{}\">\n",
         layout.name(),
         escape_attr(theme.name),
         if rtl { " dir-rtl" } else { "" },
+        if editor { " edit" } else { "" },
         slides.len()
     )?;
     out.push_str("<main class=\"deck\" aria-live=\"polite\">\n");
@@ -78,10 +105,16 @@ pub fn write(
         )?;
     }
     out.push_str("</main>\n");
-    render_controls(&mut out, slides.len())?;
-    out.push_str("<script>\n");
-    out.push_str(SCRIPT);
-    out.push_str("</script>\n</body>\n</html>\n");
+    // The editor preview stacks every slide and is driven by the host shell
+    // (caret-follow + morph), so the presenter controls/nav script would only
+    // get in the way.
+    if !editor {
+        render_controls(&mut out, slides.len())?;
+        out.push_str("<script>\n");
+        out.push_str(SCRIPT);
+        out.push_str("</script>\n");
+    }
+    out.push_str("</body>\n</html>\n");
     Ok(out.into_bytes())
 }
 
@@ -122,11 +155,12 @@ fn render_slide(
         .unwrap_or_default();
     write!(
         out,
-        "<section class=\"slide slide-{}{}{}\" data-slide=\"{}\" aria-label=\"Slide {} of {}\"{}>\n",
+        "<section class=\"slide slide-{}{}{}\" data-slide=\"{}\" data-line=\"{}\" aria-label=\"Slide {} of {}\"{}>\n",
         kind,
         full_page_class,
         if idx == 0 { " active" } else { "" },
         idx + 1,
+        slide.source_line,
         idx + 1,
         total,
         bg_style
@@ -706,7 +740,7 @@ tbody tr:nth-child(even) {{ background: var(--table-band-bg); }}
 .code-block {{ margin: .75em 0; background: var(--code-bg); border: 1px solid var(--divider); color: var(--code-text); overflow: hidden; }}
 .code-block figcaption {{ display: flex; justify-content: space-between; gap: 1em; padding: .45em .75em; color: var(--muted); border-bottom: 1px solid var(--divider); font: 600 .72em var(--body-font); }}
 .code-lang {{ margin-left: auto; text-transform: uppercase; letter-spacing: .08em; }}
-pre {{ margin: 0; padding: .65em .75em; overflow: hidden; font: var(--code-size)/1.35 var(--mono-font); }}
+pre {{ margin: 0; padding: .65em .75em; overflow: hidden; font: clamp(11px, 1.15vw, var(--code-size))/1.35 var(--mono-font); }}
 code {{ font-family: inherit; }}
 .code-line {{ display: grid; grid-template-columns: auto 1fr; gap: .75em; min-height: 1.35em; }}
 .code-line.no-gutter {{ grid-template-columns: 1fr; }}
@@ -753,10 +787,11 @@ body.show-notes .slide.active .speaker-notes {{ display: block; }}
         title_font = css_string(&theme.title_font),
         body_font = css_string(&theme.body_font),
         mono_font = css_string(&theme.mono_font),
-        title_size = theme.title_size,
-        body_size = theme.body_size,
-        code_size = theme.code_size,
-        hero_size = theme.hero_size,
+        // Theme sizes are centipoints (e.g. 1500 = 15pt); CSS wants points.
+        title_size = theme.title_size as f32 / 100.0,
+        body_size = theme.body_size as f32 / 100.0,
+        code_size = theme.code_size as f32 / 100.0,
+        hero_size = theme.hero_size as f32 / 100.0,
         frame_offset = frame_offset,
         text_align = if rtl { "right" } else { "left" },
     )
@@ -784,6 +819,18 @@ fn escape_html(s: &str) -> String {
 fn escape_attr(s: &str) -> String {
     escape_html(s)
 }
+
+/// Extra rules for the `--serve --edit` continuous-scroll preview: unhide every
+/// slide, stack them vertically in a scrolling page, hide presenter chrome, and
+/// give the caret-tracked slide a highlight ring the host shell toggles.
+const EDITOR_CSS: &str = r#"
+html, body.edit { overflow: auto; height: auto; }
+body.edit { background: #1a1a1a; }
+body.edit .deck { display: block; min-height: 0; padding: 18px 14px; }
+body.edit .slide { display: block !important; margin: 0 auto 20px; scroll-margin: 14px; }
+body.edit .controls { display: none !important; }
+body.edit .slide.caret { outline: 4px solid var(--accent); outline-offset: 4px; }
+"#;
 
 const SCRIPT: &str = r#"(function () {
   const slides = Array.from(document.querySelectorAll('.slide'));

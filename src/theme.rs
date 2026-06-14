@@ -34,7 +34,7 @@ pub const LONG_LIST_THRESHOLD: usize = 12;
 
 /// User-supplied YAML overlay (only keys present are applied). Hex colors
 /// accept `#RRGGBB` or `RRGGBB`; the leading `#` is stripped.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct ThemeOverride {
     pub bg: Option<String>,
     pub title_color: Option<String>,
@@ -74,7 +74,7 @@ pub struct ThemeOverride {
     pub layout: Option<crate::layout::LayoutOverride>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 pub struct SyntaxOverride {
     pub keyword: Option<String>,
     pub string: Option<String>,

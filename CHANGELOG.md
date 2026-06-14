@@ -11,10 +11,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **In-browser editor** (`--serve --edit`): edit the markdown and see a live
   preview side by side. Edits autosave to the source file, which the existing
-  watcher rebuilds — no external dependencies, fully offline. The preview is a
-  scrollable per-slide strip (defaults to SVG): rebuilds swap slide images in
-  place so the scroll position is kept, and the slide under the caret is
-  highlighted and scrolled into view as you type — no more jumping to the top.
+  watcher rebuilds — no external dependencies, fully offline. The preview is
+  true **live-DOM editing**: the deck renders as HTML and each rebuild is
+  *morphed* into the existing DOM, so only the changed slide's nodes update
+  while every other slide keeps its scroll position and loaded images — no
+  flash, no jump to the top. The slide under the caret is highlighted and
+  scrolled into view as you type, mapped exactly via per-slide source lines
+  (`data-line`). Defaults to the HTML preview; `--serve-format pdf|svg|png`
+  still work in the editor but reload per rebuild rather than morphing.
+  Clicking a slide in the preview moves the source caret to the line that
+  produced it (two-way binding), and a status read-out shows the current
+  slide. Pending edits are flushed on tab close so nothing is lost, and a
+  build error keeps the last good preview on screen instead of clobbering it.
+- **Editor style panel**: a slide-in drawer (🎨 Style) with theme swatches,
+  aspect/transition toggles, colour pickers (accent/background/title/text),
+  title/body size sliders, and a font-family field. Controls read and write
+  the document's front-matter, so choices persist in the file and flow through
+  the normal live-preview path.
+- **Editor "Generate ▾" menu**: export the deck you're editing straight to
+  PPTX, ODP, PDF, DOCX, ODT, or HTML (`GET /export?format=…`), or download the
+  current markdown — pending edits are flushed first so the export is current.
+- **Editor AI dock** (🤖 Assistant): a collapsible chat panel that can see the
+  live document and knows md2any's markup. Ask questions or request edits; when
+  it proposes changes it returns the full updated document, which you apply with
+  one click — the change autosaves and morphs into the preview. Replies
+  **stream** into the dock token-by-token (the `POST /chat` route relays the
+  provider's SSE as newline-delimited JSON). Quick-action
+  chips cover common asks (proofread, tighten, add a summary slide, speaker
+  notes, retitle). Speaks the OpenAI-compatible chat API via a `POST /chat`
+  route; provider-neutral. The key comes from `$MD2ANY_API_KEY` /
+  `$OPENAI_API_KEY`, or a gitignored key file that also selects the provider —
+  drop `grok-api.key` to use xAI/Grok, `md2any-openai-api.key` for OpenAI, with
+  the right endpoint/model chosen automatically (overridable with
+  `--ai-endpoint`/`--ai-model`). Needs the default `ai` feature.
+- **Inline `style:` front-matter**: a `ThemeOverride` block (colours, fonts,
+  sizes, title alignment, layout geometry) layered over the named `theme`,
+  equivalent to a `--theme-file` but authored in the document. Honoured by all
+  renderers; written by the editor's style panel.
 - **Theme gallery**: six new built-in themes alongside `light`/`dark` —
   `corporate`, `sepia`, `contrast`, `midnight`, `terminal`, `pastel` — selectable
   with `--theme NAME`. Each is a palette over a light/dark base, so all aspects,
@@ -34,6 +67,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `/v1/chat/completions` API; endpoint, model, and key (`$MD2ANY_API_KEY` /
   `$OPENAI_API_KEY`) are configurable, and `--save-md` keeps the markdown. On
   by default via the `ai` feature; drop it for a network-free build.
+
+### Fixed
+
+- **HTML code blocks rendered empty.** The HTML renderer emitted theme font
+  sizes (stored in centipoints, e.g. `1500` = 15pt) straight into CSS as
+  `1500pt`. Headings and body text were masked by their `clamp()` upper bound,
+  but `pre` used the raw value — so code was set at ~2000px per glyph and
+  showed as an empty box. Sizes are now converted to points and code scales
+  with a `clamp()` like body text.
 
 ## [0.3.0] — 2026-06-14
 
