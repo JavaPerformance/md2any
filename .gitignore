@@ -2,6 +2,11 @@
 /target
 Cargo.lock.bak
 
+# Secrets — API tokens / keys must never be committed
+*.key
+crates.key
+.env
+
 # IDE
 .idea/
 .vscode/
