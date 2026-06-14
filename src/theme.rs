@@ -51,6 +51,9 @@ pub struct ThemeOverride {
     pub link: Option<String>,
     pub on_accent: Option<String>,
 
+    /// Slide-title alignment: `left` (default) or `center`.
+    pub title_align: Option<String>,
+
     pub title_font: Option<String>,
     pub body_font: Option<String>,
     pub mono_font: Option<String>,
@@ -195,6 +198,8 @@ pub struct Theme {
     pub section_text: String,
     pub link: String,
     pub on_accent: String,
+    /// Centre `##` slide titles instead of left-aligning them.
+    pub title_center: bool,
 
     pub title_font: String,
     pub body_font: String,
@@ -297,7 +302,7 @@ fn builtin_theme(name: &str) -> Option<(bool, &'static str, ThemeOverride)> {
             palette! {
                 title_color: "0B1F44", body_color: "334155", accent: "1E3A8A",
                 accent_soft: "DBEAFE", divider: "CBD5E1", section_bg: "0B1F44",
-                section_text: "F8FAFC", link: "1E3A8A",
+                section_text: "F8FAFC", link: "1E3A8A", title_align: "center",
                 title_font: "Georgia", body_font: "Calibri",
             },
         ),
@@ -415,6 +420,7 @@ impl Theme {
                 section_text: "F8FAFC".into(),
                 link: "0EA5E9".into(),
                 on_accent: "FFFFFF".into(),
+                title_center: false,
                 title_font,
                 body_font,
                 mono_font: "Consolas".into(),
@@ -453,6 +459,7 @@ impl Theme {
                 section_text: "FFFFFF".into(),
                 link: "7DD3FC".into(),
                 on_accent: "0B1220".into(),
+                title_center: false,
                 title_font,
                 body_font,
                 mono_font: "Consolas".into(),
@@ -551,6 +558,10 @@ impl Theme {
         set_color!(section_text);
         set_color!(link);
         set_color!(on_accent);
+
+        if let Some(v) = &ov.title_align {
+            self.title_center = v.eq_ignore_ascii_case("center");
+        }
 
         if let Some(v) = &ov.title_font {
             self.title_font = v.clone();

@@ -574,6 +574,10 @@ struct Cli {
     #[arg(long)]
     edit: bool,
 
+    /// Print the built-in theme names and exit.
+    #[arg(long)]
+    list_themes: bool,
+
     /// Draft a deck with an AI model from a prompt, then render it. Reads the
     /// API key from $MD2ANY_API_KEY (or $OPENAI_API_KEY). No input file needed.
     #[arg(long, value_name = "PROMPT", help_heading = "AI")]
@@ -720,6 +724,13 @@ fn main() -> Result<()> {
     } else {
         None
     };
+
+    if cli.list_themes {
+        for name in md2any::theme::THEME_NAMES {
+            println!("{name}");
+        }
+        return Ok(());
+    }
 
     if cli.generate.is_some() && (cli.serve || cli.watch) {
         anyhow::bail!(

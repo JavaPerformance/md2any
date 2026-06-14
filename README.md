@@ -68,8 +68,10 @@ A4 page ([source](examples/standard-model-lagrangian-a4.md)):
 
 ## Themes
 
-Eight built-in themes (`--theme NAME`), each a palette over a light or dark
-base; any of them combine with any `--layout` and `--theme-file` overrides.
+Eight built-in themes (`--theme NAME`, list them with `--list-themes`), each a
+palette over a light or dark base; any of them combine with any `--layout` and
+`--theme-file` overrides. See [docs/theming.md](docs/theming.md) for the full
+theme-file reference.
 
 <p align="center">
   <img src="docs/img/themes.png" alt="The eight built-in themes: light, dark, corporate, sepia, contrast, midnight, terminal, pastel" width="100%">

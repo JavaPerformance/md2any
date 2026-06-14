@@ -3242,6 +3242,11 @@ impl<'a> SlideRenderer<'a> {
                 w - 2 * base_margin,
             );
         } else {
+            let title_align = if theme.title_center {
+                TextAlign::Center
+            } else {
+                TextAlign::Left
+            };
             self.text_line(
                 content_x,
                 title_y,
@@ -3251,7 +3256,7 @@ impl<'a> SlideRenderer<'a> {
                 true,
                 false,
                 false,
-                TextAlign::Left,
+                title_align,
                 content_w,
             );
         }

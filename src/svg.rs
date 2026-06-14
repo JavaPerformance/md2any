@@ -417,8 +417,13 @@ fn render_content_slide(
     } else {
         &theme.title_color
     };
-    let title_x = if rtl { w - x } else { x };
-    let anchor = if rtl { "end" } else { "start" };
+    let (title_x, anchor) = if rtl {
+        (w - x, "end")
+    } else if theme.title_center {
+        (x + content_w / 2.0, "middle")
+    } else {
+        (x, "start")
+    };
     y = draw_wrapped_text(
         out,
         &slide.title,

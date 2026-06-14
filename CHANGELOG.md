@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `--theme NAME`. Each is a palette over a light/dark base, so all aspects,
   layouts, and `--theme-file` overrides still apply. Code-block colours now track
   the theme's background luminance automatically.
+- **Per-theme title alignment** (`title_align: left|center` in a theme-file, used
+  by the `corporate`/`contrast` themes), honoured in PDF/SVG/PNG/HTML.
+- **`--list-themes`** prints the built-in theme names; new theming reference at
+  `docs/theming.md`.
 - **AI deck drafting** (`--generate "prompt"`): draft a deck with a chat model,
   then render it through the normal pipeline. Speaks the OpenAI-compatible
   `/v1/chat/completions` API; endpoint, model, and key (`$MD2ANY_API_KEY` /

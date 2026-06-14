@@ -217,7 +217,7 @@ fn render_slide(
         }
         SlideKind::Content => {
             out.push_str("<div class=\"slide-inner content\">\n");
-            render_content_title(out, slide, idx + 1, total, layout)?;
+            render_content_title(out, slide, idx + 1, total, layout, theme.title_center)?;
             out.push_str("<div class=\"blocks\">\n");
             render_blocks(out, &slide.blocks, theme, base_dir)?;
             out.push_str("</div>\n");
@@ -249,14 +249,18 @@ fn render_content_title(
     num: usize,
     total: usize,
     layout: &Layout,
+    title_center: bool,
 ) -> Result<()> {
-    let class = if layout.title_block_bg() {
-        "slide-title title-block"
+    let mut class = if layout.title_block_bg() {
+        "slide-title title-block".to_string()
     } else if layout.title_underline() {
-        "slide-title title-underline"
+        "slide-title title-underline".to_string()
     } else {
-        "slide-title"
+        "slide-title".to_string()
     };
+    if title_center {
+        class.push_str(" title-center");
+    }
     let progress = if total == 0 {
         0.0
     } else {
@@ -666,6 +670,7 @@ body {{ font-family: var(--body-font); overflow: hidden; overflow-wrap: anywhere
 .section-title {{ background: var(--section-bg); color: var(--section-text); margin-left: 0; }}
 .section-title h1 {{ color: var(--section-text); }}
 .slide-title {{ margin-bottom: 2.2%; padding-bottom: 1.1%; }}
+.title-center, .title-center h1 {{ text-align: center; }}
 .slide-title h1 {{ margin: 0; font-family: var(--title-font); color: var(--title); font-size: clamp(22px, 3.0vw, var(--title-size)); line-height: 1.1; }}
 .title-underline {{ position: relative; }}
 .title-underline::before, .title-underline::after {{ content: ""; position: absolute; left: 0; bottom: 0; display: block; }}
