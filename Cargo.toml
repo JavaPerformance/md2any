@@ -22,6 +22,11 @@ exclude = [
     "/examples/*.odp",
     "/examples/*.docx",
     "/examples/*.odt",
+    # The manual in binary office formats (~1.2 MB) is redundant with HELP.md
+    # for a source crate; keep it in the repo, out of the published package.
+    "/docs/manual",
+    # Large pre-rendered sample images not referenced by any shipped example.
+    "/examples/assets/*.png",
 ]
 
 [[bin]]
