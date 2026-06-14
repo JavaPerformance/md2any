@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **In-browser editor** (`--serve --edit`): edit the markdown and see a live
   preview side by side. Edits autosave to the source file, which the existing
   watcher rebuilds — no external dependencies, fully offline.
+- **Theme gallery**: six new built-in themes alongside `light`/`dark` —
+  `corporate`, `sepia`, `contrast`, `midnight`, `terminal`, `pastel` — selectable
+  with `--theme NAME`. Each is a palette over a light/dark base, so all aspects,
+  layouts, and `--theme-file` overrides still apply. Code-block colours now track
+  the theme's background luminance automatically.
 - **AI deck drafting** (`--generate "prompt"`): draft a deck with a chat model,
   then render it through the normal pipeline. Speaks the OpenAI-compatible
   `/v1/chat/completions` API; endpoint, model, and key (`$MD2ANY_API_KEY` /

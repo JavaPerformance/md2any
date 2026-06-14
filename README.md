@@ -66,6 +66,15 @@ A4 page ([source](examples/standard-model-lagrangian-a4.md)):
   <img src="docs/img/lagrangian.png" alt="The Standard Model Lagrangian rendered on one A4 page" width="62%">
 </p>
 
+## Themes
+
+Eight built-in themes (`--theme NAME`), each a palette over a light or dark
+base; any of them combine with any `--layout` and `--theme-file` overrides.
+
+<p align="center">
+  <img src="docs/img/themes.png" alt="The eight built-in themes: light, dark, corporate, sepia, contrast, midnight, terminal, pastel" width="100%">
+</p>
+
 ## Install
 
 ### Prebuilt binaries
@@ -159,7 +168,7 @@ md2any --generate "a 5-slide intro to Rust ownership" -o intro.pptx  # AI draft 
 | Category | Highlights |
 |----------|------------|
 | **Output** | pptx · odp · pdf · docx · odt — all native, no external converters |
-| **Themes** | Light + dark built-in, full custom palettes via YAML overlay |
+| **Themes** | 8 built-in (`light`, `dark`, `corporate`, `sepia`, `contrast`, `midnight`, `terminal`, `pastel`) + full custom palettes via YAML overlay |
 | **Layouts** | Clean / studio / frame / bold |
 | **Aspect ratios** | 16:9, 4:3, 9:16, A3/A4/A5, Letter, Legal, Tabloid + landscape variants + custom `WxH[unit]` |
 | **Markdown** | Lists (9 deep nesting), task lists, tables with column alignment (`:---:` / `---:`), dark-by-default code blocks (40+ tags incl. mainframe/IBM i, Haskell/BCPL, web/API/config, and `bf`), block quotes, footnotes, links (clickable), strike, inline code, inline `<svg>` |

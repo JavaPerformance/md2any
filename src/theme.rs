@@ -1,6 +1,8 @@
 //! Theme definitions — colour palettes, fonts, slide dimensions.
 //!
-//! Two built-in themes (`light`, `dark`), five aspect ratio presets plus a
+//! A gallery of built-in themes ([`THEME_NAMES`] — `light`, `dark`, plus
+//! `corporate`, `sepia`, `contrast`, `midnight`, `terminal`, `pastel`, each a
+//! palette layered on a light/dark base), aspect-ratio presets plus a
 //! free-form `WxH[unit]` parser, and an optional YAML overlay
 //! ([`ThemeOverride`]) for brand-specific palettes. The renderer never
 //! reads colours directly — it always goes through the [`Theme`] struct
@@ -265,6 +267,98 @@ impl Theme {
     }
 }
 
+/// All selectable built-in theme names (light/dark plus the gallery), used in
+/// error messages and the `--theme-gallery` preview.
+pub const THEME_NAMES: [&str; 8] = [
+    "light",
+    "dark",
+    "corporate",
+    "sepia",
+    "contrast",
+    "midnight",
+    "terminal",
+    "pastel",
+];
+
+/// Build a [`ThemeOverride`] from a set of `field: "hex/name"` pairs.
+macro_rules! palette {
+    ($($field:ident: $value:expr),* $(,)?) => {
+        ThemeOverride { $($field: Some($value.into()),)* ..Default::default() }
+    };
+}
+
+/// A built-in gallery theme: `(dark_base, static_name, palette)`. The palette
+/// is layered onto the light/dark base, so geometry and sizing come for free.
+fn builtin_theme(name: &str) -> Option<(bool, &'static str, ThemeOverride)> {
+    let theme = match name {
+        "corporate" => (
+            false,
+            "corporate",
+            palette! {
+                title_color: "0B1F44", body_color: "334155", accent: "1E3A8A",
+                accent_soft: "DBEAFE", divider: "CBD5E1", section_bg: "0B1F44",
+                section_text: "F8FAFC", link: "1E3A8A",
+                title_font: "Georgia", body_font: "Calibri",
+            },
+        ),
+        "sepia" => (
+            false,
+            "sepia",
+            palette! {
+                bg: "FBF3E3", title_color: "4A3728", body_color: "5B4636",
+                muted_color: "A1846B", accent: "B45309", accent_soft: "FDE9C8",
+                divider: "E7D6B8", section_bg: "4A3728", section_text: "FBF3E3",
+                link: "B45309", code_bg: "F3E6CE", code_text: "4A3728",
+                title_font: "Georgia", body_font: "Georgia",
+            },
+        ),
+        "contrast" => (
+            false,
+            "contrast",
+            palette! {
+                bg: "FFFFFF", title_color: "000000", body_color: "111111",
+                muted_color: "444444", accent: "D90429", accent_soft: "FFE5E9",
+                divider: "000000", section_bg: "000000", section_text: "FFFF00",
+                link: "D90429", on_accent: "FFFFFF",
+            },
+        ),
+        "midnight" => (
+            true,
+            "midnight",
+            palette! {
+                bg: "0A0F2C", title_color: "E0E7FF", body_color: "C7D2FE",
+                muted_color: "6366F1", accent: "818CF8", accent_soft: "312E81",
+                divider: "1E1B4B", section_bg: "312E81", section_text: "EEF2FF",
+                link: "A5B4FC", on_accent: "0A0F2C", code_bg: "11163A",
+            },
+        ),
+        "terminal" => (
+            true,
+            "terminal",
+            palette! {
+                bg: "0A0A0A", title_color: "39FF14", body_color: "B6FFB0",
+                muted_color: "4E8E45", accent: "00FF66", accent_soft: "0F2A0F",
+                divider: "1A2A1A", section_bg: "0A1A0A", section_text: "39FF14",
+                link: "00FF66", on_accent: "0A0A0A", code_bg: "0F1A0F",
+                code_text: "B6FFB0", title_font: "DejaVu Sans Mono",
+                body_font: "DejaVu Sans Mono", mono_font: "DejaVu Sans Mono",
+            },
+        ),
+        "pastel" => (
+            false,
+            "pastel",
+            palette! {
+                bg: "FFF8FB", title_color: "5B2A86", body_color: "6D597A",
+                muted_color: "B8A7C9", accent: "FF6B9D", accent_soft: "FFE0EC",
+                divider: "F3D9E5", section_bg: "B5838D", section_text: "FFFFFF",
+                link: "FF6B9D", code_bg: "F7ECF2",
+            },
+        ),
+        _ => return None,
+    };
+    Some(theme)
+}
+
 impl Theme {
     pub fn resolve(name: &str, aspect: &str, font: Option<&str>) -> Result<Self> {
         let lower = aspect.trim().to_ascii_lowercase();
@@ -373,7 +467,20 @@ impl Theme {
                 syntax_type: "FFC777".into(),
                 syntax_attribute: "F78C6C".into(),
             },
-            other => bail!("unknown theme: {} (try light or dark)", other),
+            other => {
+                // Named gallery themes are a palette layered on the light or
+                // dark base, so they inherit all geometry/sizing automatically.
+                if let Some((dark_base, static_name, palette)) = builtin_theme(other) {
+                    let mut t =
+                        Theme::resolve(if dark_base { "dark" } else { "light" }, aspect, font)?;
+                    t.apply_override(&palette)?;
+                    t.name = static_name;
+                    // Re-derive code colours from the (possibly new) background.
+                    t.apply_code_theme(CodeTheme::Match);
+                    return Ok(t);
+                }
+                bail!("unknown theme: {} (try: {})", other, THEME_NAMES.join(", "))
+            }
         };
 
         theme.apply_code_theme(CodeTheme::default());
@@ -384,7 +491,15 @@ impl Theme {
         let target = match code_theme {
             CodeTheme::Dark => "dark",
             CodeTheme::Light => "light",
-            CodeTheme::Match => self.name,
+            // Pick by background luminance, not name, so the gallery themes
+            // (and any custom palette) get code colours that match their bg.
+            CodeTheme::Match => {
+                if hex_luma(&self.bg).unwrap_or(1.0) < 0.45 {
+                    "dark"
+                } else {
+                    "light"
+                }
+            }
         };
         match target {
             "dark" => {
