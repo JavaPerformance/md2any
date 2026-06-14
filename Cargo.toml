@@ -1,6 +1,6 @@
 [package]
 name = "md2any"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.74"
 description = "Markdown → PowerPoint, OpenDocument Impress, PDF, Word, Writer, HTML, SVG, and PNG. One markdown source, one small Rust binary."

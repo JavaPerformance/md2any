@@ -138,13 +138,13 @@ md2any hello.md --serve         # live preview at http://localhost:8421
 | **Themes** | Light + dark built-in, full custom palettes via YAML overlay |
 | **Layouts** | Clean / studio / frame / bold |
 | **Aspect ratios** | 16:9, 4:3, 9:16, A3/A4/A5, Letter, Legal, Tabloid + landscape variants + custom `WxH[unit]` |
-| **Markdown** | Lists (9 deep nesting), tables, dark-by-default code blocks (40+ tags incl. mainframe/IBM i, Haskell/BCPL, web/API/config, and `bf`), block quotes, footnotes, links (clickable), strike, inline code |
+| **Markdown** | Lists (9 deep nesting), task lists, tables with column alignment (`:---:` / `---:`), dark-by-default code blocks (40+ tags incl. mainframe/IBM i, Haskell/BCPL, web/API/config, and `bf`), block quotes, footnotes, links (clickable), strike, inline code, inline `<svg>` |
 | **Layout extras** | Side-by-side columns (`:::`), landscape code two-up (`--code-columns` / `columns=2`), image/text full-page hints, per-slide background (`<!-- bg: -->`), TOC injection, hand-tuned pagination with widow/orphan control |
-| **Math** | `$inline$` and `$$display$$` LaTeX subset -> Unicode, including accents/text/math alphabets; `--math source` preserves source; `--math svg` uses a built-in box layout for display fractions, radicals, scripts, matrices/cases/arrays, scalable delimiters, and aligned equations |
+| **Math** | `$inline$` and `$$display$$` LaTeX subset -> Unicode, including accents/text/math alphabets; `--math source` preserves source; `--math svg` uses a built-in box layout for display fractions, radicals, scripts, matrices/cases/arrays, scalable delimiters, aligned equations, **bold** (`\mathbf`/`\boldsymbol`), and drawn accents (`\bar`/`\hat`/`\vec`). Font-aware metrics keep equations aligned under `--pdf-font` (incl. OTF/CFF math fonts like STIX) |
 | **Diagrams** | Embedded `dot`, `mermaid`, `plantuml` (shells out if installed) |
 | **Speaker notes** | `<!-- notes: -->` HTML comments |
 | **Transitions** | `fade`, `push`, `wipe`, `cover`, `split` (PPTX/ODP/PDF) |
-| **RTL / CJK** | `direction: rtl` for Arabic/Hebrew; CJK via the consumer's font |
+| **RTL / CJK** | `direction: rtl` right-aligns Arabic/Hebrew (no full bidi reordering of mixed runs yet); CJK & emoji need `--cjk <font>` for PDF |
 | **Workflow** | `--watch` for rebuild-on-save, `--serve` for live preview with hot reload, `--check` for lint mode |
 | **Handouts** | `--handout 2|4|6` for N-up A4 printable PDF |
 | **Multi-file** | Concat multiple `.md` files; `-` reads stdin |
