@@ -1553,7 +1553,7 @@ fn render_blocks(
                     &theme.body_font,
                 ));
             }
-            Block::Table { headers, rows } => {
+            Block::Table { headers, rows, .. } => {
                 out.push_str(&render_table(reg, x, y, w, h, headers, rows, theme));
             }
             Block::Columns { left, right } => {
@@ -1694,7 +1694,7 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
                 .sum::<u32>()
                 + 120000
         }
-        Block::Table { headers, rows } => table_height_emu(headers, rows, w, theme),
+        Block::Table { headers, rows, .. } => table_height_emu(headers, rows, w, theme),
         Block::Columns { left, right } => {
             let gap: u32 = 280000;
             let half = w.saturating_sub(gap) / 2;

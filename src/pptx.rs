@@ -2248,7 +2248,7 @@ fn render_blocks(
                 ));
                 *id += 1;
             }
-            Block::Table { headers, rows } => {
+            Block::Table { headers, rows, .. } => {
                 shapes.push_str(&render_table(headers, rows, theme, x, y, w, h, id));
             }
             Block::Columns { left, right } => {
@@ -2392,7 +2392,7 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
                 .sum::<u32>()
                 + 120000
         }
-        Block::Table { headers, rows } => table_height_emu(headers, rows, w, theme),
+        Block::Table { headers, rows, .. } => table_height_emu(headers, rows, w, theme),
         Block::Columns { left, right } => {
             let gap: u32 = 280000;
             let half = w.saturating_sub(gap) / 2;
@@ -2722,7 +2722,11 @@ fn render_list(items: &[ListItem], theme: &Theme) -> String {
         let lvl = item.level.min(8) as u32;
         let mar_l = 228600 + lvl * 285750;
         let indent = -228600_i32;
-        let bullet = if item.ordered {
+        let bullet = if item.is_task() {
+            // Task items carry their own ☐/☑ marker in the runs, so suppress
+            // the native bullet to avoid showing both.
+            r#"<a:buNone/>"#.to_string()
+        } else if item.ordered {
             r#"<a:buFont typeface="+mj-lt"/><a:buAutoNum type="arabicPeriod"/>"#.to_string()
         } else {
             let ch = match lvl {

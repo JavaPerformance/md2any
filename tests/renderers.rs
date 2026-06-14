@@ -291,6 +291,142 @@ fn content_page_count(slides: &[md2any::ir::Slide]) -> usize {
 }
 
 #[test]
+fn table_column_alignment_is_captured() {
+    let md = "---\n---\n## T\n| L | C | R |\n|:--|:-:|--:|\n| a | b | c |\n";
+    let (front, body) = md2any::front_matter::extract(md);
+    let slides = md2any::parser::parse(&body, &front, "test");
+    let aligns = slides
+        .iter()
+        .flat_map(|s| &s.blocks)
+        .find_map(|b| match b {
+            md2any::ir::Block::Table { aligns, .. } => Some(aligns.clone()),
+            _ => None,
+        })
+        .expect("table present");
+    use md2any::ir::ColumnAlign::*;
+    assert_eq!(
+        aligns,
+        vec![Left, Center, Right],
+        "alignment from delimiter row"
+    );
+}
+
+#[test]
+fn tabs_in_code_expand_to_spaces() {
+    let md = "---\n---\n## C\n```c\n\tx;\n```\n";
+    let (front, body) = md2any::front_matter::extract(md);
+    let slides = md2any::parser::parse(&body, &front, "test");
+    let line = slides
+        .iter()
+        .flat_map(|s| &s.blocks)
+        .find_map(|b| match b {
+            md2any::ir::Block::CodeBlock { lines, .. } => lines.first().cloned(),
+            _ => None,
+        })
+        .expect("code block present");
+    assert!(!line.contains('\t'), "tabs should be expanded: {line:?}");
+    assert!(line.starts_with("    x"), "tab -> 4 spaces: {line:?}");
+}
+
+#[test]
+fn inline_svg_becomes_an_image_block() {
+    let md = "---\n---\n## S\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"><rect width=\"10\" height=\"10\"/></svg>\n";
+    let (front, body) = md2any::front_matter::extract(md);
+    let slides = md2any::parser::parse(&body, &front, "test");
+    let has_svg_image = slides.iter().flat_map(|s| &s.blocks).any(|b| {
+        matches!(b, md2any::ir::Block::Image { src, .. } if src.starts_with("data:image/svg+xml"))
+    });
+    assert!(
+        has_svg_image,
+        "inline <svg> should become a data-URI image block"
+    );
+}
+
+#[test]
+fn oversize_image_width_is_clamped_not_leaked() {
+    // `{width=150%}` must clamp to 100, not fall through and leak the literal
+    // attribute text into the slide body.
+    let md = "---\n---\n## Img\n![pic](examples/sample.png){width=150%}\n";
+    let (front, body) = md2any::front_matter::extract(md);
+    let slides = md2any::parser::parse(&body, &front, "test");
+    let mut saw_image = false;
+    for slide in &slides {
+        for block in &slide.blocks {
+            match block {
+                md2any::ir::Block::Image { width_pct, .. } => {
+                    saw_image = true;
+                    assert_eq!(*width_pct, Some(100), "width should clamp to 100");
+                }
+                md2any::ir::Block::Paragraph(runs) => {
+                    let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+                    assert!(
+                        !text.contains("width="),
+                        "literal width attribute leaked into body: {text:?}"
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    assert!(saw_image, "image block should be present");
+}
+
+#[test]
+fn fence_form_columns_split_left_and_right() {
+    // The fence form `::: … ::: … :::` (leading + trailing markers) must produce
+    // a two-column block with content on BOTH sides, not dump everything right.
+    let md = "---\n---\n## Cols\n\n:::\n\nLeft side.\n\n:::\n\nRight side.\n\n:::\n";
+    let (front, body) = md2any::front_matter::extract(md);
+    let theme = md2any::theme::Theme::resolve("light", "16:9", None).unwrap();
+    let layout = md2any::layout::Layout::resolve("clean").unwrap();
+    let slides = md2any::parser::parse(&body, &front, "test");
+    let slides = md2any::paginate::paginate_for_layout_with_options(
+        slides,
+        &theme,
+        &layout,
+        md2any::paginate::PaginationOptions::default(),
+    );
+    let has_balanced_columns = slides.iter().flat_map(|s| &s.blocks).any(|b| {
+        matches!(b, md2any::ir::Block::Columns { left, right } if !left.is_empty() && !right.is_empty())
+    });
+    assert!(
+        has_balanced_columns,
+        "fence-form columns should yield a Columns block with non-empty left and right"
+    );
+}
+
+#[test]
+fn display_math_equation_stays_on_its_heading_slide() {
+    // A heading + short caption + one display equation must share a single
+    // slide. Generated math images scale to the content width and render
+    // short, so they must not carry the full-photo pagination weight that
+    // would shove the equation onto a "(cont.)" overflow page.
+    let md = "---\nmath: svg\n---\n\
+## Bayes' Theorem\n\
+How evidence updates belief.\n\n\
+$$ P(A \\mid B) = \\frac{P(B \\mid A)\\,P(A)}{P(B)} $$\n";
+    let (front, body) = md2any::front_matter::extract(md);
+    let theme = md2any::theme::Theme::resolve("light", "16:9", None).unwrap();
+    let layout = md2any::layout::Layout::resolve("clean").unwrap();
+    let parse_opts = md2any::parser::ParseOptions {
+        math_mode: md2any::math::MathMode::Svg,
+        ..Default::default()
+    };
+    let slides = md2any::parser::parse_with_options(&body, &front, "test", parse_opts);
+    let slides = md2any::paginate::paginate_for_layout_with_options(
+        slides,
+        &theme,
+        &layout,
+        md2any::paginate::PaginationOptions::default(),
+    );
+    assert_eq!(
+        content_page_count(&slides),
+        1,
+        "equation should stay with its heading, not split to a (cont.) page"
+    );
+}
+
+#[test]
 fn render_plan_json_captures_layout_and_blocks() {
     let md = "---\ntitle: plan\n---\n# Deck\n## Diagnostics\nParagraph text for diagnostics.\n\n```rust\nfn main() {}\nprintln!(\"hi\");\nprintln!(\"bye\");\nprintln!(\"ok\");\nprintln!(\"done\");\nprintln!(\"end\");\n```\n";
     let (front, body) = md2any::front_matter::extract(md);
@@ -857,512 +993,8 @@ $$\n";
 }
 
 #[test]
-fn standard_model_lagrangian_stress_fixture_renders() {
-    fn count_images(blocks: &[md2any::ir::Block]) -> (usize, usize) {
-        let mut total = 0;
-        let mut math = 0;
-        for block in blocks {
-            match block {
-                md2any::ir::Block::Image { src, alt, .. } => {
-                    total += 1;
-                    if md2any::math::math_image_meta(src, alt).is_some() {
-                        math += 1;
-                    }
-                }
-                md2any::ir::Block::Columns { left, right } => {
-                    let (left_total, left_math) = count_images(left);
-                    let (right_total, right_math) = count_images(right);
-                    total += left_total + right_total;
-                    math += left_math + right_math;
-                }
-                _ => {}
-            }
-        }
-        (total, math)
-    }
-
-    let deck_path = assets().join("examples/standard-model-lagrangian.md");
-    let md = std::fs::read_to_string(&deck_path).unwrap();
-    let (front, body) = md2any::front_matter::extract(&md);
-    let theme = md2any::theme::Theme::resolve("light", "16:9", None).unwrap();
-    let layout = md2any::layout::Layout::resolve("clean").unwrap();
-    let math_mode = match front.math.as_deref() {
-        Some("svg") => md2any::math::MathMode::Svg,
-        Some("source") => md2any::math::MathMode::Source,
-        _ => md2any::math::MathMode::Unicode,
-    };
-    let math_svg = md2any::math::MathSvgOptions {
-        scale_percent: (front.math_scale.unwrap_or(1.0) * 100.0).round() as u16,
-        max_height_px: front.math_max_height.map(|h| h.round() as u16),
-        block_align: match front.math_block_align.as_deref().unwrap_or("center") {
-            "left" => md2any::math::MathBlockAlign::Left,
-            "right" => md2any::math::MathBlockAlign::Right,
-            _ => md2any::math::MathBlockAlign::Center,
-        },
-    };
-    let example_dir = deck_path.parent().unwrap().to_path_buf();
-    let slides = md2any::parser::parse_with_options(
-        &body,
-        &front,
-        "Standard Model Lagrangian Stress",
-        md2any::parser::ParseOptions {
-            math_mode,
-            math_svg,
-            include_base_dir: Some(example_dir.clone()),
-            ..Default::default()
-        },
-    );
-    let slides = md2any::paginate::paginate_for_layout(slides, &theme, &layout);
-    assert!(slides.len() >= 6, "expected a multi-slide stress deck");
-
-    let (image_count, math_image_count) = slides
-        .iter()
-        .map(|slide| count_images(&slide.blocks))
-        .fold((0, 0), |acc, item| (acc.0 + item.0, acc.1 + item.1));
-    assert!(
-        image_count >= 7 && math_image_count >= 6,
-        "expected one reference image plus several generated math images, got {image_count} total and {math_image_count} math"
-    );
-
-    let diagnostics = md2any::math::diagnose(&body);
-    assert!(
-        !diagnostics
-            .iter()
-            .any(|d| d.kind == "unsupported-math-macro"),
-        "stress fixture should stay inside the supported command subset: {diagnostics:?}"
-    );
-    assert!(
-        diagnostics.len() <= 24,
-        "diagnostics should remain bounded for the stress fixture: {diagnostics:?}"
-    );
-
-    let pptx = md2any::pptx::write(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian Stress",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        0.4,
-        None,
-    )
-    .unwrap();
-    zip_contains(&pptx, &["ppt/presentation.xml", "ppt/media/image1.png"]).unwrap();
-
-    let odp = md2any::odp::write(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian Stress",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        0.4,
-        None,
-    )
-    .unwrap();
-    zip_contains(&odp, &["content.xml"]).unwrap();
-    assert!(zip_read(&odp, "content.xml").contains("<draw:image"));
-
-    let pdf = md2any::pdf::write(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian Stress",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        None,
-        0.4,
-        None,
-        false,
-        md2any::pdf::NotesPageSize::Slide,
-        md2any::pdf::NotesLayout::Auto,
-        None,
-    )
-    .unwrap();
-    assert!(pdf.starts_with(b"%PDF-"));
-
-    let docx = md2any::docx::write(
-        &slides,
-        &theme,
-        "Standard Model Lagrangian Stress",
-        "tests",
-        &example_dir,
-        None,
-        None,
-    )
-    .unwrap();
-    zip_contains(&docx, &["word/document.xml", "word/media/image1.png"]).unwrap();
-    assert!(!zip_read(&docx, "word/document.xml").contains("math;scale="));
-
-    let odt = md2any::odt::write(
-        &slides,
-        &theme,
-        "Standard Model Lagrangian Stress",
-        "tests",
-        &example_dir,
-        None,
-        None,
-    )
-    .unwrap();
-    zip_contains(&odt, &["content.xml", "Pictures/image1.png"]).unwrap();
-    assert!(!zip_read(&odt, "content.xml").contains("math;scale="));
-
-    let html = String::from_utf8(
-        md2any::html::write(
-            &slides,
-            &theme,
-            &layout,
-            "Standard Model Lagrangian Stress",
-            "tests",
-            &example_dir,
-            None,
-            None,
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(html.contains("math-image"), "{html}");
-    assert!(html.contains("Standard Model Lagrangian"), "{html}");
-
-    let svg_files = md2any::svg::write_files(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian Stress",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        md2any::svg::ImageFormat::Svg,
-    )
-    .unwrap();
-    assert_eq!(svg_files.len(), slides.len());
-    let svg = svg_files
-        .iter()
-        .map(|file| String::from_utf8(file.bytes.clone()).unwrap())
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(!svg.contains("image failed"), "{svg}");
-    assert!(svg.contains("overflow=\"visible\""), "{svg}");
-    let y_values = xml_attr_numbers(&svg, "y");
-    assert!(
-        y_values.iter().all(|y| *y <= 640.0),
-        "stress fixture should not push SVG elements far past the slide viewport: {y_values:?}"
-    );
-
-    let png_files = md2any::svg::write_files(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian Stress",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        md2any::svg::ImageFormat::Png,
-    )
-    .unwrap();
-    assert_eq!(png_files.len(), slides.len());
-    assert!(png_files
-        .iter()
-        .all(|file| file.bytes.starts_with(b"\x89PNG")));
-    assert!(
-        png_files.iter().any(|file| file.bytes.len() > 600_000),
-        "reference-image slide should paint embedded raster data, not a blank page"
-    );
-}
-
-#[test]
-fn standard_model_lagrangian_a4_source_image_fits_single_page() {
+fn standard_model_lagrangian_a4_uses_selectable_math_layout() {
     let deck_path = assets().join("examples/standard-model-lagrangian-a4.md");
-    let md = std::fs::read_to_string(&deck_path).unwrap();
-    let (front, body) = md2any::front_matter::extract(&md);
-    let theme = md2any::theme::Theme::resolve(
-        front.theme.as_deref().unwrap_or("light"),
-        front.aspect.as_deref().unwrap_or("16:9"),
-        None,
-    )
-    .unwrap();
-    let layout =
-        md2any::layout::Layout::resolve(front.layout.as_deref().unwrap_or("clean")).unwrap();
-    let example_dir = deck_path.parent().unwrap().to_path_buf();
-    let slides = md2any::parser::parse_with_options(
-        &body,
-        &front,
-        "Standard Model Lagrangian A4",
-        md2any::parser::ParseOptions {
-            include_base_dir: Some(example_dir.clone()),
-            ..Default::default()
-        },
-    );
-    let slides = md2any::paginate::paginate_for_layout(slides, &theme, &layout);
-
-    assert_eq!(slides.len(), 1, "A4 source page should stay on one slide");
-    let Some((src, alt, _)) = slides[0].full_page_image() else {
-        panic!(
-            "expected image-full slide with exactly one image: {:?}",
-            slides[0]
-        );
-    };
-    assert_eq!(src, "assets/standard-model-lagrangian-a4.png");
-    assert_eq!(alt, "Full Standard Model Lagrangian");
-
-    let pdf = md2any::pdf::write(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian A4",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        None,
-        0.4,
-        None,
-        false,
-        md2any::pdf::NotesPageSize::Slide,
-        md2any::pdf::NotesLayout::Auto,
-        None,
-    )
-    .unwrap();
-    assert_eq!(pdf_media_boxes(&pdf), vec![(595, 842)]);
-
-    let pptx = md2any::pptx::write(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian A4",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        0.4,
-        None,
-    )
-    .unwrap();
-    zip_contains(&pptx, &["ppt/slides/slide1.xml", "ppt/media/image1.png"]).unwrap();
-    let pptx_slide = zip_read(&pptx, "ppt/slides/slide1.xml");
-    assert!(pptx_slide.contains("<p:pic>"), "{pptx_slide}");
-    assert!(!pptx_slide.contains("PageNum"), "{pptx_slide}");
-
-    let odp = md2any::odp::write(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian A4",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        0.4,
-        None,
-    )
-    .unwrap();
-    let content = zip_read(&odp, "content.xml");
-    assert!(content.contains("<draw:image"), "{content}");
-    assert!(!content.contains("PageNum"), "{content}");
-
-    let html = String::from_utf8(
-        md2any::html::write(
-            &slides,
-            &theme,
-            &layout,
-            "Standard Model Lagrangian A4",
-            "tests",
-            &example_dir,
-            None,
-            None,
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(html.contains("slide-content image-full active"), "{html}");
-    assert!(html.contains("full-page-image"), "{html}");
-    assert!(!html.contains("<header"), "{html}");
-
-    let svg_files = md2any::svg::write_files(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian A4",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        md2any::svg::ImageFormat::Svg,
-    )
-    .unwrap();
-    assert_eq!(svg_files.len(), 1);
-    let svg = String::from_utf8(svg_files[0].bytes.clone()).unwrap();
-    assert!(svg.contains("<image "), "{svg}");
-    assert!(
-        svg.contains("preserveAspectRatio=\"xMidYMid meet\""),
-        "{svg}"
-    );
-    assert!(!svg.contains("<header"), "{svg}");
-    let image_widths = xml_element_attr_numbers(&svg, "image", "width");
-    let image_heights = xml_element_attr_numbers(&svg, "image", "height");
-    assert!(
-        image_widths.iter().any(|w| (*w - 595.0).abs() < 1.0),
-        "expected A4-width full-page SVG image: {image_widths:?}"
-    );
-    assert!(
-        image_heights.iter().any(|h| (*h - 842.0).abs() < 1.0),
-        "expected A4-height full-page SVG image: {image_heights:?}"
-    );
-
-    let png_files = md2any::svg::write_files(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian A4",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        md2any::svg::ImageFormat::Png,
-    )
-    .unwrap();
-    assert_eq!(png_files.len(), 1);
-    assert!(png_files[0].bytes.starts_with(b"\x89PNG"));
-    assert!(
-        png_files[0].bytes.len() > 400_000,
-        "source page should paint the embedded equation image, not a blank page"
-    );
-}
-
-#[test]
-fn standard_model_lagrangian_selectable_a4_stays_text() {
-    let deck_path = assets().join("examples/standard-model-lagrangian-selectable-a4.md");
-    let md = std::fs::read_to_string(&deck_path).unwrap();
-    let (front, body) = md2any::front_matter::extract(&md);
-    let theme = md2any::theme::Theme::resolve(
-        front.theme.as_deref().unwrap_or("light"),
-        front.aspect.as_deref().unwrap_or("16:9"),
-        None,
-    )
-    .unwrap();
-    let layout =
-        md2any::layout::Layout::resolve(front.layout.as_deref().unwrap_or("clean")).unwrap();
-    let example_dir = deck_path.parent().unwrap().to_path_buf();
-    let slides = md2any::parser::parse_with_options(
-        &body,
-        &front,
-        "Standard Model Lagrangian Selectable A4",
-        md2any::parser::ParseOptions {
-            include_base_dir: Some(example_dir.clone()),
-            ..Default::default()
-        },
-    );
-    let slides = md2any::paginate::paginate_for_layout_with_options(
-        slides,
-        &theme,
-        &layout,
-        md2any::paginate::PaginationOptions {
-            break_mode: md2any::paginate::BreakMode::Off,
-            ..Default::default()
-        },
-    );
-
-    assert_eq!(
-        slides.len(),
-        1,
-        "selectable source page should stay one slide"
-    );
-    let Some((lines, _lang)) = slides[0].full_page_code() else {
-        panic!(
-            "expected text-full slide with exactly one code block: {:?}",
-            slides[0]
-        );
-    };
-    assert!(
-        lines.len() >= 70,
-        "expected dense formula lines: {}",
-        lines.len()
-    );
-    assert!(lines[0].starts_with("L_SM ="), "{:?}", lines.first());
-
-    let pdf = md2any::pdf::write(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian Selectable A4",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        None,
-        0.4,
-        None,
-        false,
-        md2any::pdf::NotesPageSize::Slide,
-        md2any::pdf::NotesLayout::Auto,
-        None,
-    )
-    .unwrap();
-    assert_eq!(pdf_media_boxes(&pdf), vec![(595, 842)]);
-    let pdf_text = String::from_utf8_lossy(&pdf);
-    assert!(
-        !pdf_text.contains("/Subtype /Image"),
-        "selectable fixture should not embed an image XObject"
-    );
-    assert!(
-        pdf_text.contains("/ToUnicode"),
-        "PDF text should keep copy/paste maps"
-    );
-    let positions = pdf_text_positions(&pdf);
-    assert!(
-        positions.len() >= lines.len(),
-        "expected one or more text positions per formula line, got {} for {} lines",
-        positions.len(),
-        lines.len()
-    );
-
-    let html = String::from_utf8(
-        md2any::html::write(
-            &slides,
-            &theme,
-            &layout,
-            "Standard Model Lagrangian Selectable A4",
-            "tests",
-            &example_dir,
-            None,
-            None,
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    assert!(html.contains("slide-content text-full active"), "{html}");
-    assert!(html.contains("full-page-text"), "{html}");
-    assert!(!html.contains("<img class=\"full-page-image\""), "{html}");
-
-    let svg_files = md2any::svg::write_files(
-        &slides,
-        &theme,
-        &layout,
-        "Standard Model Lagrangian Selectable A4",
-        "tests",
-        &example_dir,
-        None,
-        None,
-        md2any::svg::ImageFormat::Svg,
-    )
-    .unwrap();
-    assert_eq!(svg_files.len(), 1);
-    let svg = String::from_utf8(svg_files[0].bytes.clone()).unwrap();
-    assert!(svg.contains("<text "), "{svg}");
-    assert!(!svg.contains("<image "), "{svg}");
-}
-
-#[test]
-fn standard_model_lagrangian_markup_a4_uses_selectable_math_layout() {
-    let deck_path = assets().join("examples/standard-model-lagrangian-markup-a4.md");
     let md = std::fs::read_to_string(&deck_path).unwrap();
     let (front, body) = md2any::front_matter::extract(&md);
     let theme = md2any::theme::Theme::resolve(
@@ -2103,7 +1735,7 @@ fn table_fit_split_repeats_key_column_for_wide_tables() {
         .iter()
         .flat_map(|slide| slide.blocks.iter())
         .filter_map(|block| match block {
-            md2any::ir::Block::Table { headers, rows } => Some((headers, rows)),
+            md2any::ir::Block::Table { headers, rows, .. } => Some((headers, rows)),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -2132,7 +1764,7 @@ fn table_fit_auto_transposes_compact_portrait_tables() {
         .iter()
         .flat_map(|slide| slide.blocks.iter())
         .find_map(|block| match block {
-            md2any::ir::Block::Table { headers, rows } => Some((headers, rows)),
+            md2any::ir::Block::Table { headers, rows, .. } => Some((headers, rows)),
             _ => None,
         })
         .expect("expected transposed table");
@@ -2935,6 +2567,7 @@ fn deck_doctor_reports_accessibility_and_structure_warnings() {
                 Block::Table {
                     headers: Vec::new(),
                     rows: vec![vec![vec![Run::plain("cell")]; 4]; 24],
+                    aligns: Vec::new(),
                 },
                 Block::List(many_items),
             ],

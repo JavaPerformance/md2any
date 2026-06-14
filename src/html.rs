@@ -6,7 +6,7 @@
 //! PDF.
 
 use crate::image;
-use crate::ir::{Block, ListItem, Run, Slide, SlideKind};
+use crate::ir::{Block, ColumnAlign, ListItem, Run, Slide, SlideKind};
 use crate::layout::Layout;
 use crate::syntax::{self, TokenKind};
 use crate::theme::Theme;
@@ -320,7 +320,11 @@ fn render_block(out: &mut String, block: &Block, theme: &Theme, base_dir: &Path)
             }
             out.push_str("</blockquote>\n");
         }
-        Block::Table { headers, rows } => render_table(out, headers, rows)?,
+        Block::Table {
+            headers,
+            rows,
+            aligns,
+        } => render_table(out, headers, rows, aligns)?,
         Block::ColumnBreak => {}
         Block::Columns { left, right } => {
             out.push_str("<div class=\"columns\">\n<div>\n");
@@ -414,7 +418,11 @@ fn render_list(out: &mut String, items: &[ListItem]) -> Result<()> {
         for counter in counters.iter_mut().skip(level + 1) {
             *counter = 0;
         }
-        let marker = if item.ordered {
+        // Task-list items carry their own ☐/☑ marker in the runs, so leave the
+        // bullet slot empty to avoid showing both a bullet and a checkbox.
+        let marker = if item.is_task() {
+            String::new()
+        } else if item.ordered {
             format!("{}.", counters[level].max(1))
         } else {
             "&bull;".to_string()
@@ -500,18 +508,30 @@ fn render_code_block(
     Ok(())
 }
 
-fn render_table(out: &mut String, headers: &[Vec<Run>], rows: &[Vec<Vec<Run>>]) -> Result<()> {
+fn render_table(
+    out: &mut String,
+    headers: &[Vec<Run>],
+    rows: &[Vec<Vec<Run>>],
+    aligns: &[ColumnAlign],
+) -> Result<()> {
+    let align_attr = |col: usize| -> &'static str {
+        match aligns.get(col) {
+            Some(ColumnAlign::Center) => " style=\"text-align:center\"",
+            Some(ColumnAlign::Right) => " style=\"text-align:right\"",
+            _ => "",
+        }
+    };
     out.push_str("<div class=\"table-wrap\"><table>\n<thead><tr>");
-    for cell in headers {
-        out.push_str("<th>");
+    for (col, cell) in headers.iter().enumerate() {
+        write!(out, "<th{}>", align_attr(col))?;
         render_runs(out, cell)?;
         out.push_str("</th>");
     }
     out.push_str("</tr></thead>\n<tbody>\n");
     for row in rows {
         out.push_str("<tr>");
-        for cell in row {
-            out.push_str("<td>");
+        for (col, cell) in row.iter().enumerate() {
+            write!(out, "<td{}>", align_attr(col))?;
             render_runs(out, cell)?;
             out.push_str("</td>");
         }

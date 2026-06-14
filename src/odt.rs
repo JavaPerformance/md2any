@@ -650,7 +650,7 @@ fn render_block(out: &mut String, b: &Block, theme: &Theme, by_src: &HashMap<Str
                 ));
             }
         }
-        Block::Table { headers, rows } => render_table(out, headers, rows, theme),
+        Block::Table { headers, rows, .. } => render_table(out, headers, rows, theme),
         Block::Columns { left, right } => {
             // Documents flow, so collapse columns into back-to-back blocks.
             render_blocks(out, left, theme, by_src);

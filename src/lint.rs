@@ -147,7 +147,7 @@ fn check_theme_contrast(theme: &Theme, out: &mut Vec<Warning>) {
 fn check_blocks(num: usize, blocks: &[Block], theme: &Theme, out: &mut Vec<Warning>) {
     for b in blocks {
         match b {
-            Block::Table { headers, rows } => {
+            Block::Table { headers, rows, .. } => {
                 let cols = headers
                     .len()
                     .max(rows.iter().map(|r| r.len()).max().unwrap_or(0));
@@ -316,7 +316,7 @@ fn block_weight(block: &Block) -> f32 {
                 .sum::<usize>() as f32
                 / 100.0
         }
-        Block::Table { headers, rows } => {
+        Block::Table { headers, rows, .. } => {
             let cols = headers
                 .len()
                 .max(rows.iter().map(|r| r.len()).max().unwrap_or(0));

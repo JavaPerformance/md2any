@@ -18,7 +18,7 @@
 
 use crate::ir::*;
 use crate::math::{MathMode, MathOptions, MathSvgOptions};
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -200,15 +200,32 @@ fn extract_image_attrs(line: &str) -> String {
     out
 }
 
+/// Expand tab characters in a code line to spaces at 4-column tab stops.
+fn expand_code_tabs(line: &str) -> String {
+    const TAB: usize = 4;
+    let mut out = String::with_capacity(line.len());
+    let mut col = 0usize;
+    for ch in line.chars() {
+        if ch == '\t' {
+            let n = TAB - (col % TAB);
+            out.extend(std::iter::repeat(' ').take(n));
+            col += n;
+        } else {
+            out.push(ch);
+            col += 1;
+        }
+    }
+    out
+}
+
 fn parse_width_pct(attr: &str) -> Option<u8> {
     let attr = attr.trim();
     let rest = attr.strip_prefix("width=")?.trim();
     let n = rest.strip_suffix('%')?.trim().parse::<u32>().ok()?;
-    if (1..=100).contains(&n) {
-        Some(n as u8)
-    } else {
-        None
-    }
+    // Clamp out-of-range percentages rather than rejecting them: a rejected
+    // attribute leaks its literal `{width=…}` text into the slide body (and
+    // forces a spurious continuation slide). Downstream renderers clamp too.
+    Some(n.clamp(1, 100) as u8)
 }
 
 struct State<'a> {
@@ -240,6 +257,10 @@ struct State<'a> {
     code_start_line: usize,
     code_columns: Option<CodeColumns>,
     code_buf: String,
+    /// Accumulates an inline `<svg>…</svg>` block (which can arrive across
+    /// several HTML events) until its closing tag, at which point it becomes a
+    /// rasterised image instead of being dropped.
+    svg_buf: Option<String>,
 
     in_blockquote: u32,
     quote_paragraphs: Vec<Vec<Run>>,
@@ -250,6 +271,7 @@ struct State<'a> {
     table_headers: Vec<Vec<Run>>,
     table_rows: Vec<Vec<Vec<Run>>>,
     table_row: Vec<Vec<Run>>,
+    table_aligns: Vec<crate::ir::ColumnAlign>,
     cell_runs: Vec<Run>,
 
     in_image: bool,
@@ -324,6 +346,7 @@ impl<'a> State<'a> {
             code_start_line: 1,
             code_columns: None,
             code_buf: String::new(),
+            svg_buf: None,
             in_blockquote: 0,
             quote_paragraphs: Vec::new(),
             in_table: false,
@@ -332,6 +355,7 @@ impl<'a> State<'a> {
             table_headers: Vec::new(),
             table_rows: Vec::new(),
             table_row: Vec::new(),
+            table_aligns: Vec::new(),
             cell_runs: Vec::new(),
             in_image: false,
             image_src: String::new(),
@@ -429,6 +453,30 @@ impl<'a> State<'a> {
         self.started_real_content = true;
     }
 
+    /// Turn an accumulated inline `<svg>…</svg>` into a rasterisable image
+    /// block (base64 SVG data URI), routed through the normal image pipeline.
+    fn push_inline_svg(&mut self, svg: &str) {
+        let Some(start) = svg.find("<svg") else {
+            return;
+        };
+        let end = svg
+            .find("</svg>")
+            .map(|i| i + "</svg>".len())
+            .unwrap_or(svg.len());
+        let markup = &svg[start..end];
+        self.flush_paragraph();
+        let uri = format!(
+            "data:image/svg+xml;base64,{}",
+            crate::math::base64(markup.as_bytes())
+        );
+        self.current.blocks.push(Block::Image {
+            src: uri,
+            alt: String::new(),
+            width_pct: None,
+        });
+        self.started_real_content = true;
+    }
+
     fn handle(&mut self, event: Event) {
         match event {
             Event::Start(tag) => self.start_tag(tag),
@@ -446,6 +494,18 @@ impl<'a> State<'a> {
                 self.push_text(&c, true);
             }
             Event::Html(c) | Event::InlineHtml(c) => {
+                // Inline `<svg>…</svg>` arrives as one or more HTML events;
+                // accumulate it and rasterise on the closing tag rather than
+                // dropping it (markdown HTML is otherwise ignored).
+                if self.svg_buf.is_some() || c.contains("<svg") {
+                    let buf = self.svg_buf.get_or_insert_with(String::new);
+                    buf.push_str(&c);
+                    if buf.contains("</svg>") {
+                        let svg = self.svg_buf.take().unwrap_or_default();
+                        self.push_inline_svg(&svg);
+                    }
+                    return;
+                }
                 let s = c.trim();
                 if s == "<!--md2any-col-->" {
                     self.flush_paragraph();
@@ -569,11 +629,20 @@ impl<'a> State<'a> {
                 self.image_src = dest_url.to_string();
                 self.image_alt.clear();
             }
-            Tag::Table(_) => {
+            Tag::Table(aligns) => {
                 self.flush_paragraph();
                 self.in_table = true;
                 self.table_headers.clear();
                 self.table_rows.clear();
+                self.table_aligns = aligns
+                    .iter()
+                    .map(|a| match a {
+                        Alignment::Center => crate::ir::ColumnAlign::Center,
+                        Alignment::Right => crate::ir::ColumnAlign::Right,
+                        // None and Left both render left-aligned.
+                        _ => crate::ir::ColumnAlign::Left,
+                    })
+                    .collect();
             }
             Tag::FootnoteDefinition(label) => {
                 self.flush_paragraph();
@@ -676,10 +745,14 @@ impl<'a> State<'a> {
                 } else {
                     (fallback_code, self.code_start_line)
                 };
+                // Expand tabs to 4-column tab stops: the embedded fonts have no
+                // tab glyph (it renders as a notdef box) and renderers advance
+                // by glyph width, so a literal `\t` both tofus and breaks
+                // indentation. Doing it here fixes every backend at once.
                 let lines: Vec<String> = code
                     .trim_end_matches('\n')
                     .split('\n')
-                    .map(|s| s.to_string())
+                    .map(expand_code_tabs)
                     .collect();
                 let line_numbers = lines.len() > 5;
                 self.current.blocks.push(Block::CodeBlock {
@@ -742,7 +815,12 @@ impl<'a> State<'a> {
                 self.in_table = false;
                 let headers = std::mem::take(&mut self.table_headers);
                 let rows = std::mem::take(&mut self.table_rows);
-                self.current.blocks.push(Block::Table { headers, rows });
+                let aligns = std::mem::take(&mut self.table_aligns);
+                self.current.blocks.push(Block::Table {
+                    headers,
+                    rows,
+                    aligns,
+                });
                 self.started_real_content = true;
             }
             TagEnd::TableHead => {

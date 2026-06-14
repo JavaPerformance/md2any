@@ -100,6 +100,15 @@ impl Run {
     }
 }
 
+/// Per-column text alignment from a GFM table delimiter row (`:---`, `:---:`,
+/// `---:`). pulldown-cmark's "no alignment" maps to `Left` (the default).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnAlign {
+    Left,
+    Center,
+    Right,
+}
+
 /// One entry inside a [`Block::List`]. Nesting is encoded with `level` (0 = top)
 /// rather than a recursive `Vec<ListItem>` because that mirrors how
 /// pulldown-cmark emits list events and keeps the IR cheap to pattern-match
@@ -109,6 +118,19 @@ pub struct ListItem {
     pub runs: Vec<Run>,
     pub level: u8,
     pub ordered: bool,
+}
+
+impl ListItem {
+    /// True when this item is a GFM task-list entry (`- [ ]` / `- [x]`). The
+    /// parser renders the checkbox as a leading `☐`/`☑` run, which stands in
+    /// for the list bullet — so renderers should suppress their normal bullet
+    /// glyph and not draw both.
+    pub fn is_task(&self) -> bool {
+        self.runs
+            .first()
+            .map(|r| r.text.starts_with('☐') || r.text.starts_with('☑'))
+            .unwrap_or(false)
+    }
 }
 
 /// A single block-level element on a slide. The renderer's job is to take a
@@ -145,9 +167,13 @@ pub enum Block {
     Quote(Vec<Vec<Run>>),
     /// GitHub-flavoured table. `headers` is the first row; `rows` are the
     /// data rows. Cells are run lists so inline formatting works inside them.
+    /// `aligns` carries the per-column alignment from the GFM delimiter row
+    /// (`:---`, `:---:`, `---:`); it has one entry per column (may be shorter
+    /// than the widest row — renderers default missing entries to `Left`).
     Table {
         headers: Vec<Vec<Run>>,
         rows: Vec<Vec<Vec<Run>>>,
+        aligns: Vec<ColumnAlign>,
     },
     /// Sentinel emitted by the `:::` marker. Consumed by [`crate::paginate`]
     /// when it folds the block list into a `Columns` block; renderers should

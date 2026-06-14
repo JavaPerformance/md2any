@@ -295,7 +295,7 @@ impl AuditBuilder<'_> {
                         self.runs(slide, "quote", runs, FaceKind::SansRegular.index());
                     }
                 }
-                Block::Table { headers, rows } => {
+                Block::Table { headers, rows, .. } => {
                     for cell in headers.iter().chain(rows.iter().flatten()) {
                         self.runs(slide, "table cell", cell, FaceKind::SansRegular.index());
                     }
