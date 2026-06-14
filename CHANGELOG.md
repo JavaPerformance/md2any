@@ -43,6 +43,10 @@ overflow / silent-drop bugs.
 - **Long titles no longer overflow.** Title slides (all layouts) and section
   dividers auto-shrink to fit; wrapped content-slide headings push the body and
   underline down instead of overprinting them.
+- **Nested blockquotes** (`>`/`>>`/`>>>`) keep every level instead of rendering
+  only the deepest.
+- **Long unbreakable tokens** (URLs, hashes, CamelCase) hard-break to wrap
+  instead of overflowing the slide edge (PDF/SVG); HTML uses `overflow-wrap`.
 - **Tabs in code** expand to 4-column tab stops instead of rendering as
   missing-glyph boxes.
 - **`{width=N%}` > 100** clamps instead of leaking the literal attribute text.

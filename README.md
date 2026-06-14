@@ -9,6 +9,10 @@
 binary that converts markdown into editable PowerPoint, OpenDocument Impress,
 PDF, Word, LibreOffice Writer, standalone HTML, and per-slide SVG/PNG files.
 
+<p align="center">
+  <img src="docs/img/slides.png" alt="Content, code, and table slides rendered by md2any" width="100%">
+</p>
+
 ```bash
 md2any talk.md                    # → talk.pptx     (PowerPoint)
 md2any talk.md -o talk.odp        # → talk.odp      (LibreOffice Impress)
@@ -43,6 +47,24 @@ No Office install. No headless Chromium. No LaTeX. No Node. No Python. One ~5 MB
 md2any is the only tool in this list that produces every common Office /
 OpenDocument format **natively** from a single small binary — no headless
 browser, no LaTeX stack, no language runtime.
+
+## Native math — no LaTeX, no KaTeX, no browser
+
+A built-in layout engine renders display math (fractions, radicals, scripts,
+matrices, cases, accents, bold) as **selectable text and vector geometry** —
+not images, and without a TeX or JavaScript stack. Bring any math font with
+`--pdf-font` (here, STIX Two Math); metrics adapt to the face automatically.
+
+<p align="center">
+  <img src="docs/img/equations.png" alt="Euler's identity, the Lorentz factor, the Dirac equation, and Bayes' theorem" width="100%">
+</p>
+
+It scales all the way up to the full **Standard Model Lagrangian** on a single
+A4 page ([source](examples/standard-model-lagrangian-a4.md)):
+
+<p align="center">
+  <img src="docs/img/lagrangian.png" alt="The Standard Model Lagrangian rendered on one A4 page" width="62%">
+</p>
 
 ## Install
 
@@ -371,6 +393,10 @@ std::fs::write("talk.pdf", bytes)?;
   `--font-fallback`
 - DejaVu does not include CJK glyphs; for PDF Chinese/Japanese/Korean decks,
   pass `--cjk PATH` or include a CJK face in `--font-fallback`
+- `direction: rtl` right-aligns Arabic/Hebrew but does not yet perform full
+  Unicode bidirectional reordering of mixed LTR/RTL runs
+- GFM table column alignment (`:---:`, `---:`) is applied in PDF / SVG / PNG /
+  HTML; the editable Office/ODF outputs (pptx/odp/odt/docx) don't carry it yet
 - Speaker notes attach natively in PPTX / ODP, can be emitted as a PDF
   companion with `--with-notes`, can be appended to DOCX/ODT via
   `--doc-style speaker-notes`, and can be bundled with deck + handout via

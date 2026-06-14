@@ -50,11 +50,13 @@ Status legend: ☐ open · ☑ fixed · ◐ in progress · ⊘ won't-fix / large
 
 ## MEDIUM
 
-- ☐ **M1 — Nested blockquotes collapse** — `>`/`>>`/`>>>` renders only the deepest
-  level; outer levels vanish.
+- ☑ **M1 — Nested blockquotes collapse.** Fixed: the quote accumulator only
+  resets on the outermost `>`, so nested levels keep the outer paragraphs
+  (`src/parser.rs`).
 
-- ☐ **M2 — Long unbreakable tokens overflow the right edge** — bare long URLs, long
-  words, long inline `code` (no emergency character break).
+- ☑ **M2 — Long unbreakable tokens overflow the right edge.** Fixed: PDF/SVG
+  wrappers hard-break a token wider than the line into character chunks; HTML
+  uses `overflow-wrap: anywhere` (`src/pdf.rs`, `src/svg.rs`, `src/html.rs`).
 
 - ☑ **M3 — `{width=N%}` > 100 leaks literal `{width=…}` as body text** (+ spurious
   slide). Fixed: `parse_width_pct` now clamps to 1..=100 instead of returning `None`
