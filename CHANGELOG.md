@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **In-browser editor** (`--serve --edit`): edit the markdown and see a live
+  preview side by side. Edits autosave to the source file, which the existing
+  watcher rebuilds — no external dependencies, fully offline.
+
 ## [0.3.0] — 2026-06-14
 
 A math-rendering and robustness release. The native math layout engine gained

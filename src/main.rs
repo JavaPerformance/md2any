@@ -569,6 +569,11 @@ struct Cli {
     #[arg(long, value_name = "PORT", default_value_t = 8421)]
     port: u16,
 
+    /// With `--serve`, open the in-browser editor: edit the markdown and see a
+    /// live preview side by side. Edits are saved back to the input file.
+    #[arg(long)]
+    edit: bool,
+
     /// Build the embedded user manual as PPTX (respects --theme, --layout, --aspect, -o)
     #[arg(long, conflicts_with_all = ["help_odp", "help_pdf", "help_md", "help_docx", "help_odt", "help_html", "help_svg", "help_png"], help_heading = "Manual")]
     help_pptx: bool,
@@ -781,7 +786,13 @@ fn main() -> Result<()> {
         if cli.inputs.iter().any(|p| p.as_os_str() == "-") {
             anyhow::bail!("--serve cannot be used with stdin input");
         }
+        if cli.edit && cli.inputs.len() != 1 {
+            anyhow::bail!("--edit needs exactly one input file to edit");
+        }
         return run_serve(&cli);
+    }
+    if cli.edit {
+        anyhow::bail!("--edit requires --serve");
     }
 
     build_once(&cli, &input_path, &input, help_format, start)
@@ -2060,7 +2071,18 @@ fn run_serve(cli: &Cli) -> Result<()> {
     let opts = serve::ServeOpts {
         port: cli.port,
         bind: "127.0.0.1".into(),
+        edit: cli.edit,
     };
+    if cli.edit {
+        eprintln!(
+            "md2any: editor at http://127.0.0.1:{} — edits save to {}",
+            cli.port,
+            watch_paths
+                .first()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        );
+    }
     serve::run(opts, watch_paths, serve_format, build).with_context(|| "preview server")?;
     Ok(())
 }

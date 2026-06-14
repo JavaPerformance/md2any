@@ -23,6 +23,10 @@ use std::time::{Duration, SystemTime};
 pub struct ServeOpts {
     pub port: u16,
     pub bind: String,
+    /// Serve the in-browser editor (edit markdown + live preview side by side)
+    /// instead of the preview-only shell. Edits are written back to the source
+    /// file, which the watcher rebuilds.
+    pub edit: bool,
 }
 
 impl Default for ServeOpts {
@@ -30,6 +34,7 @@ impl Default for ServeOpts {
         ServeOpts {
             port: 8421,
             bind: "127.0.0.1".into(),
+            edit: false,
         }
     }
 }
@@ -98,6 +103,9 @@ struct State {
     artifact: ServedArtifact,
     version: u64,
     error: Option<String>,
+    /// When the editor is enabled, the source file that `GET/POST /source`
+    /// reads and writes (the first input). `None` in preview-only mode.
+    edit_source: Option<PathBuf>,
 }
 
 pub fn run<F>(
@@ -109,11 +117,19 @@ pub fn run<F>(
 where
     F: FnMut() -> Result<ServedArtifact, String> + Send + 'static,
 {
+    // The editor reads/writes the first input file. Multi-file concat decks
+    // stay preview-only (editing a concatenation is ambiguous).
+    let edit_source = if opts.edit {
+        paths.first().cloned()
+    } else {
+        None
+    };
     let initial = match build() {
         Ok(artifact) => State {
             artifact,
             version: 1,
             error: None,
+            edit_source: edit_source.clone(),
         },
         Err(e) => {
             eprintln!("md2any: initial build failed: {e}");
@@ -121,6 +137,7 @@ where
                 artifact: error_artifact(format, &e),
                 version: 1,
                 error: Some(e),
+                edit_source: edit_source.clone(),
             }
         }
     };
@@ -176,20 +193,20 @@ where
 }
 
 fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()> {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let mut buf = [0u8; 2048];
-    let n = stream.read(&mut buf)?;
-    let req = String::from_utf8_lossy(&buf[..n]);
-    let path = req
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .unwrap_or("/");
-    let path = path.split('?').next().unwrap_or("/");
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+    let (method, raw_path, body) = match read_request(&mut stream) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let path = raw_path.split('?').next().unwrap_or("/");
 
-    match path {
-        "/" => {
-            let html = INDEX_HTML;
+    match (method.as_str(), path) {
+        ("GET", "/") => {
+            let html = if state.lock().unwrap().edit_source.is_some() {
+                EDITOR_HTML
+            } else {
+                INDEX_HTML
+            };
             write_response(
                 &mut stream,
                 200,
@@ -198,12 +215,12 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()
                 html.as_bytes(),
             )?;
         }
-        "/version" => {
+        ("GET", "/version") => {
             let v = state.lock().unwrap().version;
             let body = v.to_string();
             write_response(&mut stream, 200, "OK", "text/plain", body.as_bytes())?;
         }
-        "/manifest.json" => {
+        ("GET", "/manifest.json") => {
             let s = state.lock().unwrap();
             let body = manifest_json(&s);
             write_response(
@@ -214,7 +231,7 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()
                 body.as_bytes(),
             )?;
         }
-        "/deck.pdf" => {
+        ("GET", "/deck.pdf") => {
             let s = state.lock().unwrap();
             if let ServedArtifact::Pdf(bytes) = &s.artifact {
                 let bytes = bytes.clone();
@@ -224,7 +241,7 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()
                 write_response(&mut stream, 404, "Not Found", "text/plain", b"not found")?;
             }
         }
-        "/deck.html" => {
+        ("GET", "/deck.html") => {
             let s = state.lock().unwrap();
             if let ServedArtifact::Html(bytes) = &s.artifact {
                 let bytes = bytes.clone();
@@ -234,18 +251,56 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()
                 write_response(&mut stream, 404, "Not Found", "text/plain", b"not found")?;
             }
         }
-        _ => {
-            if let Some(name) = path.strip_prefix("/slides/") {
-                let s = state.lock().unwrap();
-                if let ServedArtifact::Images { format, files } = &s.artifact {
-                    if let Some(file) = files.iter().find(|file| file.name == name) {
-                        let bytes = file.bytes.clone();
-                        let content_type = format.image_content_type();
-                        drop(s);
-                        write_response(&mut stream, 200, "OK", content_type, &bytes)?;
-                    } else {
-                        write_response(&mut stream, 404, "Not Found", "text/plain", b"not found")?;
+        // Editor: read the current source markdown.
+        ("GET", "/source") => {
+            let src = state.lock().unwrap().edit_source.clone();
+            match src.and_then(|p| std::fs::read(&p).ok()) {
+                Some(bytes) => write_response(
+                    &mut stream,
+                    200,
+                    "OK",
+                    "text/markdown; charset=utf-8",
+                    &bytes,
+                )?,
+                None => write_response(
+                    &mut stream,
+                    404,
+                    "Not Found",
+                    "text/plain",
+                    b"editing disabled",
+                )?,
+            }
+        }
+        // Editor: write edited markdown back to the source file. The watcher
+        // picks up the mtime change and rebuilds, bumping /version.
+        ("POST", "/source") => {
+            let src = state.lock().unwrap().edit_source.clone();
+            match src {
+                Some(p) => match std::fs::write(&p, &body) {
+                    Ok(()) => write_response(&mut stream, 200, "OK", "text/plain", b"ok")?,
+                    Err(e) => {
+                        let msg = format!("write {}: {e}", p.display());
+                        write_response(&mut stream, 500, "Error", "text/plain", msg.as_bytes())?;
                     }
+                },
+                None => write_response(
+                    &mut stream,
+                    403,
+                    "Forbidden",
+                    "text/plain",
+                    b"editing disabled",
+                )?,
+            }
+        }
+        ("GET", _) if path.starts_with("/slides/") => {
+            let name = &path["/slides/".len()..];
+            let s = state.lock().unwrap();
+            if let ServedArtifact::Images { format, files } = &s.artifact {
+                if let Some(file) = files.iter().find(|file| file.name == name) {
+                    let bytes = file.bytes.clone();
+                    let content_type = format.image_content_type();
+                    drop(s);
+                    write_response(&mut stream, 200, "OK", content_type, &bytes)?;
                 } else {
                     write_response(&mut stream, 404, "Not Found", "text/plain", b"not found")?;
                 }
@@ -253,8 +308,60 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()
                 write_response(&mut stream, 404, "Not Found", "text/plain", b"not found")?;
             }
         }
+        _ => {
+            write_response(&mut stream, 404, "Not Found", "text/plain", b"not found")?;
+        }
     }
     Ok(())
+}
+
+/// Read a full HTTP request: returns `(method, path, body)`. Reads headers up
+/// to the blank line, then `Content-Length` body bytes — so POSTs larger than
+/// one packet (a whole markdown deck) arrive intact, unlike a single `read`.
+fn read_request<R: Read>(stream: &mut R) -> std::io::Result<(String, String, Vec<u8>)> {
+    let mut buf: Vec<u8> = Vec::with_capacity(2048);
+    let mut tmp = [0u8; 4096];
+    let header_end = loop {
+        if let Some(pos) = find_subseq(&buf, b"\r\n\r\n") {
+            break pos + 4;
+        }
+        let n = stream.read(&mut tmp)?;
+        if n == 0 {
+            break buf.len();
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.len() > 16 * 1024 * 1024 {
+            break buf.len();
+        }
+    };
+    let header_end = header_end.min(buf.len());
+    let head = String::from_utf8_lossy(&buf[..header_end]).into_owned();
+    let mut first = head.lines().next().unwrap_or("").split_whitespace();
+    let method = first.next().unwrap_or("GET").to_string();
+    let path = first.next().unwrap_or("/").to_string();
+    let content_length = head
+        .lines()
+        .find_map(|l| {
+            let lower = l.to_ascii_lowercase();
+            lower
+                .strip_prefix("content-length:")
+                .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+        })
+        .unwrap_or(0);
+    let mut body = buf[header_end..].to_vec();
+    while body.len() < content_length {
+        let n = stream.read(&mut tmp)?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&tmp[..n]);
+    }
+    body.truncate(content_length.min(body.len()));
+    Ok((method, path, body))
+}
+
+fn find_subseq(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 fn write_response(
@@ -410,6 +517,132 @@ loadManifest().catch(() => showError('unable to load md2any preview manifest'));
 </html>
 "#;
 
+const EDITOR_HTML: &str = r##"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<title>md2any editor</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; background: #0f172a; color: #e5e7eb; }
+  #bar {
+    display: flex; align-items: center; gap: 12px; padding: 8px 12px;
+    background: #111827; border-bottom: 1px solid #1f2937; font-size: 13px; flex: 0 0 auto;
+  }
+  #bar b { color: #fff; }
+  #status { color: #93c5fd; }
+  #status.err { color: #fca5a5; }
+  #fmt { margin-left: auto; color: #9ca3af; }
+  #main { flex: 1 1 auto; display: flex; min-height: 0; }
+  #edit { width: 44%; min-width: 220px; display: flex; }
+  #src {
+    width: 100%; border: 0; resize: none; outline: none;
+    background: #0b1220; color: #e5e7eb; padding: 14px;
+    font: 13px/1.55 ui-monospace, "DejaVu Sans Mono", monospace;
+    tab-size: 2; white-space: pre; overflow: auto;
+  }
+  #divider { width: 1px; background: #1f2937; }
+  #view { flex: 1 1 auto; position: relative; background: #1a1a1a; min-width: 0; }
+  #stage { width: 100%; height: 100%; display: grid; place-items: center; }
+  #stage embed, #stage iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+  #stage img { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; }
+  #error {
+    display: none; position: absolute; left: 12px; right: 12px; top: 12px;
+    padding: 10px 12px; background: #7f1d1d; color: #fff; font-size: 12px; border-radius: 4px; z-index: 4;
+    white-space: pre-wrap;
+  }
+  #controls {
+    display: none; position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+    align-items: center; gap: 8px; padding: 6px 8px; background: rgba(17,24,39,.85);
+    color: #fff; border-radius: 4px; font-size: 13px;
+  }
+  #controls button { width: 30px; height: 28px; border: 0; border-radius: 3px; background: rgba(255,255,255,.16); color: #fff; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="bar"><b>md2any</b> editor <span id="status">ready</span><span id="fmt"></span></div>
+<div id="main">
+  <div id="edit"><textarea id="src" spellcheck="false" placeholder="# Type markdown here…"></textarea></div>
+  <div id="divider"></div>
+  <div id="view">
+    <div id="stage"></div>
+    <div id="error"></div>
+    <div id="controls">
+      <button type="button" id="prev" aria-label="Previous slide">&lsaquo;</button>
+      <span><b id="current">1</b>/<span id="total">1</span></span>
+      <button type="button" id="next" aria-label="Next slide">&rsaquo;</button>
+    </div>
+  </div>
+</div>
+<script>
+const ta = document.getElementById('src');
+const statusEl = document.getElementById('status');
+const fmtEl = document.getElementById('fmt');
+const stage = document.getElementById('stage');
+const errorBox = document.getElementById('error');
+const controls = document.getElementById('controls');
+const current = document.getElementById('current');
+const total = document.getElementById('total');
+let known = null, manifest = null, slide = 1, saveTimer = null;
+
+function setStatus(text, err) { statusEl.textContent = text; statusEl.className = err ? 'err' : ''; }
+function slideName(n, format) { return '/slides/slide-' + String(n).padStart(3, '0') + '.' + format; }
+function showError(m) { errorBox.style.display = m ? 'block' : 'none'; errorBox.textContent = m || ''; }
+function render() {
+  if (!manifest) return;
+  showError(manifest.error || '');
+  fmtEl.textContent = manifest.format;
+  controls.style.display = 'none';
+  if (manifest.format === 'pdf') {
+    stage.innerHTML = '<embed src="/deck.pdf?v=' + manifest.version + '" type="application/pdf"/>';
+  } else if (manifest.format === 'html') {
+    stage.innerHTML = '<iframe src="/deck.html?v=' + manifest.version + '" title="preview"></iframe>';
+  } else if (manifest.format === 'svg' || manifest.format === 'png') {
+    const count = Math.max(1, manifest.slide_count || 1);
+    slide = Math.max(1, Math.min(count, slide));
+    controls.style.display = 'flex';
+    current.textContent = String(slide); total.textContent = String(count);
+    stage.innerHTML = '<img src="' + slideName(slide, manifest.format) + '?v=' + manifest.version + '" alt="Slide ' + slide + '"/>';
+  }
+}
+async function loadManifest() {
+  const r = await fetch('/manifest.json', { cache: 'no-store' });
+  manifest = await r.json(); known = String(manifest.version); render();
+}
+async function tick() {
+  try {
+    const r = await fetch('/version', { cache: 'no-store' });
+    const v = (await r.text()).trim();
+    if (known === null) known = v;
+    else if (v !== known) { known = v; await loadManifest(); }
+  } catch (e) {}
+}
+async function save() {
+  setStatus('saving…');
+  try {
+    const r = await fetch('/source', { method: 'POST', headers: { 'Content-Type': 'text/plain; charset=utf-8' }, body: ta.value });
+    setStatus(r.ok ? 'saved' : 'save failed', !r.ok);
+  } catch (e) { setStatus('save failed', true); }
+}
+ta.addEventListener('input', () => { setStatus('editing…'); clearTimeout(saveTimer); saveTimer = setTimeout(save, 450); });
+ta.addEventListener('keydown', (e) => {
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const s = ta.selectionStart, en = ta.selectionEnd;
+    ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(en);
+    ta.selectionStart = ta.selectionEnd = s + 2;
+  }
+});
+document.getElementById('prev').addEventListener('click', () => { slide--; render(); });
+document.getElementById('next').addEventListener('click', () => { slide++; render(); });
+fetch('/source', { cache: 'no-store' }).then(r => r.text()).then(t => { ta.value = t; }).catch(() => {});
+setInterval(tick, 500);
+loadManifest().catch(() => showError('unable to load preview manifest'));
+</script>
+</body>
+</html>
+"##;
+
 fn manifest_json(state: &State) -> String {
     let error = state
         .error
@@ -523,6 +756,7 @@ mod tests {
             },
             version: 7,
             error: None,
+            edit_source: None,
         };
 
         let json = manifest_json(&state);
@@ -534,11 +768,30 @@ mod tests {
     }
 
     #[test]
+    fn read_request_parses_method_path_and_body() {
+        // POST with a body split conceptually across the buffer boundary.
+        let raw = b"POST /source?v=1 HTTP/1.1\r\nHost: x\r\nContent-Length: 11\r\n\r\nhello world";
+        let mut cursor = std::io::Cursor::new(raw.to_vec());
+        let (method, path, body) = read_request(&mut cursor).unwrap();
+        assert_eq!(method, "POST");
+        assert_eq!(path, "/source?v=1");
+        assert_eq!(body, b"hello world");
+
+        let raw = b"GET / HTTP/1.1\r\n\r\n";
+        let mut cursor = std::io::Cursor::new(raw.to_vec());
+        let (method, path, body) = read_request(&mut cursor).unwrap();
+        assert_eq!(method, "GET");
+        assert_eq!(path, "/");
+        assert!(body.is_empty());
+    }
+
+    #[test]
     fn manifest_escapes_build_errors() {
         let state = State {
             artifact: ServedArtifact::Html(Vec::new()),
             version: 2,
             error: Some("bad \"quote\"\nnext".into()),
+            edit_source: None,
         };
 
         let json = manifest_json(&state);

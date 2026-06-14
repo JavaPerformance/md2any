@@ -150,6 +150,7 @@ Then:
 md2any hello.md                 # → hello.pptx
 md2any hello.md -o hello.pdf    # → hello.pdf
 md2any hello.md --serve         # live preview at http://localhost:8421
+md2any hello.md --serve --edit  # in-browser editor + live preview
 ```
 
 ## Features
@@ -167,7 +168,7 @@ md2any hello.md --serve         # live preview at http://localhost:8421
 | **Speaker notes** | `<!-- notes: -->` HTML comments |
 | **Transitions** | `fade`, `push`, `wipe`, `cover`, `split` (PPTX/ODP/PDF) |
 | **RTL / CJK** | `direction: rtl` right-aligns Arabic/Hebrew (no full bidi reordering of mixed runs yet); CJK & emoji need `--cjk <font>` for PDF |
-| **Workflow** | `--watch` for rebuild-on-save, `--serve` for live preview with hot reload, `--check` for lint mode |
+| **Workflow** | `--watch` for rebuild-on-save, `--serve` for live preview with hot reload, `--serve --edit` for an in-browser editor (edit + live preview side by side), `--check` for lint mode |
 | **Handouts** | `--handout 2|4|6` for N-up A4 printable PDF |
 | **Multi-file** | Concat multiple `.md` files; `-` reads stdin |
 | **Images** | Local PNG/JPEG/SVG plus cached remote `http(s)` image URLs |
