@@ -11,7 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **In-browser editor** (`--serve --edit`): edit the markdown and see a live
   preview side by side. Edits autosave to the source file, which the existing
-  watcher rebuilds — no external dependencies, fully offline.
+  watcher rebuilds — no external dependencies, fully offline. The preview is a
+  scrollable per-slide strip (defaults to SVG): rebuilds swap slide images in
+  place so the scroll position is kept, and the slide under the caret is
+  highlighted and scrolled into view as you type — no more jumping to the top.
 - **Theme gallery**: six new built-in themes alongside `light`/`dark` —
   `corporate`, `sepia`, `contrast`, `midnight`, `terminal`, `pastel` — selectable
   with `--theme NAME`. Each is a palette over a light/dark base, so all aspects,

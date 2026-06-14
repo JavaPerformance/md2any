@@ -542,21 +542,23 @@ const EDITOR_HTML: &str = r##"<!DOCTYPE html>
     tab-size: 2; white-space: pre; overflow: auto;
   }
   #divider { width: 1px; background: #1f2937; }
-  #view { flex: 1 1 auto; position: relative; background: #1a1a1a; min-width: 0; }
-  #stage { width: 100%; height: 100%; display: grid; place-items: center; }
-  #stage embed, #stage iframe { width: 100%; height: 100%; border: 0; background: #fff; }
-  #stage img { max-width: 100%; max-height: 100%; object-fit: contain; background: #fff; }
+  /* The preview is a scrollable strip of per-slide images we own, so a rebuild
+     swaps image sources in place (scroll preserved) instead of reloading a
+     whole document and snapping to the top. */
+  #view { flex: 1 1 auto; overflow: auto; background: #1a1a1a; min-width: 0; }
   #error {
-    display: none; position: absolute; left: 12px; right: 12px; top: 12px;
-    padding: 10px 12px; background: #7f1d1d; color: #fff; font-size: 12px; border-radius: 4px; z-index: 4;
-    white-space: pre-wrap;
+    display: none; position: sticky; top: 0; margin: 8px;
+    padding: 10px 12px; background: #7f1d1d; color: #fff; font-size: 12px;
+    border-radius: 4px; z-index: 4; white-space: pre-wrap;
   }
-  #controls {
-    display: none; position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
-    align-items: center; gap: 8px; padding: 6px 8px; background: rgba(17,24,39,.85);
-    color: #fff; border-radius: 4px; font-size: 13px;
+  #deck { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 16px; }
+  .pslide {
+    width: 100%; max-width: 980px; border-radius: 2px; outline: 2px solid transparent;
+    outline-offset: 3px; transition: outline-color .15s; box-shadow: 0 2px 10px rgba(0,0,0,.45);
   }
-  #controls button { width: 30px; height: 28px; border: 0; border-radius: 3px; background: rgba(255,255,255,.16); color: #fff; cursor: pointer; }
+  .pslide.active { outline-color: #2563eb; }
+  .pslide img { width: 100%; display: block; background: #fff; }
+  #deck > embed, #deck > iframe { width: 100%; height: 80vh; border: 0; background: #fff; }
 </style>
 </head>
 <body>
@@ -565,54 +567,87 @@ const EDITOR_HTML: &str = r##"<!DOCTYPE html>
   <div id="edit"><textarea id="src" spellcheck="false" placeholder="# Type markdown here…"></textarea></div>
   <div id="divider"></div>
   <div id="view">
-    <div id="stage"></div>
     <div id="error"></div>
-    <div id="controls">
-      <button type="button" id="prev" aria-label="Previous slide">&lsaquo;</button>
-      <span><b id="current">1</b>/<span id="total">1</span></span>
-      <button type="button" id="next" aria-label="Next slide">&rsaquo;</button>
-    </div>
+    <div id="deck"></div>
   </div>
 </div>
 <script>
 const ta = document.getElementById('src');
 const statusEl = document.getElementById('status');
 const fmtEl = document.getElementById('fmt');
-const stage = document.getElementById('stage');
+const deck = document.getElementById('deck');
 const errorBox = document.getElementById('error');
-const controls = document.getElementById('controls');
-const current = document.getElementById('current');
-const total = document.getElementById('total');
-let known = null, manifest = null, slide = 1, saveTimer = null;
+let known = null, ver = 0, fmt = 'svg', count = 0, isImage = true, saveTimer = null;
 
-function setStatus(text, err) { statusEl.textContent = text; statusEl.className = err ? 'err' : ''; }
-function slideName(n, format) { return '/slides/slide-' + String(n).padStart(3, '0') + '.' + format; }
+function setStatus(t, err) { statusEl.textContent = t; statusEl.className = err ? 'err' : ''; }
 function showError(m) { errorBox.style.display = m ? 'block' : 'none'; errorBox.textContent = m || ''; }
-function render() {
-  if (!manifest) return;
-  showError(manifest.error || '');
-  fmtEl.textContent = manifest.format;
-  controls.style.display = 'none';
-  if (manifest.format === 'pdf') {
-    stage.innerHTML = '<embed src="/deck.pdf?v=' + manifest.version + '" type="application/pdf"/>';
-  } else if (manifest.format === 'html') {
-    stage.innerHTML = '<iframe src="/deck.html?v=' + manifest.version + '" title="preview"></iframe>';
-  } else if (manifest.format === 'svg' || manifest.format === 'png') {
-    const count = Math.max(1, manifest.slide_count || 1);
-    slide = Math.max(1, Math.min(count, slide));
-    controls.style.display = 'flex';
-    current.textContent = String(slide); total.textContent = String(count);
-    stage.innerHTML = '<img src="' + slideName(slide, manifest.format) + '?v=' + manifest.version + '" alt="Slide ' + slide + '"/>';
+function srcFor(i) { return '/slides/slide-' + String(i + 1).padStart(3, '0') + '.' + fmt + '?v=' + ver; }
+
+// Match the DOM slide-count, reusing existing nodes so scroll is preserved.
+function ensureSlides(n) {
+  while (deck.children.length < n) {
+    const d = document.createElement('div');
+    d.className = 'pslide';
+    const img = document.createElement('img');
+    img.alt = 'Slide ' + (deck.children.length + 1);
+    d.appendChild(img);
+    deck.appendChild(d);
+  }
+  while (deck.children.length > n) deck.removeChild(deck.lastChild);
+}
+function refreshSrcs() {
+  for (let i = 0; i < deck.children.length; i++) {
+    const img = deck.children[i].querySelector('img');
+    if (!img) continue;
+    const s = srcFor(i);
+    if (img.getAttribute('src') !== s) img.setAttribute('src', s);
   }
 }
+// Map the caret to a slide: count slide-start markers (#, ##, --- rule) before
+// it, skipping a leading front-matter block. Approximate (the paginator may add
+// continuation slides), but enough to keep the edited slide in view.
+function activeIndex() {
+  const before = ta.value.slice(0, ta.selectionStart);
+  const lines = before.split('\n');
+  let start = 0;
+  if (lines[0] && lines[0].trim() === '---') {
+    for (let j = 1; j < lines.length; j++) {
+      if (lines[j].trim() === '---') { start = j + 1; break; }
+    }
+  }
+  let idx = 0;
+  for (let j = start; j < lines.length; j++) {
+    if (/^#{1,2}\s/.test(lines[j]) || /^---\s*$/.test(lines[j])) idx++;
+  }
+  const zero = ta.value.startsWith('---') ? idx : Math.max(0, idx - 1);
+  return Math.min(Math.max(zero, 0), Math.max(0, count - 1));
+}
+function focusActive(scroll) {
+  if (!isImage || count === 0) return;
+  const i = activeIndex();
+  for (let k = 0; k < deck.children.length; k++) {
+    deck.children[k].classList.toggle('active', k === i);
+  }
+  if (scroll && deck.children[i]) deck.children[i].scrollIntoView({ block: 'nearest' });
+}
 async function loadManifest() {
-  const r = await fetch('/manifest.json', { cache: 'no-store' });
-  manifest = await r.json(); known = String(manifest.version); render();
+  const m = await (await fetch('/manifest.json', { cache: 'no-store' })).json();
+  ver = m.version; known = String(m.version); fmtEl.textContent = m.format;
+  showError(m.error || '');
+  if (m.format === 'svg' || m.format === 'png') {
+    isImage = true; fmt = m.format; count = Math.max(1, m.slide_count || 1);
+    ensureSlides(count); refreshSrcs(); focusActive(true);
+  } else {
+    // pdf/html can't be focused per slide — single embed, reloaded on change.
+    isImage = false; count = 0;
+    deck.innerHTML = m.format === 'pdf'
+      ? '<embed src="/deck.pdf?v=' + ver + '" type="application/pdf"/>'
+      : '<iframe src="/deck.html?v=' + ver + '" title="preview"></iframe>';
+  }
 }
 async function tick() {
   try {
-    const r = await fetch('/version', { cache: 'no-store' });
-    const v = (await r.text()).trim();
+    const v = (await (await fetch('/version', { cache: 'no-store' })).text()).trim();
     if (known === null) known = v;
     else if (v !== known) { known = v; await loadManifest(); }
   } catch (e) {}
@@ -624,7 +659,9 @@ async function save() {
     setStatus(r.ok ? 'saved' : 'save failed', !r.ok);
   } catch (e) { setStatus('save failed', true); }
 }
-ta.addEventListener('input', () => { setStatus('editing…'); clearTimeout(saveTimer); saveTimer = setTimeout(save, 450); });
+ta.addEventListener('input', () => { setStatus('editing…'); focusActive(true); clearTimeout(saveTimer); saveTimer = setTimeout(save, 450); });
+ta.addEventListener('keyup', () => focusActive(true));
+ta.addEventListener('click', () => focusActive(true));
 ta.addEventListener('keydown', (e) => {
   if (e.key === 'Tab') {
     e.preventDefault();
@@ -633,8 +670,6 @@ ta.addEventListener('keydown', (e) => {
     ta.selectionStart = ta.selectionEnd = s + 2;
   }
 });
-document.getElementById('prev').addEventListener('click', () => { slide--; render(); });
-document.getElementById('next').addEventListener('click', () => { slide++; render(); });
 fetch('/source', { cache: 'no-store' }).then(r => r.text()).then(t => { ta.value = t; }).catch(() => {});
 setInterval(tick, 500);
 loadManifest().catch(() => showError('unable to load preview manifest'));

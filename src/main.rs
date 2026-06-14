@@ -2124,8 +2124,14 @@ fn run_watch(cli: &Cli, input_path: &Path) -> Result<()> {
 fn run_serve(cli: &Cli) -> Result<()> {
     let inputs = cli.inputs.clone();
     let watch_paths = inputs.clone();
-    let cli_snapshot = serve_cli_snapshot(cli);
-    let serve_format: serve::ServeFormat = cli.serve_format.into();
+    let mut cli_snapshot = serve_cli_snapshot(cli);
+    // The editor previews a per-slide image strip (so it can keep the slide
+    // you're editing in view); default that to SVG when the user didn't pick a
+    // specific preview format.
+    if cli.edit && matches!(cli_snapshot.serve_format, ServeFormatArg::Pdf) {
+        cli_snapshot.serve_format = ServeFormatArg::Svg;
+    }
+    let serve_format: serve::ServeFormat = cli_snapshot.serve_format.into();
     let build = move || -> Result<serve::ServedArtifact, String> {
         build_artifact_for_serve(&inputs, &cli_snapshot).map_err(|e| format!("{e:#}"))
     };
