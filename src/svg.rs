@@ -596,7 +596,11 @@ fn render_block(
             }
             Ok(yy)
         }
-        Block::Table { headers, rows } => render_table(ctx, headers, rows, x, y, width),
+        Block::Table {
+            headers,
+            rows,
+            aligns,
+        } => render_table(ctx, headers, rows, aligns, x, y, width),
         Block::ColumnBreak => Ok(y),
         Block::Columns { left, right } => {
             let gap = 22.0;
@@ -641,6 +645,9 @@ fn render_list(
             *counter = 0;
         }
         let indent = level as f32 * 19.0;
+        // Task-list items carry their own ☐/☑ marker in the runs, so suppress
+        // the bullet and start the text where the bullet would have gone.
+        let is_task = item.is_task();
         let marker = if item.ordered {
             format!("{}.", counters[level].max(1))
         } else {
@@ -651,23 +658,27 @@ fn render_list(
         } else {
             x + indent
         };
-        let text_x = if ctx.rtl {
+        let text_x = if is_task {
+            marker_x
+        } else if ctx.rtl {
             marker_x - 20.0
         } else {
             marker_x + 20.0
         };
         let anchor = if ctx.rtl { "end" } else { "start" };
-        write!(
-            ctx.out,
-            r##"<text x="{:.2}" y="{:.2}" font-family="{}" font-size="{:.2}" font-weight="700" fill="#{}" text-anchor="{}">{}</text>"##,
-            marker_x,
-            y,
-            escape_attr(svg_font_family(&theme.body_font)),
-            body_size,
-            theme.accent,
-            anchor,
-            escape_xml(&marker)
-        )?;
+        if !is_task {
+            write!(
+                ctx.out,
+                r##"<text x="{:.2}" y="{:.2}" font-family="{}" font-size="{:.2}" font-weight="700" fill="#{}" text-anchor="{}">{}</text>"##,
+                marker_x,
+                y,
+                escape_attr(svg_font_family(&theme.body_font)),
+                body_size,
+                theme.accent,
+                anchor,
+                escape_xml(&marker)
+            )?;
+        }
         y = draw_runs_plain(
             ctx.out,
             &item.runs,
@@ -865,7 +876,7 @@ fn render_full_page_math_markup(
     let max_w = (w - margin_x * 2.0).max(1.0);
     let max_h = (h - margin_y * 2.0).max(1.0);
     let base_size = 28.0_f32;
-    let gap = base_size * 0.035;
+    let gap = base_size * 0.24;
     let raw_layouts = svg_math_line_layouts(lines);
     let layouts = fit_svg_math_line_layouts(lines, raw_layouts, base_size, gap, max_w / max_h);
     let (max_line_w, total_h) = svg_math_metrics(&layouts, base_size, gap);
@@ -901,13 +912,20 @@ fn draw_svg_math_layout(
 ) -> Result<()> {
     for draw in &layout.draws {
         match draw {
-            crate::math::MathLayoutDraw::Text { x, y, size, text } => {
+            crate::math::MathLayoutDraw::Text {
+                x,
+                y,
+                size,
+                text,
+                bold,
+            } => {
                 if text.trim().is_empty() {
                     continue;
                 }
+                let weight = if *bold { r#" font-weight="bold""# } else { "" };
                 write!(
                     out,
-                    r##"<text x="{:.2}" y="{:.2}" font-family="{}" font-size="{:.2}" font-style="italic" fill="#{}">{}</text>"##,
+                    r##"<text x="{:.2}" y="{:.2}" font-family="{}" font-size="{:.2}" font-style="italic"{weight} fill="#{}">{}</text>"##,
                     origin_x + x * scale,
                     top_y + y * scale,
                     font,
@@ -1097,6 +1115,7 @@ fn render_table(
     ctx: &mut RenderCtx<'_>,
     headers: &[Vec<Run>],
     rows: &[Vec<Vec<Run>>],
+    aligns: &[crate::ir::ColumnAlign],
     x: f32,
     y: f32,
     width: f32,
@@ -1109,6 +1128,15 @@ fn render_table(
         .max(1);
     let col_w = width / cols as f32;
     let row_h = body_size * 1.65;
+    // (text-anchor, x) for a column's cell text, honouring GFM alignment.
+    let cell_anchor = |idx: usize| -> (&'static str, f32) {
+        let left = x + idx as f32 * col_w;
+        match aligns.get(idx) {
+            Some(crate::ir::ColumnAlign::Center) => ("middle", left + col_w / 2.0),
+            Some(crate::ir::ColumnAlign::Right) => ("end", left + col_w - 6.0),
+            _ => ("start", left + 6.0),
+        }
+    };
     let mut yy = y;
     write!(
         ctx.out,
@@ -1116,7 +1144,7 @@ fn render_table(
         x, yy, width, row_h, theme.accent_soft, theme.divider
     )?;
     for (idx, cell) in headers.iter().enumerate() {
-        let cx = x + idx as f32 * col_w + 6.0;
+        let (anchor, cx) = cell_anchor(idx);
         draw_runs_plain(
             ctx.out,
             cell,
@@ -1130,7 +1158,7 @@ fn render_table(
                 font: &theme.body_font,
                 weight: "700",
                 style: "normal",
-                anchor: "start",
+                anchor,
             },
         )?;
     }
@@ -1148,7 +1176,7 @@ fn render_table(
             x, yy, width, row_h, bg, theme.divider
         )?;
         for (idx, cell) in row.iter().enumerate() {
-            let cx = x + idx as f32 * col_w + 6.0;
+            let (anchor, cx) = cell_anchor(idx);
             draw_runs_plain(
                 ctx.out,
                 cell,
@@ -1162,7 +1190,7 @@ fn render_table(
                     font: &theme.body_font,
                     weight: "400",
                     style: "normal",
-                    anchor: "start",
+                    anchor,
                 },
             )?;
         }
@@ -1286,6 +1314,26 @@ fn wrap_text(text: &str, width: f32, font_size: f32) -> Vec<String> {
     for raw_line in text.lines() {
         let mut current = String::new();
         for word in raw_line.split_whitespace() {
+            // Hard-break a word longer than a whole line so it wraps instead of
+            // overflowing the slide edge.
+            if word.chars().count() > max_chars {
+                if !current.is_empty() {
+                    lines.push(std::mem::take(&mut current));
+                }
+                let chars: Vec<char> = word.chars().collect();
+                let mut i = 0;
+                while i < chars.len() {
+                    let end = (i + max_chars).min(chars.len());
+                    let chunk: String = chars[i..end].iter().collect();
+                    if end < chars.len() {
+                        lines.push(chunk);
+                    } else {
+                        current = chunk;
+                    }
+                    i = end;
+                }
+                continue;
+            }
             let next_len = current.chars().count()
                 + if current.is_empty() { 0 } else { 1 }
                 + word.chars().count();

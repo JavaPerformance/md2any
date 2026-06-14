@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-14
+
+A math-rendering and robustness release. The native math layout engine gained
+font-aware metrics, real bold, and properly-centred accents; custom OTF/CFF
+fonts now embed correctly in PDF; and a broad rendering sweep fixed several
+overflow / silent-drop bugs.
+
+### Added
+
+- **Font-aware math metrics.** The math layout engine now measures glyph
+  advances against the face that will actually render them (the embedded PDF
+  font, or bundled DejaVu for SVG/PNG) via a `GlyphMetrics` provider, so
+  reserved width matches drawn glyphs — equations stay aligned under
+  `--pdf-font`, not just with the default font.
+- **Math bold.** `\mathbf`, `\textbf`, `\boldsymbol`, `\bm`, `\pmb`, `\mathbfit`
+  now render in real bold weight (PDF/SVG/PNG); previously a no-op, and
+  `\boldsymbol` leaked literal source.
+- **`\dfrac` / `\tfrac` / `\cfrac`** and **`\mid` / `\vert` / `\Vert`** are now
+  recognised (previously leaked literal source).
+- **GFM table column alignment** (`:---`, `:---:`, `---:`) is honoured in PDF,
+  SVG, PNG, and HTML.
+- **Inline `<svg>…</svg>`** blocks are now rasterised and embedded instead of
+  being silently dropped.
+
+### Fixed
+
+- **OTF/CFF font embedding.** PDF now emits `CIDFontType0` + `FontFile3` for
+  CFF/OpenType faces (e.g. STIX Two Math) instead of mislabelling them as
+  TrueType, which strict readers rejected.
+- **Math accents** (`\bar`, `\hat`, `\vec`, `\tilde`, `\dot`, `\ddot`) are drawn
+  as centred geometry rather than zero-advance combining marks, which had
+  landed at the glyph's right edge (and differently per font — e.g. `\bar{d}`
+  rendered as "đ").
+- **Long titles no longer overflow.** Title slides (all layouts) and section
+  dividers auto-shrink to fit; wrapped content-slide headings push the body and
+  underline down instead of overprinting them.
+- **Nested blockquotes** (`>`/`>>`/`>>>`) keep every level instead of rendering
+  only the deepest.
+- **Long unbreakable tokens** (URLs, hashes, CamelCase) hard-break to wrap
+  instead of overflowing the slide edge (PDF/SVG); HTML uses `overflow-wrap`.
+- **Tabs in code** expand to 4-column tab stops instead of rendering as
+  missing-glyph boxes.
+- **`{width=N%}` > 100** clamps instead of leaking the literal attribute text.
+- **`:::` columns** handle leading/trailing/duplicate dividers (the fence form
+  `::: … ::: … :::`) instead of dumping all content into the right column.
+- **Task-list items** show only their checkbox, not a checkbox *and* a bullet
+  (PDF/SVG/HTML/PPTX).
+- **Display-math pagination** weights generated equation images by their real
+  aspect ratio, so a one-line equation no longer splits onto a near-empty
+  continuation slide.
+
+### Known limitations
+
+- Right-to-left text uses `direction: rtl` for right-alignment but does not
+  perform full Unicode bidi reordering of mixed LTR/RTL runs.
+- CJK and colour-emoji glyphs require `--cjk <font>` for PDF (the bundled DejaVu
+  face does not cover them).
+- Table column alignment is not yet applied to the editable Office/ODF outputs
+  (pptx/odp/odt/docx).
+
 ## [0.2.0] — 2026-05-24
 
 A feature-and-fix-heavy follow-up to the initial release. New CLI surface

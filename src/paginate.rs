@@ -15,6 +15,7 @@
 
 use crate::ir::*;
 use crate::layout::{Layout, LayoutKind};
+use crate::math;
 use crate::theme::Theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,9 +466,14 @@ fn paginate_inner(
             // Mirror of the code-block branch for GFM tables. The header
             // row is repeated on each continuation slide so a reader who
             // lands on page N still sees the column titles.
-            if matches!(&block, Block::Table { headers, rows } if table_weight(headers, rows, wscale) > budget + 1.0)
+            if matches!(&block, Block::Table { headers, rows, .. } if table_weight(headers, rows, wscale) > budget + 1.0)
             {
-                if let Block::Table { headers, rows } = block {
+                if let Block::Table {
+                    headers,
+                    rows,
+                    aligns,
+                } = block
+                {
                     let chunks = split_table_rows(headers.as_slice(), rows, budget, wscale);
                     for (idx, chunk) in chunks.into_iter().enumerate() {
                         if !current.blocks.is_empty() && idx > 0 {
@@ -491,6 +497,7 @@ fn paginate_inner(
                         current.blocks.push(Block::Table {
                             headers: headers.clone(),
                             rows: chunk,
+                            aligns: aligns.clone(),
                         });
                         weight += chunk_weight;
                     }
@@ -513,8 +520,12 @@ fn fit_tables(blocks: Vec<Block>, theme: &Theme, mode: TableFit) -> Vec<Block> {
     let mut out = Vec::new();
     for block in blocks {
         match block {
-            Block::Table { headers, rows } => {
-                out.extend(fit_table(headers, rows, theme, mode));
+            Block::Table {
+                headers,
+                rows,
+                aligns,
+            } => {
+                out.extend(fit_table(headers, rows, aligns, theme, mode));
             }
             Block::Columns { left, right } => out.push(Block::Columns {
                 left: fit_tables(left, theme, mode),
@@ -612,19 +623,32 @@ fn should_code_two_up(mode: CodeColumns, lines: &[String], theme: &Theme) -> boo
 fn fit_table(
     headers: Vec<Vec<Run>>,
     rows: Vec<Vec<Vec<Run>>>,
+    aligns: Vec<ColumnAlign>,
     theme: &Theme,
     mode: TableFit,
 ) -> Vec<Block> {
     if matches!(mode, TableFit::Off) {
-        return vec![Block::Table { headers, rows }];
+        return vec![Block::Table {
+            headers,
+            rows,
+            aligns,
+        }];
     }
     let cols = table_col_count(&headers, &rows);
     if cols <= 1 {
-        return vec![Block::Table { headers, rows }];
+        return vec![Block::Table {
+            headers,
+            rows,
+            aligns,
+        }];
     }
     let max_cols = if theme.portrait { 4 } else { 7 };
     if cols <= max_cols {
-        return vec![Block::Table { headers, rows }];
+        return vec![Block::Table {
+            headers,
+            rows,
+            aligns,
+        }];
     }
 
     let use_transpose = match mode {
@@ -633,9 +657,11 @@ fn fit_table(
         TableFit::Split | TableFit::Off => false,
     };
     if use_transpose {
+        // Transposing swaps rows and columns, so the original per-column
+        // alignment no longer maps — fall back to the default.
         return vec![transpose_table(headers, rows, cols)];
     }
-    split_table_columns(headers, rows, cols, max_cols)
+    split_table_columns(headers, rows, aligns, cols, max_cols)
 }
 
 fn table_col_count(headers: &[Vec<Run>], rows: &[Vec<Vec<Run>>]) -> usize {
@@ -663,12 +689,14 @@ fn transpose_table(headers: Vec<Vec<Run>>, rows: Vec<Vec<Vec<Run>>>, cols: usize
     Block::Table {
         headers: out_headers,
         rows: out_rows,
+        aligns: Vec::new(),
     }
 }
 
 fn split_table_columns(
     headers: Vec<Vec<Run>>,
     rows: Vec<Vec<Vec<Run>>>,
+    aligns: Vec<ColumnAlign>,
     cols: usize,
     max_cols: usize,
 ) -> Vec<Block> {
@@ -680,17 +708,28 @@ fn split_table_columns(
         let mut col_indices = Vec::with_capacity(end - start + 1);
         col_indices.push(0);
         col_indices.extend(start..end);
+        // Each split keeps the leading key column plus a window of the rest;
+        // carry the matching per-column alignments.
+        let chunk_aligns = col_indices
+            .iter()
+            .map(|&i| aligns.get(i).copied().unwrap_or(ColumnAlign::Left))
+            .collect();
         out.push(Block::Table {
             headers: pick_header_cells(&headers, &col_indices),
             rows: rows
                 .iter()
                 .map(|row| pick_row_cells(row, &col_indices))
                 .collect(),
+            aligns: chunk_aligns,
         });
         start = end;
     }
     if out.is_empty() {
-        out.push(Block::Table { headers, rows });
+        out.push(Block::Table {
+            headers,
+            rows,
+            aligns,
+        });
     }
     out
 }
@@ -762,6 +801,26 @@ fn table_row_weight(cells: &[Vec<Run>], cols: usize, wscale: f32) -> f32 {
     0.45 + lines * 0.95
 }
 
+/// Natural `(width, height)` in px of a generated math SVG data URI, read
+/// from its `<svg>` tag. Used to weight display equations by how tall they
+/// actually render rather than assuming a full-height image.
+fn math_image_dims(src: &str) -> Option<(f32, f32)> {
+    let svg = math::decode_generated_math_svg(src)?;
+    let tag_end = svg.find('>')?;
+    let tag = &svg[..tag_end];
+    let attr = |key: &str| -> Option<f32> {
+        let needle = format!("{key}=\"");
+        let start = tag.find(&needle)? + needle.len();
+        let rest = &tag[start..];
+        let end = rest.find('"')?;
+        rest[..end].parse::<f32>().ok()
+    };
+    match (attr("width"), attr("height")) {
+        (Some(w), Some(h)) if w > 0.0 && h > 0.0 => Some((w, h)),
+        _ => None,
+    }
+}
+
 fn block_weight(b: &Block, wscale: f32, allow_auto_columns: bool) -> f32 {
     match b {
         Block::Paragraph(runs) => {
@@ -780,7 +839,7 @@ fn block_weight(b: &Block, wscale: f32, allow_auto_columns: bool) -> f32 {
                 .sum::<f32>()
                 + 0.6
         }
-        Block::Table { headers, rows } => table_weight(headers, rows, wscale),
+        Block::Table { headers, rows, .. } => table_weight(headers, rows, wscale),
         Block::ColumnBreak => 0.0,
         Block::Columns { left, right } => {
             // Two-column layout halves the per-column width, so each side
@@ -803,7 +862,28 @@ fn block_weight(b: &Block, wscale: f32, allow_auto_columns: bool) -> f32 {
         // caption-style paragraph still triggers a split, keeping the
         // image on its own clean page. If you bump the renderer cap,
         // bump this value too.
-        Block::Image { .. } => 13.0,
+        //
+        // Generated display-math images are the exception: they scale to the
+        // content *width*, so their on-slide height is set by their aspect
+        // ratio, not the 65%-tall photo assumption. A wide one-line equation
+        // is short and should sit on the same slide as its heading + caption
+        // instead of being shoved onto a "(cont.)" page. Weight it by
+        // height/width; the constant maps a square equation (one that would
+        // fill the content column) to the full image weight.
+        Block::Image { src, alt, .. } => {
+            if math::math_image_meta(src, alt).is_some() {
+                // Equations render small (capped at `math_max_height`), so even
+                // a tall one leaves room for a heading and caption. Weight by
+                // aspect but cap well below the photo weight so a single
+                // equation never forces a "(cont.)" split on its own.
+                match math_image_dims(src) {
+                    Some((w, h)) if w > 0.0 => ((h / w) * 16.0).clamp(1.0, 8.0),
+                    _ => 2.5,
+                }
+            } else {
+                13.0
+            }
+        }
         Block::Footnotes(items) => {
             // Small text, so each line is ~half the weight of a normal list line.
             let total: f32 = items
@@ -1217,19 +1297,32 @@ fn coalesce_columns(blocks: Vec<Block>) -> Vec<Block> {
     if !blocks.iter().any(|b| matches!(b, Block::ColumnBreak)) {
         return blocks;
     }
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    let mut break_seen = false;
+    // Split on every `:::` divider, then drop empty segments. This makes a
+    // leading, trailing, or duplicate divider — e.g. the natural fence form
+    // `::: … ::: … :::` — behave like a single divider instead of dumping all
+    // content into the right column and leaving the left blank. The IR has
+    // only two columns, so any segments past the second fold into the right.
+    let mut segments: Vec<Vec<Block>> = vec![Vec::new()];
     for b in blocks {
-        match b {
-            Block::ColumnBreak => {
-                break_seen = true;
-            }
-            other if break_seen => right.push(other),
-            other => left.push(other),
+        if matches!(b, Block::ColumnBreak) {
+            segments.push(Vec::new());
+        } else {
+            segments
+                .last_mut()
+                .expect("non-empty by construction")
+                .push(b);
         }
     }
-    vec![Block::Columns { left, right }]
+    let mut segments: Vec<Vec<Block>> = segments.into_iter().filter(|s| !s.is_empty()).collect();
+    match segments.len() {
+        0 => Vec::new(),
+        1 => segments.pop().expect("len checked"),
+        _ => {
+            let left = segments.remove(0);
+            let right = segments.into_iter().flatten().collect();
+            vec![Block::Columns { left, right }]
+        }
+    }
 }
 
 fn total_chars(runs: &[Run]) -> usize {

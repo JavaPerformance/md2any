@@ -921,6 +921,38 @@ fn font_index(bold: bool, italic: bool, mono: bool) -> usize {
 /// via `units_per_em`. Codepoints with no glyph in the font contribute the
 /// .notdef advance (typically a small box), matching what the PDF will
 /// actually render.
+/// Total advance of one wrapped line of runs, in EMU, honouring each run's
+/// bold/italic. Used to offset table cells for center/right alignment.
+fn runs_width_emu(fonts: &PdfFonts, line: &[Run], size_centipt: u32, base_bold: bool) -> u32 {
+    let size_pt = size_centipt as f32 / 100.0;
+    let w: f32 = line
+        .iter()
+        .map(|r| {
+            let idx = font_index(base_bold || r.bold, r.italic, r.code);
+            text_width_pt(fonts, &r.text, idx, size_pt)
+        })
+        .sum();
+    (w * EMU_PER_PT) as u32
+}
+
+/// Left x (EMU) at which to start a cell line of width `line_w` so it sits
+/// left / centre / right within a column, per the GFM alignment.
+fn aligned_cell_x(
+    align: Option<crate::ir::ColumnAlign>,
+    col_left: u32,
+    col_w: u32,
+    pad_x: u32,
+    line_w: u32,
+) -> u32 {
+    match align {
+        Some(crate::ir::ColumnAlign::Center) => col_left + col_w.saturating_sub(line_w) / 2,
+        Some(crate::ir::ColumnAlign::Right) => {
+            col_left + col_w.saturating_sub(pad_x).saturating_sub(line_w)
+        }
+        _ => col_left + pad_x,
+    }
+}
+
 fn text_width_pt(fonts: &PdfFonts, text: &str, font_idx: usize, size_pt: f32) -> f32 {
     let mut total = 0.0_f32;
     for c in text.chars() {
@@ -1035,6 +1067,15 @@ fn record_glyphs_from_hex(set: &mut std::collections::HashSet<u16>, hex: &str) {
 /// needed by the /ToUnicode CMap builder. Returns `Err` for fonts the
 /// subsetter can't handle (e.g. TTC files with no face at index 0);
 /// callers should fall back to the original bytes + an identity remapper.
+/// True when the sfnt carries PostScript/CFF outlines rather than TrueType
+/// (`glyf`) ones. CFF-flavoured OpenType begins with the `OTTO` magic; plain
+/// TrueType uses `0x00010000` or `true`. This decides the PDF font structure:
+/// CFF needs a `CIDFontType0` descendant + `FontFile3`, while `glyf` uses
+/// `CIDFontType2` + `FontFile2`. The bundled DejaVu faces are all `glyf`.
+fn font_has_cff_outlines(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"OTTO")
+}
+
 fn subset_font(
     ttf: &[u8],
     used: &std::collections::HashSet<u16>,
@@ -1507,17 +1548,34 @@ impl PdfWriter {
     fn write_fonts(&mut self, fonts: &PdfFonts, used: &[std::collections::HashSet<u16>]) {
         for i in 0..fonts.face_count() {
             let face_metrics = &fonts.metrics[i];
+            let is_cff = font_has_cff_outlines(&fonts.bytes[i]);
             let cidfont_id = self.alloc_id();
             let descriptor_id = self.alloc_id();
             let fontfile_id = self.alloc_id();
             let tounicode_id = self.alloc_id();
-            let cidtogid_id = self.alloc_id();
-            let (subset, remapper) = match subset_font(&fonts.bytes[i], &used[i]) {
-                Ok(v) => v,
-                Err(_) => {
-                    let all: Vec<u16> = (0..face_metrics.num_glyphs).collect();
-                    let identity = subsetter::GlyphRemapper::new_from_glyphs_sorted(&all);
-                    (fonts.bytes[i].clone(), identity)
+            // CIDToGIDMap is a CIDFontType2-only construct; CFF descendants
+            // (CIDFontType0) resolve CID→glyph through the font itself, so we
+            // neither allocate nor emit the stream for them. Allocating it
+            // only on the glyf path keeps the default (DejaVu) output and
+            // object numbering byte-for-byte unchanged.
+            let cidtogid_id = if is_cff { None } else { Some(self.alloc_id()) };
+            // glyf faces are subset to the glyphs actually used (dense GIDs +
+            // a CIDToGIDMap translating original→subset). For CFF/OpenType we
+            // embed the full program and keep CID == original GID: the
+            // Identity-H text streams already carry original GIDs and
+            // CIDFontType0 offers no map to translate them, so subsetting
+            // would require rewriting every Tj literal. The trade-off is a
+            // larger embed for custom OTF faces only.
+            let (subset, remapper): (Vec<u8>, Option<subsetter::GlyphRemapper>) = if is_cff {
+                (fonts.bytes[i].clone(), None)
+            } else {
+                match subset_font(&fonts.bytes[i], &used[i]) {
+                    Ok((bytes, remapper)) => (bytes, Some(remapper)),
+                    Err(_) => {
+                        let all: Vec<u16> = (0..face_metrics.num_glyphs).collect();
+                        let identity = subsetter::GlyphRemapper::new_from_glyphs_sorted(&all);
+                        (fonts.bytes[i].clone(), Some(identity))
+                    }
                 }
             };
             let ttf_bytes: &[u8] = &subset;
@@ -1557,13 +1615,23 @@ impl PdfWriter {
             }
             widths.push(']');
             self.start_object(cidfont_id);
+            let cid_subtype = if is_cff {
+                "CIDFontType0"
+            } else {
+                "CIDFontType2"
+            };
+            let cidtogid_entry = match cidtogid_id {
+                Some(id) => format!(" /CIDToGIDMap {id} 0 R"),
+                None => String::new(),
+            };
             let cid_body = format!(
-                "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} \
+                "<< /Type /Font /Subtype /{subtype} /BaseFont /{name} \
                  /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
-                 /FontDescriptor {desc} 0 R /CIDToGIDMap {ctgm} 0 R /W {w} >>",
+                 /FontDescriptor {desc} 0 R{ctgm} /W {w} >>",
+                subtype = cid_subtype,
                 name = ps_name,
                 desc = descriptor_id,
-                ctgm = cidtogid_id,
+                ctgm = cidtogid_entry,
                 w = widths,
             );
             self.buf.extend_from_slice(cid_body.as_bytes());
@@ -1591,11 +1659,13 @@ impl PdfWriter {
                 flags |= 64; // Italic
             }
             self.start_object(descriptor_id);
+            // CFF outlines are referenced via FontFile3; TrueType via FontFile2.
+            let fontfile_key = if is_cff { "FontFile3" } else { "FontFile2" };
             let desc_body = format!(
                 "<< /Type /FontDescriptor /FontName /{name} /Flags {flags} \
                  /FontBBox [{bx0} {by0} {bx1} {by1}] /ItalicAngle {ia} \
                  /Ascent {asc} /Descent {dsc} /CapHeight {cap} /StemV 80 \
-                 /FontFile2 {file} 0 R >>",
+                 /{fontfile_key} {file} 0 R >>",
                 name = ps_name,
                 flags = flags,
                 bx0 = bbox.0,
@@ -1611,14 +1681,24 @@ impl PdfWriter {
             self.buf.extend_from_slice(desc_body.as_bytes());
             self.end_object();
 
-            // 4) FontFile2 stream — the .ttf bytes, FlateDecode compressed.
+            // 4) Embedded font program, FlateDecode compressed. TrueType goes
+            //    in a FontFile2 stream carrying /Length1 (the uncompressed
+            //    sfnt size); CFF/OpenType goes in a FontFile3 stream tagged
+            //    /Subtype /OpenType (a complete OpenType program).
             let compressed = deflate(ttf_bytes);
             self.start_object(fontfile_id);
-            let header = format!(
-                "<< /Length {len} /Length1 {orig} /Filter /FlateDecode >>\nstream\n",
-                len = compressed.len(),
-                orig = ttf_bytes.len(),
-            );
+            let header = if is_cff {
+                format!(
+                    "<< /Length {len} /Subtype /OpenType /Filter /FlateDecode >>\nstream\n",
+                    len = compressed.len(),
+                )
+            } else {
+                format!(
+                    "<< /Length {len} /Length1 {orig} /Filter /FlateDecode >>\nstream\n",
+                    len = compressed.len(),
+                    orig = ttf_bytes.len(),
+                )
+            };
             self.buf.extend_from_slice(header.as_bytes());
             self.buf.extend_from_slice(&compressed);
             self.buf.extend_from_slice(b"\nendstream");
@@ -1648,27 +1728,30 @@ impl PdfWriter {
             // 6) CIDToGIDMap — binary stream of u16-BE entries, one per
             // possible CID. `map[orig_gid] = subset_gid`. PDF reads this
             // to know which glyph in the *subset* font corresponds to the
-            // CID it found in the Tj literal.
-            let max_orig = used[i].iter().copied().max().unwrap_or(0);
-            let map_len = (max_orig as usize + 1) * 2;
-            let mut map_bytes = vec![0u8; map_len];
-            for &orig_gid in &used[i] {
-                if let Some(new_gid) = remapper.get(orig_gid) {
-                    let off = orig_gid as usize * 2;
-                    map_bytes[off] = (new_gid >> 8) as u8;
-                    map_bytes[off + 1] = (new_gid & 0xFF) as u8;
+            // CID it found in the Tj literal. Emitted only on the glyf path;
+            // CFF descendants (CIDFontType0) have no CIDToGIDMap.
+            if let (Some(cidtogid_id), Some(remapper)) = (cidtogid_id, remapper.as_ref()) {
+                let max_orig = used[i].iter().copied().max().unwrap_or(0);
+                let map_len = (max_orig as usize + 1) * 2;
+                let mut map_bytes = vec![0u8; map_len];
+                for &orig_gid in &used[i] {
+                    if let Some(new_gid) = remapper.get(orig_gid) {
+                        let off = orig_gid as usize * 2;
+                        map_bytes[off] = (new_gid >> 8) as u8;
+                        map_bytes[off + 1] = (new_gid & 0xFF) as u8;
+                    }
                 }
+                let map_compressed = deflate(&map_bytes);
+                self.start_object(cidtogid_id);
+                let header = format!(
+                    "<< /Length {len} /Filter /FlateDecode >>\nstream\n",
+                    len = map_compressed.len(),
+                );
+                self.buf.extend_from_slice(header.as_bytes());
+                self.buf.extend_from_slice(&map_compressed);
+                self.buf.extend_from_slice(b"\nendstream");
+                self.end_object();
             }
-            let map_compressed = deflate(&map_bytes);
-            self.start_object(cidtogid_id);
-            let header = format!(
-                "<< /Length {len} /Filter /FlateDecode >>\nstream\n",
-                len = map_compressed.len(),
-            );
-            self.buf.extend_from_slice(header.as_bytes());
-            self.buf.extend_from_slice(&map_compressed);
-            self.buf.extend_from_slice(b"\nendstream");
-            self.end_object();
         }
     }
 
@@ -2007,12 +2090,18 @@ impl<'a> SlideRenderer<'a> {
         size_pt: f32,
         color_hex: &str,
         italic: bool,
+        bold: bool,
     ) {
         if text.trim().is_empty() || !x_pt.is_finite() || !baseline_pt.is_finite() {
             return;
         }
         let (r, g, b) = hex_to_rgb_f(color_hex);
-        let font_idx = if italic { FONT_HELV_OBL } else { FONT_HELV };
+        let font_idx = match (italic, bold) {
+            (false, false) => FONT_HELV,
+            (true, false) => FONT_HELV_OBL,
+            (false, true) => FONT_HELV_BOLD,
+            (true, true) => FONT_HELV_BOLD_OBL,
+        };
         let runs = glyph_hex_runs(self.fonts, text, font_idx, size_pt.max(1.0));
         let mut cur_x = x_pt;
         for (face, hex, adv) in runs {
@@ -2043,7 +2132,13 @@ impl<'a> SlideRenderer<'a> {
     ) {
         for draw in &layout.draws {
             match draw {
-                crate::math::MathLayoutDraw::Text { x, y, size, text } => {
+                crate::math::MathLayoutDraw::Text {
+                    x,
+                    y,
+                    size,
+                    text,
+                    bold,
+                } => {
                     let (x_pt, baseline_pt) =
                         self.math_local_to_pdf_pt(origin_x_pt, top_y_pt, scale, *x, *y);
                     self.text_at_baseline_pt(
@@ -2053,6 +2148,7 @@ impl<'a> SlideRenderer<'a> {
                         size * scale,
                         color_hex,
                         true,
+                        *bold,
                     );
                 }
                 crate::math::MathLayoutDraw::Line {
@@ -2292,7 +2388,15 @@ impl<'a> SlideRenderer<'a> {
             _ => {
                 let (x_pt, baseline_pt) =
                     self.math_local_to_pdf_pt(origin_x_pt, top_y_pt, scale, x, y + height * 0.82);
-                self.text_at_baseline_pt(x_pt, baseline_pt, token, height * scale, color_hex, true);
+                self.text_at_baseline_pt(
+                    x_pt,
+                    baseline_pt,
+                    token,
+                    height * scale,
+                    color_hex,
+                    true,
+                    false,
+                );
             }
         }
     }
@@ -2304,6 +2408,36 @@ impl<'a> SlideRenderer<'a> {
     fn line_h_emu(size_centipt: u32) -> u32 {
         let pt = size_centipt as f32 / 100.0;
         (pt * 1.25 * EMU_PER_PT) as u32
+    }
+
+    /// Largest title size (≤ `base`, in centipt) at which `text` wraps within
+    /// `max_w_emu` and the wrapped block fits inside `max_h_emu`. Stops long
+    /// hero titles / section dividers from overflowing the slide and footer.
+    fn fit_hero_size(&self, text: &str, base: u32, max_w_emu: u32, max_h_emu: u32) -> u32 {
+        let font_idx = font_index(true, false, false);
+        let max_w_pt = self.pt(max_w_emu);
+        let mut size = base;
+        for _ in 0..12 {
+            let pt = size as f32 / 100.0;
+            let lines =
+                if max_w_pt <= 0.0 || text_width_pt(self.fonts, text, font_idx, pt) <= max_w_pt {
+                    1
+                } else {
+                    wrap_text_simple(self.fonts, text, font_idx, pt, max_w_pt)
+                        .len()
+                        .max(1)
+                };
+            let block_h = lines as u32 * Self::line_h_emu(size);
+            if block_h <= max_h_emu || size <= 1400 {
+                break;
+            }
+            // Shrink toward the height target; sqrt because a smaller font both
+            // shortens each line and fits more words per line.
+            let ratio = (max_h_emu as f32 / block_h as f32).sqrt();
+            let next = ((size as f32 * ratio).floor() as u32).max(1400);
+            size = if next >= size { size - 100 } else { next };
+        }
+        size
     }
 
     /// Wrap a vector of runs into lines for the given width and emit them.
@@ -2582,15 +2716,23 @@ impl<'a> SlideRenderer<'a> {
         let margin_x_pt = self.pt(margin_x);
         let margin_y_pt = self.pt(margin_y);
         let base_size = 28.0_f32;
-        let gap = base_size * 0.035;
+        let gap = base_size * 0.24;
 
-        let raw_layouts = math_markup_line_layouts(lines);
+        // Measure against the face math is actually drawn in (FONT_HELV, the
+        // sans regular slot — which `--font` replaces) so reserved widths stay
+        // aligned with the rendered glyphs.
+        let metrics = PdfMathMetrics {
+            fonts: self.fonts,
+            font_idx: FONT_HELV,
+        };
+        let raw_layouts = math_markup_line_layouts(lines, &metrics);
         let layouts = fit_packed_math_markup_line_layouts(
             lines,
             raw_layouts,
             base_size,
             gap,
             max_w_pt / max_h_pt,
+            &metrics,
         );
         let (max_line_w, total_h) = math_markup_metrics(&layouts, base_size, gap);
         let scale_w = max_w_pt / max_line_w;
@@ -2634,11 +2776,18 @@ impl<'a> SlideRenderer<'a> {
                     600000,
                     &theme.accent.clone(),
                 );
+                // Shrink the hero size if needed so a long title fits between
+                // its top and the footer/subtitle region instead of running
+                // off the bottom and overprinting the author/date.
+                let title_top = h / 2 - 1600000;
+                let title_max_h = (h.saturating_sub(1_400_000)).saturating_sub(title_top);
+                let hero =
+                    self.fit_hero_size(&slide.title, theme.hero_size, w - 1200000, title_max_h);
                 let title_lines = self.text_line(
                     800000,
-                    h / 2 - 1600000,
+                    title_top,
                     &slide.title,
-                    theme.hero_size,
+                    hero,
                     &theme.title_color.clone(),
                     true,
                     false,
@@ -2648,8 +2797,7 @@ impl<'a> SlideRenderer<'a> {
                 );
                 // Push subtitle down by the number of extra title lines so
                 // a wrapped 2-line title doesn't overlap the subtitle.
-                let extra =
-                    (title_lines.saturating_sub(1) as u32) * Self::line_h_emu(theme.hero_size);
+                let extra = (title_lines.saturating_sub(1) as u32) * Self::line_h_emu(hero);
                 if let Some(sub) = subtitle {
                     let sub_size = if theme.portrait { 1800 } else { 2400 };
                     self.text_line(
@@ -2697,11 +2845,14 @@ impl<'a> SlideRenderer<'a> {
                         w - 1500000,
                     );
                 }
+                let studio_max_h = (h * 80 / 100).saturating_sub(h / 2 - 1000000);
+                let hero =
+                    self.fit_hero_size(&slide.title, theme.hero_size, w - 1500000, studio_max_h);
                 let title_lines = self.text_line(
                     900000,
                     h / 2 - 1000000,
                     &slide.title,
-                    theme.hero_size,
+                    hero,
                     &theme.title_color.clone(),
                     false,
                     true,
@@ -2709,8 +2860,7 @@ impl<'a> SlideRenderer<'a> {
                     TextAlign::Left,
                     w - 1500000,
                 );
-                let extra =
-                    (title_lines.saturating_sub(1) as u32) * Self::line_h_emu(theme.hero_size);
+                let extra = (title_lines.saturating_sub(1) as u32) * Self::line_h_emu(hero);
                 if let Some(sub) = subtitle {
                     let sub_size = if theme.portrait { 1700 } else { 2200 };
                     self.text_line(
@@ -2768,11 +2918,13 @@ impl<'a> SlideRenderer<'a> {
                 }
                 let title_x = sidebar + 600000;
                 let title_w = w - title_x - 600000;
+                let frame_max_h = (h * 82 / 100).saturating_sub(h / 2 - 1100000);
+                let hero = self.fit_hero_size(&slide.title, theme.hero_size, title_w, frame_max_h);
                 let title_lines = self.text_line(
                     title_x,
                     h / 2 - 1100000,
                     &slide.title,
-                    theme.hero_size,
+                    hero,
                     &theme.title_color.clone(),
                     true,
                     false,
@@ -2780,8 +2932,7 @@ impl<'a> SlideRenderer<'a> {
                     TextAlign::Left,
                     title_w,
                 );
-                let extra =
-                    (title_lines.saturating_sub(1) as u32) * Self::line_h_emu(theme.hero_size);
+                let extra = (title_lines.saturating_sub(1) as u32) * Self::line_h_emu(hero);
                 if let Some(sub) = subtitle {
                     let sub_size = if theme.portrait { 1700 } else { 2200 };
                     self.text_line(
@@ -2806,7 +2957,15 @@ impl<'a> SlideRenderer<'a> {
                 // title naturally grows upward into the block. Pre-compute
                 // the line count so we can place the title's baseline to
                 // keep its first line inside the block regardless.
-                let hero_pt = theme.hero_size as f32 / 100.0;
+                // Shrink the title so it can't grow up and out of the top of
+                // the accent block (which would drop it off the slide).
+                let hero = self.fit_hero_size(
+                    &slide.title,
+                    theme.hero_size,
+                    w - 2 * pad,
+                    block_h.saturating_sub(pad + 1_400_000),
+                );
+                let hero_pt = hero as f32 / 100.0;
                 let title_lines = {
                     let font_idx = font_index(true, false, false);
                     let max_w_pt = self.pt(w - 2 * pad);
@@ -2818,13 +2977,12 @@ impl<'a> SlideRenderer<'a> {
                             .len()
                     }
                 };
-                let title_extra =
-                    (title_lines.saturating_sub(1) as u32) * Self::line_h_emu(theme.hero_size);
+                let title_extra = (title_lines.saturating_sub(1) as u32) * Self::line_h_emu(hero);
                 self.text_line(
                     pad,
                     block_h - 1400000 - pad - title_extra,
                     &slide.title,
-                    theme.hero_size,
+                    hero,
                     &theme.on_accent.clone(),
                     true,
                     false,
@@ -2884,11 +3042,17 @@ impl<'a> SlideRenderer<'a> {
                     60000,
                     &theme.section_text.clone(),
                 );
+                // Shrink to fit so a long section title doesn't overflow the
+                // bottom edge (where it would be silently clipped/lost).
+                let sec_top = h / 2 - 200000;
+                let sec_max_h = (h.saturating_sub(500_000)).saturating_sub(sec_top);
+                let sec_size =
+                    self.fit_hero_size(&slide.title, theme.hero_size, w - 1600000, sec_max_h);
                 self.text_line(
                     800000,
-                    h / 2 - 200000,
+                    sec_top,
                     &slide.title,
-                    theme.hero_size,
+                    sec_size,
                     &theme.section_text.clone(),
                     true,
                     false,
@@ -3041,8 +3205,29 @@ impl<'a> SlideRenderer<'a> {
             720000
         };
 
+        // Measure how many lines the title wraps to so a long heading expands
+        // the title band instead of overprinting the underline rule and body.
+        let title_max_w = if matches!(layout.kind, LayoutKind::Bold) {
+            w - 2 * base_margin
+        } else {
+            content_w
+        };
+        let title_lines = {
+            let title_pt = theme.title_size as f32 / 100.0;
+            let font_idx = font_index(true, false, false);
+            let max_w_pt = self.pt(title_max_w);
+            let total_w = text_width_pt(self.fonts, &slide.title, font_idx, title_pt);
+            if total_w <= max_w_pt || max_w_pt <= 0.0 {
+                1
+            } else {
+                wrap_text_simple(self.fonts, &slide.title, font_idx, title_pt, max_w_pt).len()
+            }
+        };
+        let title_extra =
+            (title_lines.saturating_sub(1) as u32) * Self::line_h_emu(theme.title_size);
+
         if matches!(layout.kind, LayoutKind::Bold) {
-            let block_h = title_h + 240000;
+            let block_h = title_h + 240000 + title_extra;
             self.rect(0, 0, w, title_y + block_h, &theme.accent.clone());
             self.text_line(
                 base_margin,
@@ -3072,7 +3257,7 @@ impl<'a> SlideRenderer<'a> {
         }
 
         let underline_y = if matches!(layout.kind, LayoutKind::Clean) {
-            let y = title_y + title_h + 30000;
+            let y = title_y + title_h + title_extra + 30000;
             self.rect(
                 content_x,
                 y + 18000,
@@ -3089,7 +3274,7 @@ impl<'a> SlideRenderer<'a> {
             );
             y
         } else {
-            title_y + title_h
+            title_y + title_h + title_extra
         };
 
         let content_y_start = underline_y
@@ -3228,8 +3413,12 @@ impl<'a> SlideRenderer<'a> {
                     y = self.render_quote(paras, x, y, w);
                     y += 80000;
                 }
-                Block::Table { headers, rows } => {
-                    y = self.render_table(headers, rows, x, y, w);
+                Block::Table {
+                    headers,
+                    rows,
+                    aligns,
+                } => {
+                    y = self.render_table(headers, rows, aligns, x, y, w);
                     y += 80000;
                 }
                 Block::Columns { left, right } => {
@@ -3303,7 +3492,13 @@ impl<'a> SlideRenderer<'a> {
             for c in &mut ordered_counters[lvl + 1..] {
                 *c = 0;
             }
-            let bullet = if item.ordered {
+            // Task-list items carry their own ☐/☑ marker in the runs, so the
+            // normal bullet is suppressed (and its gutter collapsed) to avoid
+            // drawing both a bullet and a checkbox.
+            let is_task = item.is_task();
+            let bullet = if is_task {
+                String::new()
+            } else if item.ordered {
                 format!("{}.", ordered_counters[lvl])
             } else {
                 match lvl {
@@ -3324,7 +3519,11 @@ impl<'a> SlideRenderer<'a> {
                 bullet_pt,
             );
             let bullet_w_emu = (bullet_w_pt * EMU_PER_PT) as u32;
-            let gutter_emu = bullet_w_emu.max(180_000) + 120_000;
+            let gutter_emu = if is_task {
+                0
+            } else {
+                bullet_w_emu.max(180_000) + 120_000
+            };
             self.text_line(
                 bullet_x,
                 y,
@@ -3703,6 +3902,7 @@ impl<'a> SlideRenderer<'a> {
         &mut self,
         headers: &[Vec<Run>],
         rows: &[Vec<Vec<Run>>],
+        aligns: &[crate::ir::ColumnAlign],
         x: u32,
         y_start: u32,
         w: u32,
@@ -3931,9 +4131,17 @@ impl<'a> SlideRenderer<'a> {
                 &theme.accent.clone(),
             );
             for (i, line) in header_wrapped[c].iter().enumerate() {
+                let lw = runs_width_emu(self.fonts, line, header_size, true);
+                let tx = aligned_cell_x(
+                    aligns.get(c).copied(),
+                    x + col_x[c],
+                    col_widths[c],
+                    pad_x,
+                    lw,
+                );
                 self.text_runs_line(
                     line,
-                    x + col_x[c] + pad_x,
+                    tx,
                     y_start + pad_y + i as u32 * line_h_header,
                     header_size,
                     &theme.on_accent.clone(),
@@ -3956,9 +4164,17 @@ impl<'a> SlideRenderer<'a> {
             for c in 0..cols {
                 self.rect(x + col_x[c], ry, col_widths[c], rh, &bg);
                 for (l, line) in row_cells[c].iter().enumerate() {
+                    let lw = runs_width_emu(self.fonts, line, body_size, false);
+                    let tx = aligned_cell_x(
+                        aligns.get(c).copied(),
+                        x + col_x[c],
+                        col_widths[c],
+                        pad_x,
+                        lw,
+                    );
                     self.text_runs_line(
                         line,
-                        x + col_x[c] + pad_x,
+                        tx,
                         ry + pad_y + l as u32 * line_h_body,
                         body_size,
                         &theme.body_color.clone(),
@@ -4023,6 +4239,37 @@ impl<'a> SlideRenderer<'a> {
 // Text wrapping
 // ---------------------------------------------------------------------------
 
+/// Hard-break a single token (no spaces) into chunks that each fit `max_w_pt`,
+/// for emergency wrapping of long unbreakable tokens (URLs, hashes, CamelCase)
+/// that would otherwise run off the slide edge.
+fn break_token_to_width(
+    fonts: &PdfFonts,
+    tok: &str,
+    font_idx: usize,
+    size_pt: f32,
+    max_w_pt: f32,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0.0;
+    for ch in tok.chars() {
+        let cw = text_width_pt(fonts, ch.encode_utf8(&mut [0u8; 4]), font_idx, size_pt);
+        if !cur.is_empty() && cur_w + cw > max_w_pt {
+            out.push(std::mem::take(&mut cur));
+            cur_w = 0.0;
+        }
+        cur.push(ch);
+        cur_w += cw;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    if out.is_empty() {
+        out.push(String::new());
+    }
+    out
+}
+
 fn wrap_text_simple(
     fonts: &PdfFonts,
     text: &str,
@@ -4057,6 +4304,25 @@ fn wrap_text_simple(
     for tok in tokens {
         let tok_w = text_width_pt(fonts, &tok, font_idx, size_pt);
         let only_space = tok.chars().all(|c| c == ' ' || c == '\t');
+        // A token wider than the whole line can't be placed as-is — hard-break
+        // it so it wraps instead of overflowing the edge.
+        if !only_space && tok_w > max_w_pt && max_w_pt > 0.0 {
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                current_w = 0.0;
+            }
+            let chunks = break_token_to_width(fonts, &tok, font_idx, size_pt, max_w_pt);
+            let n = chunks.len();
+            for (i, chunk) in chunks.into_iter().enumerate() {
+                if i + 1 < n {
+                    lines.push(chunk);
+                } else {
+                    current_w = text_width_pt(fonts, &chunk, font_idx, size_pt);
+                    current = chunk;
+                }
+            }
+            continue;
+        }
         if !current.is_empty() && current_w + tok_w > max_w_pt && !only_space {
             lines.push(std::mem::take(&mut current));
             current_w = 0.0;
@@ -4116,6 +4382,35 @@ fn wrap_runs(
         for tok in tokens {
             let tok_w = text_width_pt(fonts, &tok, font_idx, size_pt);
             let only_space = tok.chars().all(|c| c == ' ');
+            let mk_run = |text: String| Run {
+                text,
+                bold: r.bold,
+                italic: r.italic,
+                code: r.code,
+                strike: r.strike,
+                link: r.link.clone(),
+            };
+            // Hard-break a token wider than the whole line so it wraps instead
+            // of overflowing the slide edge.
+            if !only_space && tok_w > max_w_pt && max_w_pt > 0.0 {
+                if !lines.last().unwrap().is_empty() {
+                    lines.push(Vec::new());
+                    cur_width = 0.0;
+                }
+                let chunks = break_token_to_width(fonts, &tok, font_idx, size_pt, max_w_pt);
+                let n = chunks.len();
+                for (i, chunk) in chunks.into_iter().enumerate() {
+                    let cw = text_width_pt(fonts, &chunk, font_idx, size_pt);
+                    lines.last_mut().unwrap().push(mk_run(chunk));
+                    if i + 1 < n {
+                        lines.push(Vec::new());
+                        cur_width = 0.0;
+                    } else {
+                        cur_width = cw;
+                    }
+                }
+                continue;
+            }
             if cur_width + tok_w > max_w_pt && !lines.last().unwrap().is_empty() && !only_space {
                 lines.push(Vec::new());
                 cur_width = 0.0;
@@ -4124,15 +4419,7 @@ fn wrap_runs(
                     continue;
                 }
             }
-            let last = lines.last_mut().unwrap();
-            last.push(Run {
-                text: tok,
-                bold: r.bold,
-                italic: r.italic,
-                code: r.code,
-                strike: r.strike,
-                link: r.link.clone(),
-            });
+            lines.last_mut().unwrap().push(mk_run(tok));
             cur_width += tok_w;
         }
     }
@@ -4150,14 +4437,44 @@ enum TextAlign {
     Right,
 }
 
-fn math_markup_line_layouts(lines: &[String]) -> Vec<Option<crate::math::MathTextLayout>> {
+/// Glyph-advance source for the math layout engine backed by the PDF's
+/// embedded faces. Measuring each glyph in the face that will actually render
+/// it (via [`text_width_pt`], the same fallback selection the writer uses)
+/// keeps the reserved layout width equal to the drawn advance even when
+/// `--font` swaps DejaVu for a brand face. A non-positive advance (combining
+/// marks) defers to the built-in DejaVu table.
+struct PdfMathMetrics<'a> {
+    fonts: &'a PdfFonts,
+    font_idx: usize,
+}
+
+impl crate::math::GlyphMetrics for PdfMathMetrics<'_> {
+    fn advance_em(&self, ch: char, bold: bool) -> f32 {
+        // Bold text is drawn in the bold sans face, which has its own
+        // advances — measure that face so a bold run reserves the right room.
+        let font_idx = if bold { FONT_HELV_BOLD } else { self.font_idx };
+        let mut buf = [0u8; 4];
+        let s = ch.encode_utf8(&mut buf);
+        let w = text_width_pt(self.fonts, s, font_idx, 1.0);
+        if w > 0.0 {
+            w
+        } else {
+            crate::math::DejaVuMetrics.advance_em(ch, bold)
+        }
+    }
+}
+
+fn math_markup_line_layouts(
+    lines: &[String],
+    metrics: &dyn crate::math::GlyphMetrics,
+) -> Vec<Option<crate::math::MathTextLayout>> {
     lines
         .iter()
         .map(|line| {
             if line.trim().is_empty() {
                 None
             } else {
-                Some(crate::math::layout_markup_text(line, 100))
+                Some(crate::math::layout_markup_text_with(line, 100, metrics))
             }
         })
         .collect()
@@ -4166,6 +4483,7 @@ fn math_markup_line_layouts(lines: &[String]) -> Vec<Option<crate::math::MathTex
 fn pack_math_markup_line_layouts(
     lines: &[String],
     target_width: f32,
+    metrics: &dyn crate::math::GlyphMetrics,
 ) -> Vec<Option<crate::math::MathTextLayout>> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -4184,12 +4502,12 @@ fn pack_math_markup_line_layouts(
 
         if current.is_empty() {
             current.push_str(trimmed);
-            current_layout = Some(crate::math::layout_markup_text(&current, 100));
+            current_layout = Some(crate::math::layout_markup_text_with(&current, 100, metrics));
             continue;
         }
 
         let candidate = format!("{current} {trimmed}");
-        let candidate_layout = crate::math::layout_markup_text(&candidate, 100);
+        let candidate_layout = crate::math::layout_markup_text_with(&candidate, 100, metrics);
         if candidate_layout.width <= target_width {
             current = candidate;
             current_layout = Some(candidate_layout);
@@ -4199,7 +4517,7 @@ fn pack_math_markup_line_layouts(
             }
             current.clear();
             current.push_str(trimmed);
-            current_layout = Some(crate::math::layout_markup_text(&current, 100));
+            current_layout = Some(crate::math::layout_markup_text_with(&current, 100, metrics));
         }
     }
 
@@ -4215,6 +4533,7 @@ fn fit_packed_math_markup_line_layouts(
     base_size: f32,
     gap: f32,
     page_ratio: f32,
+    metrics: &dyn crate::math::GlyphMetrics,
 ) -> Vec<Option<crate::math::MathTextLayout>> {
     let (raw_max_line_w, raw_total_h) = math_markup_metrics(&raw_layouts, base_size, gap);
     let raw_ratio = raw_max_line_w / raw_total_h.max(1.0);
@@ -4230,7 +4549,7 @@ fn fit_packed_math_markup_line_layouts(
 
     for _ in 0..9 {
         let target = (low + high) / 2.0;
-        let packed = pack_math_markup_line_layouts(lines, target);
+        let packed = pack_math_markup_line_layouts(lines, target, metrics);
         let (packed_w, packed_h) = math_markup_metrics(&packed, base_size, gap);
         let ratio = packed_w / packed_h.max(1.0);
         let err = (ratio - desired_ratio).abs();
@@ -4372,5 +4691,28 @@ fn author_date(author: Option<&str>, date: Option<&str>) -> Option<String> {
         None
     } else {
         Some(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cff_outline_detection_picks_the_right_font_program() {
+        // CFF-flavoured OpenType (the `OTTO` magic) must take the
+        // CIDFontType0 / FontFile3 path; TrueType-flavoured sfnts the
+        // CIDFontType2 / FontFile2 path.
+        assert!(font_has_cff_outlines(b"OTTO\x00\x04\x00\x80"));
+        assert!(!font_has_cff_outlines(&[0x00, 0x01, 0x00, 0x00])); // TrueType
+        assert!(!font_has_cff_outlines(b"true")); // legacy TrueType magic
+                                                  // Every bundled DejaVu face is TrueType (glyf) — the default output
+                                                  // must stay on the FontFile2 path.
+        for face in crate::font::FONTS {
+            assert!(
+                !font_has_cff_outlines(face),
+                "bundled faces are expected to be TrueType",
+            );
+        }
     }
 }

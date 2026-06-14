@@ -243,6 +243,7 @@ pub enum MathLayoutDraw {
         y: f32,
         size: f32,
         text: String,
+        bold: bool,
     },
     Line {
         x1: f32,
@@ -266,10 +267,26 @@ pub enum MathLayoutDraw {
 }
 
 pub fn layout_markup_text(src: &str, scale_percent: u16) -> MathTextLayout {
+    layout_markup_text_with(src, scale_percent, &DejaVuMetrics)
+}
+
+/// Lay out a markup-math line, measuring glyph advances against `metrics`.
+/// Renderers that typeset math in a face other than the bundled DejaVu Sans
+/// (e.g. the PDF writer under `--font`) pass a provider backed by that face
+/// so the reserved widths match the glyphs actually drawn.
+pub fn layout_markup_text_with(
+    src: &str,
+    scale_percent: u16,
+    metrics: &dyn GlyphMetrics,
+) -> MathTextLayout {
     let expanded = apply_user_macros(src.trim(), &[]);
     let node = MathParser::new(&expanded).parse_root();
     let base_size = 28.0 * (scale_percent as f32 / 100.0).clamp(0.25, 4.0);
-    publish_math_box(layout_math(&node, base_size))
+    let ctx = LayoutCtx {
+        metrics,
+        bold: false,
+    };
+    publish_math_box(ctx.layout_math(&node, base_size))
 }
 
 pub fn decode_generated_math_svg(src: &str) -> Option<String> {
@@ -496,7 +513,13 @@ fn render_math_svg(src: &str, macros: &[(String, String)], options: MathSvgOptio
     let expanded = apply_user_macros(src.trim(), macros);
     let node = MathParser::new(&expanded).parse_root();
     let base_size = 28.0 * options.scale_factor();
-    let layout = layout_math(&node, base_size);
+    // The SVG-image path always renders math in the bundled DejaVu face
+    // (see the <g font-family> below), so DejaVu metrics are exact here.
+    let layout = LayoutCtx {
+        metrics: &DejaVuMetrics,
+        bold: false,
+    }
+    .layout_math(&node, base_size);
     let pad_x = base_size;
     let pad_y = base_size * 0.85;
     let natural_width = (layout.width + pad_x * 2.0).ceil().clamp(96.0, 2200.0);
@@ -546,6 +569,17 @@ enum MathNode {
     },
     Cases(Vec<(MathNode, Option<MathNode>)>),
     Lines(Vec<MathNode>),
+    /// Bold weight applied to everything inside (`\mathbf`, `\boldsymbol`, …).
+    Bold(Box<MathNode>),
+    /// An accent (`\bar`, `\hat`, `\vec`, …) drawn centred over `base`. `mark`
+    /// is the Unicode combining char that names the accent; the layout engine
+    /// renders it as geometry rather than a font combining glyph, because
+    /// zero-advance combining marks land at the base's right edge instead of
+    /// centred over it (and differently in every font).
+    Accent {
+        base: Box<MathNode>,
+        mark: char,
+    },
 }
 
 struct MathParser<'a> {
@@ -673,7 +707,9 @@ impl<'a> MathParser<'a> {
             false
         };
         match name {
-            "frac" => {
+            // `\dfrac`/`\tfrac`/`\cfrac` differ from `\frac` only in display
+            // style, which this engine already approximates per nesting depth.
+            "frac" | "dfrac" | "tfrac" | "cfrac" => {
                 let num = self.parse_required_group_node();
                 let den = self.parse_required_group_node();
                 MathNode::Fraction(Box::new(num), Box::new(den))
@@ -700,8 +736,12 @@ impl<'a> MathParser<'a> {
             "big" | "Big" | "bigg" | "Bigg" | "bigl" | "bigr" | "Bigl" | "Bigr" | "biggl"
             | "biggr" | "Biggl" | "Biggr" => MathNode::Text(self.parse_delimiter_token()),
             "limits" | "nolimits" => MathNode::Text(String::new()),
-            "text" | "textrm" | "textit" | "textbf" | "mathrm" | "mathbf" | "mathit" | "mathsf"
-            | "mathtt" => MathNode::Text(self.parse_required_group_raw()),
+            "mathbf" | "textbf" | "boldsymbol" | "bm" | "pmb" | "mathbfit" => {
+                MathNode::Bold(Box::new(self.parse_required_group_node()))
+            }
+            "text" | "textrm" | "textit" | "mathrm" | "mathit" | "mathsf" | "mathtt" => {
+                MathNode::Text(self.parse_required_group_raw())
+            }
             "operatorname" => {
                 let mut name = self.parse_required_group_raw();
                 if starred && !name.is_empty() {
@@ -720,7 +760,10 @@ impl<'a> MathParser<'a> {
             _ if accent_mark(name).is_some() => {
                 let mark = accent_mark(name).unwrap_or('\u{0302}');
                 let arg = self.parse_required_group_node();
-                MathNode::Text(apply_combining_mark(&node_plain_text(&arg), mark))
+                MathNode::Accent {
+                    base: Box::new(arg),
+                    mark,
+                }
             }
             _ => {
                 if let Some(rep) = greek_or_symbol(name) {
@@ -974,6 +1017,14 @@ impl<'a> MathParser<'a> {
             }
             self.pos = utf8_char_end(self.bytes, self.pos);
         }
+        if self.pos < self.bytes.len() && matches!(self.bytes[self.pos], b'^' | b'_') {
+            let run = &self.src[start..self.pos];
+            if let Some((last_offset, _)) = run.char_indices().last() {
+                if last_offset > 0 {
+                    self.pos = start + last_offset;
+                }
+            }
+        }
         MathNode::Text(self.src[start..self.pos].into())
     }
 }
@@ -1130,59 +1181,6 @@ fn delimiter_name(token: &str) -> &str {
     }
 }
 
-fn node_plain_text(node: &MathNode) -> String {
-    match node {
-        MathNode::Row(nodes) | MathNode::Lines(nodes) => {
-            nodes.iter().map(node_plain_text).collect()
-        }
-        MathNode::Text(text) => text.clone(),
-        MathNode::Fraction(num, den) => {
-            format!("({})/({})", node_plain_text(num), node_plain_text(den))
-        }
-        MathNode::Sqrt(inner) => format!("√({})", node_plain_text(inner)),
-        MathNode::Delimited { left, body, right } => {
-            format!("{left}{}{right}", node_plain_text(body))
-        }
-        MathNode::Script { base, sub, sup } => {
-            let mut out = node_plain_text(base);
-            if let Some(sub) = sub {
-                out.push('_');
-                out.push_str(&node_plain_text(sub));
-            }
-            if let Some(sup) = sup {
-                out.push('^');
-                out.push_str(&node_plain_text(sup));
-            }
-            out
-        }
-        MathNode::Matrix { rows, .. } => rows
-            .iter()
-            .map(|row| {
-                row.iter()
-                    .map(node_plain_text)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-        MathNode::Cases(rows) => rows
-            .iter()
-            .map(|(expr, condition)| {
-                if let Some(condition) = condition {
-                    format!(
-                        "{} if {}",
-                        node_plain_text(expr),
-                        node_plain_text(condition)
-                    )
-                } else {
-                    node_plain_text(expr)
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
-}
-
 #[derive(Debug, Clone)]
 struct MathBox {
     width: f32,
@@ -1198,6 +1196,7 @@ enum Draw {
         y: f32,
         size: f32,
         text: String,
+        bold: bool,
     },
     Line {
         x1: f32,
@@ -1220,209 +1219,556 @@ enum Draw {
     },
 }
 
-fn layout_math(node: &MathNode, size: f32) -> MathBox {
-    match node {
-        MathNode::Text(text) => layout_text(text, size),
-        MathNode::Row(nodes) => layout_row(nodes, size),
-        MathNode::Fraction(num, den) => layout_fraction(num, den, size),
-        MathNode::Sqrt(inner) => layout_sqrt(inner, size),
-        MathNode::Delimited { left, body, right } => layout_delimited(left, body, right, size),
-        MathNode::Script { base, sub, sup } => {
-            layout_script(base, sub.as_deref(), sup.as_deref(), size)
+/// Source of glyph advance widths for the layout engine. A provider reports
+/// each glyph's advance as a fraction of the em **in the face that will
+/// actually render it**. Because the layout reserves horizontal space here
+/// while the renderer advances glyphs with the font's own metrics, the two
+/// only stay aligned when the provider matches the rendering face. The
+/// SVG/PNG paths always typeset math in the bundled DejaVu Sans and so use
+/// [`DejaVuMetrics`]; the PDF path supplies a provider backed by its embedded
+/// face, so a `--font` replacement stays pixel-aligned instead of drifting.
+pub trait GlyphMetrics {
+    /// Advance width of `ch` as a fraction of the em, at the given weight.
+    /// `bold` selects the bold face's metrics — bold glyphs are ~12% wider
+    /// in DejaVu, so a bold run reserves its own space.
+    fn advance_em(&self, ch: char, bold: bool) -> f32;
+}
+
+/// Built-in metrics for the bundled DejaVu Sans face. Also the sensible
+/// fallback for any glyph a custom face cannot supply, since unmapped glyphs
+/// degrade to DejaVu (or a fallback font) at render time anyway.
+pub struct DejaVuMetrics;
+
+/// Mean advance ratio of DejaVu Sans **Bold** over Regular (measured across
+/// the math glyph set). Bold runs in the SVG/PNG paths — which always render
+/// in DejaVu — reserve width with this scale; the PDF path measures the real
+/// bold face instead, so this approximation only affects short SVG bold runs.
+const DEJAVU_BOLD_WIDTH_SCALE: f32 = 1.12;
+
+impl GlyphMetrics for DejaVuMetrics {
+    fn advance_em(&self, ch: char, bold: bool) -> f32 {
+        let w = char_width_factor(ch);
+        if bold {
+            w * DEJAVU_BOLD_WIDTH_SCALE
+        } else {
+            w
         }
-        MathNode::Matrix { rows, left, right } => layout_matrix(rows, left, right, size),
-        MathNode::Cases(rows) => layout_cases(rows, size),
-        MathNode::Lines(lines) => layout_lines(lines, size),
     }
 }
 
-fn layout_text(text: &str, size: f32) -> MathBox {
-    if text.is_empty() {
-        return MathBox {
-            width: 0.0,
-            height: size * 1.15,
-            baseline: size * 0.82,
-            draws: Vec::new(),
-        };
-    }
-    let width = text.chars().map(char_width_factor).sum::<f32>() * size;
-    let height = size * 1.15;
-    let baseline = size * 0.82;
-    MathBox {
-        width,
-        height,
-        baseline,
-        draws: vec![Draw::Text {
-            x: 0.0,
-            y: baseline,
-            size,
-            text: text.into(),
-        }],
-    }
+/// Carries the active [`GlyphMetrics`] and weight through the recursive
+/// layout pass so every `layout_*` step measures text against the same face.
+struct LayoutCtx<'m> {
+    metrics: &'m dyn GlyphMetrics,
+    bold: bool,
 }
 
-fn char_width_factor(ch: char) -> f32 {
-    if ch.is_whitespace() {
-        0.34
-    } else if ('\u{0300}'..='\u{036f}').contains(&ch) {
-        0.0
-    } else if ch.is_ascii_punctuation() {
-        0.36
-    } else if ch.is_ascii_digit() || ch.is_ascii_alphabetic() {
-        0.58
-    } else {
-        0.66
+impl<'m> LayoutCtx<'m> {
+    /// A child context with bold weight enabled for everything it lays out.
+    fn bolded(&self) -> LayoutCtx<'m> {
+        LayoutCtx {
+            metrics: self.metrics,
+            bold: true,
+        }
     }
-}
 
-fn layout_row(nodes: &[MathNode], size: f32) -> MathBox {
-    let children = nodes
-        .iter()
-        .map(|node| layout_math(node, size))
-        .collect::<Vec<_>>();
-    let baseline = children
-        .iter()
-        .map(|b| b.baseline)
-        .fold(size * 0.82, f32::max);
-    let below = children
-        .iter()
-        .map(|b| b.height - b.baseline)
-        .fold(size * 0.33, f32::max);
-    let mut draws = Vec::new();
-    let mut x = 0.0;
-    for child in children {
-        append_draws(&mut draws, &child, x, baseline - child.baseline);
-        x += child.width;
+    fn layout_math(&self, node: &MathNode, size: f32) -> MathBox {
+        match node {
+            MathNode::Text(text) => self.layout_text(text, size),
+            MathNode::Row(nodes) => self.layout_row(nodes, size),
+            MathNode::Fraction(num, den) => self.layout_fraction(num, den, size),
+            MathNode::Sqrt(inner) => self.layout_sqrt(inner, size),
+            MathNode::Delimited { left, body, right } => {
+                self.layout_delimited(left, body, right, size)
+            }
+            MathNode::Script { base, sub, sup } => {
+                self.layout_script(base, sub.as_deref(), sup.as_deref(), size)
+            }
+            MathNode::Matrix { rows, left, right } => self.layout_matrix(rows, left, right, size),
+            MathNode::Cases(rows) => self.layout_cases(rows, size),
+            MathNode::Lines(lines) => self.layout_lines(lines, size),
+            MathNode::Bold(inner) => self.bolded().layout_math(inner, size),
+            MathNode::Accent { base, mark } => self.layout_accent(base, *mark, size),
+        }
     }
-    MathBox {
-        width: x,
-        height: baseline + below,
-        baseline,
-        draws,
-    }
-}
 
-fn layout_fraction(num: &MathNode, den: &MathNode, size: f32) -> MathBox {
-    let child_size = (size * 0.82).max(12.0);
-    let num_box = layout_math(num, child_size);
-    let den_box = layout_math(den, child_size);
-    let pad = size * 0.28;
-    let gap = size * 0.16;
-    let line_y = num_box.height + gap;
-    let width = num_box.width.max(den_box.width) + pad * 2.0;
-    let mut draws = Vec::new();
-    append_draws(&mut draws, &num_box, (width - num_box.width) / 2.0, 0.0);
-    draws.push(Draw::Line {
-        x1: 0.0,
-        y1: line_y,
-        x2: width,
-        y2: line_y,
-        stroke_width: (size * 0.045).max(1.2),
-    });
-    let den_y = line_y + gap;
-    append_draws(&mut draws, &den_box, (width - den_box.width) / 2.0, den_y);
-    MathBox {
-        width,
-        height: den_y + den_box.height,
-        baseline: line_y + gap + den_box.baseline,
-        draws,
+    /// Lay out an accent (`\bar`, `\hat`, …) by drawing it as geometry centred
+    /// over the base. This sidesteps font combining-mark placement, which puts
+    /// zero-advance marks at the base's right edge rather than over it.
+    fn layout_accent(&self, base: &MathNode, mark: char, size: f32) -> MathBox {
+        let base_box = self.layout_math(base, size);
+        let stroke = (size * 0.05).max(1.2);
+        // Vertical room added above the base for the accent.
+        let pad = size * 0.20;
+        let w = base_box.width;
+        let cx = w / 2.0;
+        // Accent baseline within the padding band, a little above the base ink.
+        let ay = pad * 0.45;
+        let mut draws = Vec::new();
+        append_draws(&mut draws, &base_box, 0.0, pad);
+        match mark {
+            // bar / overline — a horizontal rule spanning the base.
+            '\u{0304}' | '\u{0305}' => {
+                let half = (w * 0.5 - size * 0.03).max(size * 0.14);
+                draws.push(Draw::Line {
+                    x1: cx - half,
+                    y1: ay,
+                    x2: cx + half,
+                    y2: ay,
+                    stroke_width: stroke,
+                });
+            }
+            // hat — a caret.
+            '\u{0302}' => {
+                let hw = (w * 0.32).clamp(size * 0.14, size * 0.30);
+                draws.push(Draw::Polyline {
+                    points: vec![
+                        (cx - hw, ay + size * 0.10),
+                        (cx, ay - size * 0.03),
+                        (cx + hw, ay + size * 0.10),
+                    ],
+                    stroke_width: stroke,
+                });
+            }
+            // tilde — a shallow wave.
+            '\u{0303}' => {
+                let hw = (w * 0.32).clamp(size * 0.14, size * 0.30);
+                let a = size * 0.05;
+                draws.push(Draw::Polyline {
+                    points: vec![
+                        (cx - hw, ay + a),
+                        (cx - hw * 0.3, ay - a),
+                        (cx + hw * 0.3, ay + a),
+                        (cx + hw, ay - a),
+                    ],
+                    stroke_width: stroke,
+                });
+            }
+            // vec — a right arrow.
+            '\u{20d7}' => {
+                let half = (w * 0.5).max(size * 0.16);
+                draws.push(Draw::Line {
+                    x1: cx - half,
+                    y1: ay,
+                    x2: cx + half,
+                    y2: ay,
+                    stroke_width: stroke,
+                });
+                let hh = size * 0.07;
+                draws.push(Draw::Polyline {
+                    points: vec![
+                        (cx + half - size * 0.11, ay - hh),
+                        (cx + half, ay),
+                        (cx + half - size * 0.11, ay + hh),
+                    ],
+                    stroke_width: stroke,
+                });
+            }
+            // dot / ddot — round caps make a short stroke read as a dot.
+            '\u{0307}' => {
+                draws.push(dot_draw(cx, ay, size));
+            }
+            '\u{0308}' => {
+                let dx = size * 0.13;
+                draws.push(dot_draw(cx - dx, ay, size));
+                draws.push(dot_draw(cx + dx, ay, size));
+            }
+            _ => {}
+        }
+        MathBox {
+            width: w,
+            height: pad + base_box.height,
+            baseline: pad + base_box.baseline,
+            draws,
+        }
     }
-}
 
-fn layout_sqrt(inner: &MathNode, size: f32) -> MathBox {
-    let inner_box = layout_math(inner, size * 0.94);
-    let left = size * 0.62;
-    let top = size * 0.14;
-    let pad = size * 0.18;
-    let width = left + inner_box.width + pad;
-    let height = inner_box.height + top + size * 0.10;
-    let baseline = top + inner_box.baseline;
-    let mut draws = Vec::new();
-    let y_mid = top + inner_box.height * 0.58;
-    let y_base = top + inner_box.height * 0.86;
-    draws.push(Draw::Polyline {
-        points: vec![
-            (size * 0.08, y_mid),
-            (size * 0.22, y_base),
-            (size * 0.42, top + inner_box.height),
-            (left * 0.92, top + size * 0.06),
-            (width, top + size * 0.06),
-        ],
-        stroke_width: (size * 0.045).max(1.2),
-    });
-    append_draws(&mut draws, &inner_box, left, top);
-    MathBox {
-        width,
-        height,
-        baseline,
-        draws,
-    }
-}
-
-fn layout_delimited(left: &str, body: &MathNode, right: &str, size: f32) -> MathBox {
-    let body_box = layout_math(body, size);
-    layout_delimited_box(left, body_box, right, size)
-}
-
-fn layout_delimited_box(left: &str, body_box: MathBox, right: &str, size: f32) -> MathBox {
-    let delimiter_height = body_box.height.max(size * 1.25).min(size * 6.0);
-    let left_box = layout_delimiter(left, delimiter_height, size);
-    let right_box = layout_delimiter(right, delimiter_height, size);
-    let gap = if left.is_empty() && right.is_empty() {
-        0.0
-    } else {
-        size * 0.12
-    };
-    let body_y = (delimiter_height - body_box.height) / 2.0;
-    let baseline = body_y + body_box.baseline;
-    let mut draws = Vec::new();
-    let mut x = 0.0;
-    if !left.is_empty() {
-        append_draws(&mut draws, &left_box, x, 0.0);
-        x += left_box.width + gap;
-    }
-    append_draws(&mut draws, &body_box, x, body_y);
-    x += body_box.width;
-    if !right.is_empty() {
-        x += gap;
-        append_draws(&mut draws, &right_box, x, 0.0);
-        x += right_box.width;
-    }
-    MathBox {
-        width: x,
-        height: delimiter_height,
-        baseline,
-        draws,
-    }
-}
-
-fn layout_delimiter(token: &str, height: f32, size: f32) -> MathBox {
-    if token.is_empty() {
-        return MathBox {
-            width: 0.0,
-            height,
-            baseline: height * 0.5,
-            draws: Vec::new(),
-        };
-    }
-    if scalable_delimiter(token) {
-        let width = delimiter_width(token, height, size);
-        return MathBox {
+    fn layout_text(&self, text: &str, size: f32) -> MathBox {
+        if text.is_empty() {
+            return MathBox {
+                width: 0.0,
+                height: size * 1.15,
+                baseline: size * 0.82,
+                draws: Vec::new(),
+            };
+        }
+        let width = text
+            .chars()
+            .map(|ch| self.metrics.advance_em(ch, self.bold))
+            .sum::<f32>()
+            * size;
+        let height = size * 1.15;
+        let baseline = size * 0.82;
+        MathBox {
             width,
             height,
-            baseline: height * 0.5,
-            draws: vec![Draw::Delimiter {
+            baseline,
+            draws: vec![Draw::Text {
                 x: 0.0,
-                y: 0.0,
+                y: baseline,
+                size,
+                text: text.into(),
+                bold: self.bold,
+            }],
+        }
+    }
+}
+
+/// Advance width of `ch` as a fraction of the em, taken from the real glyph
+/// metrics of **DejaVu Sans** — the face both the PDF and the SVG/PNG paths
+/// use to draw math text. The layout engine reserves horizontal space using
+/// these factors while the renderer advances the glyphs with the font's own
+/// widths, so the two only stay in lockstep if the factors match the font.
+/// Hand-rounded guesses (the old table) drifted by up to 0.28 em on `+`/`-`,
+/// which a 90-term Lagrangian — built almost entirely of those signs —
+/// accumulates into visible overlap. Values below are `advanceWidth /
+/// unitsPerEm` straight from `DejaVuSans.ttf` (unitsPerEm = 2048).
+// 0.318 (the comma/period/`·` advance) is close to 1/π, which trips the
+// `approx_constant` lint — but these are real DejaVu advance widths, not the
+// constant.
+#[allow(clippy::approx_constant)]
+fn char_width_factor(ch: char) -> f32 {
+    // Combining diacritics (\bar, \hat, …) stack over the previous glyph and
+    // therefore advance nothing.
+    if ('\u{0300}'..='\u{036f}').contains(&ch) {
+        return 0.0;
+    }
+    match ch {
+        ' ' | '\t' | '\n' | '\r' => 0.32,
+        '0'..='9' => 0.636,
+
+        // ASCII lowercase
+        'a' => 0.613,
+        'b' => 0.635,
+        'c' => 0.550,
+        'd' => 0.635,
+        'e' => 0.615,
+        'f' => 0.352,
+        'g' => 0.635,
+        'h' => 0.634,
+        'i' => 0.278,
+        'j' => 0.278,
+        'k' => 0.579,
+        'l' => 0.278,
+        'm' => 0.974,
+        'n' => 0.634,
+        'o' => 0.612,
+        'p' => 0.635,
+        'q' => 0.635,
+        'r' => 0.411,
+        's' => 0.521,
+        't' => 0.392,
+        'u' => 0.634,
+        'v' => 0.592,
+        'w' => 0.818,
+        'x' => 0.592,
+        'y' => 0.592,
+        'z' => 0.525,
+
+        // ASCII uppercase
+        'A' => 0.684,
+        'B' => 0.686,
+        'C' => 0.698,
+        'D' => 0.770,
+        'E' => 0.632,
+        'F' => 0.575,
+        'G' => 0.775,
+        'H' => 0.752,
+        'I' => 0.295,
+        'J' => 0.295,
+        'K' => 0.656,
+        'L' => 0.557,
+        'M' => 0.863,
+        'N' => 0.748,
+        'O' => 0.787,
+        'P' => 0.603,
+        'Q' => 0.787,
+        'R' => 0.695,
+        'S' => 0.635,
+        'T' => 0.611,
+        'U' => 0.732,
+        'V' => 0.684,
+        'W' => 0.989,
+        'X' => 0.685,
+        'Y' => 0.611,
+        'Z' => 0.685,
+
+        // ASCII operators, relations and punctuation
+        '+' | '=' | '<' | '>' | '~' | '#' => 0.838,
+        '-' => 0.361,
+        '*' => 0.500,
+        '/' | '\\' | ':' | ';' | '|' => 0.337,
+        '(' | ')' | '[' | ']' => 0.390,
+        '{' | '}' => 0.636,
+        ',' | '.' => 0.318,
+        '!' => 0.401,
+        '?' => 0.531,
+        '\'' => 0.275,
+        '"' => 0.460,
+        '&' => 0.780,
+        '%' => 0.950,
+        '@' => 1.000,
+
+        // Greek lowercase
+        'α' => 0.659,
+        'β' => 0.638,
+        'γ' => 0.592,
+        'δ' => 0.612,
+        'ε' => 0.541,
+        'ζ' => 0.544,
+        'η' => 0.634,
+        'θ' => 0.612,
+        'ϑ' => 0.619,
+        'ι' => 0.338,
+        'κ' => 0.589,
+        'λ' => 0.592,
+        'μ' => 0.636,
+        'ν' => 0.559,
+        'ξ' => 0.558,
+        'π' => 0.602,
+        'ϖ' => 0.837,
+        'ρ' => 0.635,
+        'ϱ' => 0.635,
+        'σ' => 0.634,
+        'ς' => 0.587,
+        'τ' => 0.602,
+        'υ' => 0.579,
+        'φ' => 0.660,
+        'ϕ' => 0.660,
+        'χ' => 0.578,
+        'ψ' => 0.660,
+        'ω' => 0.837,
+
+        // Greek uppercase
+        'Α' => 0.684,
+        'Β' => 0.686,
+        'Γ' => 0.557,
+        'Δ' => 0.684,
+        'Ε' => 0.632,
+        'Ζ' => 0.685,
+        'Η' => 0.752,
+        'Θ' => 0.787,
+        'Ι' => 0.295,
+        'Κ' => 0.656,
+        'Λ' => 0.684,
+        'Μ' => 0.863,
+        'Ν' => 0.748,
+        'Ξ' => 0.632,
+        'Π' => 0.752,
+        'Ρ' => 0.603,
+        'Σ' => 0.632,
+        'Τ' => 0.611,
+        'Υ' => 0.611,
+        'Φ' => 0.787,
+        'Χ' => 0.685,
+        'Ψ' => 0.787,
+        'Ω' => 0.764,
+
+        // Big operators, relations, arrows and symbols
+        '∑' => 0.674,
+        '∏' => 0.757,
+        '∫' | '∮' => 0.521,
+        '⋃' | '⋂' => 0.820,
+        '≤' | '≥' | '≠' | '≈' | '≡' | '∼' | '≃' | '≅' | '≐' | '≺' | '≻' | '≼' | '≽' => {
+            0.838
+        }
+        '≪' | '≫' => 1.047,
+        '∝' => 0.714,
+        '→' | '←' | '⇒' | '⇐' | '↔' | '⇔' | '↦' | '↑' | '↓' | '⇑' | '⇓' => {
+            0.838
+        }
+        '⟶' | '⟵' | '⟹' | '⟸' | '⟷' | '⟺' => 1.434,
+        '±' | '∓' | '×' | '÷' | '⊕' | '⊗' | '∗' | '¬' => 0.838,
+        '·' => 0.318,
+        '∘' => 0.626,
+        '•' => 0.590,
+        '⋆' => 0.626,
+        '∧' | '∨' | '∪' | '∩' => 0.732,
+        '∖' => 0.637,
+        '∀' => 0.684,
+        '∃' | '∄' => 0.632,
+        '∈' | '∉' | '∌' | '∅' => 0.871,
+        '⊂' | '⊃' | '⊆' | '⊇' | '⊈' | '⊉' => 0.838,
+        '∴' | '∵' => 0.636,
+        '∞' => 0.833,
+        '∂' => 0.517,
+        '∇' => 0.669,
+        'ℏ' => 0.634,
+        'ℓ' => 0.413,
+        'ℜ' => 0.814,
+        'ℑ' => 0.697,
+        'ℵ' => 0.745,
+        '∠' => 0.896,
+        '△' => 0.769,
+        '°' => 0.500,
+        '′' => 0.227,
+        '†' => 0.500,
+        '⟨' | '⟩' | '⌊' | '⌋' | '⌈' | '⌉' => 0.390,
+        '‖' => 0.500,
+        '…' | '⋯' | '⋮' | '⋱' => 1.000,
+
+        // Anything else: blackboard/script letters, CJK, etc. A middling
+        // advance is the safest guess and rarely appears in equations.
+        _ => 0.620,
+    }
+}
+
+impl<'m> LayoutCtx<'m> {
+    fn layout_row(&self, nodes: &[MathNode], size: f32) -> MathBox {
+        let children = nodes
+            .iter()
+            .map(|node| self.layout_math(node, size))
+            .collect::<Vec<_>>();
+        let baseline = children
+            .iter()
+            .map(|b| b.baseline)
+            .fold(size * 0.82, f32::max);
+        let below = children
+            .iter()
+            .map(|b| b.height - b.baseline)
+            .fold(size * 0.33, f32::max);
+        let mut draws = Vec::new();
+        let mut x = 0.0;
+        for child in children {
+            append_draws(&mut draws, &child, x, baseline - child.baseline);
+            x += child.width;
+        }
+        MathBox {
+            width: x,
+            height: baseline + below,
+            baseline,
+            draws,
+        }
+    }
+
+    fn layout_fraction(&self, num: &MathNode, den: &MathNode, size: f32) -> MathBox {
+        let child_size = (size * 0.82).max(12.0);
+        let num_box = self.layout_math(num, child_size);
+        let den_box = self.layout_math(den, child_size);
+        let pad = size * 0.28;
+        let gap = size * 0.16;
+        let line_y = num_box.height + gap;
+        let width = num_box.width.max(den_box.width) + pad * 2.0;
+        let mut draws = Vec::new();
+        append_draws(&mut draws, &num_box, (width - num_box.width) / 2.0, 0.0);
+        draws.push(Draw::Line {
+            x1: 0.0,
+            y1: line_y,
+            x2: width,
+            y2: line_y,
+            stroke_width: (size * 0.045).max(1.2),
+        });
+        let den_y = line_y + gap;
+        append_draws(&mut draws, &den_box, (width - den_box.width) / 2.0, den_y);
+        MathBox {
+            width,
+            height: den_y + den_box.height,
+            baseline: line_y + gap + den_box.baseline,
+            draws,
+        }
+    }
+
+    fn layout_sqrt(&self, inner: &MathNode, size: f32) -> MathBox {
+        let inner_box = self.layout_math(inner, size * 0.94);
+        let left = size * 0.62;
+        let top = size * 0.14;
+        let pad = size * 0.18;
+        let width = left + inner_box.width + pad;
+        let height = inner_box.height + top + size * 0.10;
+        let baseline = top + inner_box.baseline;
+        let mut draws = Vec::new();
+        let y_mid = top + inner_box.height * 0.58;
+        let y_base = top + inner_box.height * 0.86;
+        draws.push(Draw::Polyline {
+            points: vec![
+                (size * 0.08, y_mid),
+                (size * 0.22, y_base),
+                (size * 0.42, top + inner_box.height),
+                (left * 0.92, top + size * 0.06),
+                (width, top + size * 0.06),
+            ],
+            stroke_width: (size * 0.045).max(1.2),
+        });
+        append_draws(&mut draws, &inner_box, left, top);
+        MathBox {
+            width,
+            height,
+            baseline,
+            draws,
+        }
+    }
+
+    fn layout_delimited(&self, left: &str, body: &MathNode, right: &str, size: f32) -> MathBox {
+        let body_box = self.layout_math(body, size);
+        self.layout_delimited_box(left, body_box, right, size)
+    }
+
+    fn layout_delimited_box(
+        &self,
+        left: &str,
+        body_box: MathBox,
+        right: &str,
+        size: f32,
+    ) -> MathBox {
+        let delimiter_height = body_box.height.max(size * 1.25).min(size * 6.0);
+        let left_box = self.layout_delimiter(left, delimiter_height, size);
+        let right_box = self.layout_delimiter(right, delimiter_height, size);
+        let gap = if left.is_empty() && right.is_empty() {
+            0.0
+        } else {
+            size * 0.12
+        };
+        let body_y = (delimiter_height - body_box.height) / 2.0;
+        let baseline = body_y + body_box.baseline;
+        let mut draws = Vec::new();
+        let mut x = 0.0;
+        if !left.is_empty() {
+            append_draws(&mut draws, &left_box, x, 0.0);
+            x += left_box.width + gap;
+        }
+        append_draws(&mut draws, &body_box, x, body_y);
+        x += body_box.width;
+        if !right.is_empty() {
+            x += gap;
+            append_draws(&mut draws, &right_box, x, 0.0);
+            x += right_box.width;
+        }
+        MathBox {
+            width: x,
+            height: delimiter_height,
+            baseline,
+            draws,
+        }
+    }
+
+    fn layout_delimiter(&self, token: &str, height: f32, size: f32) -> MathBox {
+        if token.is_empty() {
+            return MathBox {
+                width: 0.0,
+                height,
+                baseline: height * 0.5,
+                draws: Vec::new(),
+            };
+        }
+        if scalable_delimiter(token) {
+            let width = delimiter_width(token, height, size);
+            return MathBox {
                 width,
                 height,
-                token: token.to_string(),
-                stroke_width: (size * 0.055).max(1.35),
-            }],
-        };
+                baseline: height * 0.5,
+                draws: vec![Draw::Delimiter {
+                    x: 0.0,
+                    y: 0.0,
+                    width,
+                    height,
+                    token: token.to_string(),
+                    stroke_width: (size * 0.055).max(1.35),
+                }],
+            };
+        }
+        let font_size = height.min(size * 3.2).max(size * 1.15);
+        self.layout_text(token, font_size)
     }
-    let font_size = height.min(size * 3.2).max(size * 1.15);
-    layout_text(token, font_size)
 }
 
 fn scalable_delimiter(token: &str) -> bool {
@@ -1441,135 +1787,138 @@ fn delimiter_width(token: &str, height: f32, size: f32) -> f32 {
     }
 }
 
-fn layout_script(
-    base: &MathNode,
-    sub: Option<&MathNode>,
-    sup: Option<&MathNode>,
-    size: f32,
-) -> MathBox {
-    let base_box = layout_math(base, size);
-    let script_size = (size * 0.62).max(10.0);
-    let sup_box = sup.map(|node| layout_math(node, script_size));
-    let sub_box = sub.map(|node| layout_math(node, script_size));
-    let gap = size * 0.08;
-    let above = sup_box
-        .as_ref()
-        .map(|b| (b.height * 0.72).max(size * 0.15))
-        .unwrap_or(0.0);
-    let below = sub_box
-        .as_ref()
-        .map(|b| (b.height * 0.72).max(size * 0.15))
-        .unwrap_or(0.0);
-    let baseline = above + base_box.baseline;
-    let height = above + base_box.height + below;
-    let script_width = sup_box
-        .as_ref()
-        .map(|b| b.width)
-        .unwrap_or(0.0)
-        .max(sub_box.as_ref().map(|b| b.width).unwrap_or(0.0));
-    let mut draws = Vec::new();
-    append_draws(&mut draws, &base_box, 0.0, above);
-    if let Some(sup_box) = sup_box.as_ref() {
-        append_draws(
-            &mut draws,
-            sup_box,
-            base_box.width + gap,
-            (above - sup_box.height * 0.70).max(0.0),
-        );
-    }
-    if let Some(sub_box) = sub_box.as_ref() {
-        append_draws(
-            &mut draws,
-            sub_box,
-            base_box.width + gap,
-            baseline + size * 0.10,
-        );
-    }
-    MathBox {
-        width: base_box.width + gap + script_width,
-        height,
-        baseline,
-        draws,
-    }
-}
-
-fn layout_lines(lines: &[MathNode], size: f32) -> MathBox {
-    let rows = lines
-        .iter()
-        .map(|line| layout_math(line, size))
-        .collect::<Vec<_>>();
-    stack_rows(&rows, size * 0.38, false)
-}
-
-fn layout_matrix(rows: &[Vec<MathNode>], left: &str, right: &str, size: f32) -> MathBox {
-    let cell_size = (size * 0.86).max(12.0);
-    let laid_rows = rows
-        .iter()
-        .map(|row| {
-            row.iter()
-                .map(|cell| layout_math(cell, cell_size))
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let cols = laid_rows.iter().map(|row| row.len()).max().unwrap_or(0);
-    let mut col_widths = vec![0.0; cols];
-    for row in &laid_rows {
-        for (idx, cell) in row.iter().enumerate() {
-            if cell.width > col_widths[idx] {
-                col_widths[idx] = cell.width;
-            }
+impl<'m> LayoutCtx<'m> {
+    fn layout_script(
+        &self,
+        base: &MathNode,
+        sub: Option<&MathNode>,
+        sup: Option<&MathNode>,
+        size: f32,
+    ) -> MathBox {
+        let base_box = self.layout_math(base, size);
+        let script_size = (size * 0.62).max(10.0);
+        let sup_box = sup.map(|node| self.layout_math(node, script_size));
+        let sub_box = sub.map(|node| self.layout_math(node, script_size));
+        let gap = size * 0.08;
+        let above = sup_box
+            .as_ref()
+            .map(|b| (b.height * 0.72).max(size * 0.15))
+            .unwrap_or(0.0);
+        let below = sub_box
+            .as_ref()
+            .map(|b| (b.height * 0.72).max(size * 0.15))
+            .unwrap_or(0.0);
+        let baseline = above + base_box.baseline;
+        let height = above + base_box.height + below;
+        let script_width = sup_box
+            .as_ref()
+            .map(|b| b.width)
+            .unwrap_or(0.0)
+            .max(sub_box.as_ref().map(|b| b.width).unwrap_or(0.0));
+        let mut draws = Vec::new();
+        append_draws(&mut draws, &base_box, 0.0, above);
+        if let Some(sup_box) = sup_box.as_ref() {
+            append_draws(
+                &mut draws,
+                sup_box,
+                base_box.width + gap,
+                (above - sup_box.height * 0.70).max(0.0),
+            );
+        }
+        if let Some(sub_box) = sub_box.as_ref() {
+            append_draws(
+                &mut draws,
+                sub_box,
+                base_box.width + gap,
+                baseline + size * 0.10,
+            );
+        }
+        MathBox {
+            width: base_box.width + gap + script_width,
+            height,
+            baseline,
+            draws,
         }
     }
-    let col_gap = size * 0.65;
-    let row_gap = size * 0.28;
-    let body_width = col_widths.iter().sum::<f32>() + col_gap * cols.saturating_sub(1) as f32;
-    let mut y = 0.0;
-    let mut draws = Vec::new();
-    for row in &laid_rows {
-        let baseline = row
-            .iter()
-            .map(|cell| cell.baseline)
-            .fold(cell_size * 0.82, f32::max);
-        let below = row
-            .iter()
-            .map(|cell| cell.height - cell.baseline)
-            .fold(cell_size * 0.33, f32::max);
-        let mut x = 0.0;
-        for (idx, cell) in row.iter().enumerate() {
-            let cell_x = x + (col_widths[idx] - cell.width) / 2.0;
-            append_draws(&mut draws, cell, cell_x, y + baseline - cell.baseline);
-            x += col_widths[idx] + col_gap;
-        }
-        y += baseline + below + row_gap;
-    }
-    let height = (y - row_gap).max(size * 1.2);
-    let baseline = height / 2.0 + size * 0.28;
-    let body = MathBox {
-        width: body_width,
-        height,
-        baseline,
-        draws,
-    };
-    if left.is_empty() && right.is_empty() {
-        body
-    } else {
-        layout_delimited_box(left, body, right, size)
-    }
-}
 
-fn layout_cases(rows: &[(MathNode, Option<MathNode>)], size: f32) -> MathBox {
-    let matrix_rows = rows
-        .iter()
-        .map(|(expr, condition)| {
-            let mut row = vec![expr.clone()];
-            if let Some(condition) = condition {
-                row.push(MathNode::Text("if ".into()));
-                row.push(condition.clone());
+    fn layout_lines(&self, lines: &[MathNode], size: f32) -> MathBox {
+        let rows = lines
+            .iter()
+            .map(|line| self.layout_math(line, size))
+            .collect::<Vec<_>>();
+        stack_rows(&rows, size * 0.38, false)
+    }
+
+    fn layout_matrix(&self, rows: &[Vec<MathNode>], left: &str, right: &str, size: f32) -> MathBox {
+        let cell_size = (size * 0.86).max(12.0);
+        let laid_rows = rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| self.layout_math(cell, cell_size))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let cols = laid_rows.iter().map(|row| row.len()).max().unwrap_or(0);
+        let mut col_widths = vec![0.0; cols];
+        for row in &laid_rows {
+            for (idx, cell) in row.iter().enumerate() {
+                if cell.width > col_widths[idx] {
+                    col_widths[idx] = cell.width;
+                }
             }
-            row
-        })
-        .collect::<Vec<_>>();
-    layout_matrix(&matrix_rows, "{", "", size)
+        }
+        let col_gap = size * 0.65;
+        let row_gap = size * 0.28;
+        let body_width = col_widths.iter().sum::<f32>() + col_gap * cols.saturating_sub(1) as f32;
+        let mut y = 0.0;
+        let mut draws = Vec::new();
+        for row in &laid_rows {
+            let baseline = row
+                .iter()
+                .map(|cell| cell.baseline)
+                .fold(cell_size * 0.82, f32::max);
+            let below = row
+                .iter()
+                .map(|cell| cell.height - cell.baseline)
+                .fold(cell_size * 0.33, f32::max);
+            let mut x = 0.0;
+            for (idx, cell) in row.iter().enumerate() {
+                let cell_x = x + (col_widths[idx] - cell.width) / 2.0;
+                append_draws(&mut draws, cell, cell_x, y + baseline - cell.baseline);
+                x += col_widths[idx] + col_gap;
+            }
+            y += baseline + below + row_gap;
+        }
+        let height = (y - row_gap).max(size * 1.2);
+        let baseline = height / 2.0 + size * 0.28;
+        let body = MathBox {
+            width: body_width,
+            height,
+            baseline,
+            draws,
+        };
+        if left.is_empty() && right.is_empty() {
+            body
+        } else {
+            self.layout_delimited_box(left, body, right, size)
+        }
+    }
+
+    fn layout_cases(&self, rows: &[(MathNode, Option<MathNode>)], size: f32) -> MathBox {
+        let matrix_rows = rows
+            .iter()
+            .map(|(expr, condition)| {
+                let mut row = vec![expr.clone()];
+                if let Some(condition) = condition {
+                    row.push(MathNode::Text("if ".into()));
+                    row.push(condition.clone());
+                }
+                row
+            })
+            .collect::<Vec<_>>();
+        self.layout_matrix(&matrix_rows, "{", "", size)
+    }
 }
 
 fn stack_rows(rows: &[MathBox], gap: f32, center: bool) -> MathBox {
@@ -1596,6 +1945,19 @@ fn stack_rows(rows: &[MathBox], gap: f32, center: bool) -> MathBox {
     }
 }
 
+/// A dot accent: a near-zero-length stroke whose round line cap renders as a
+/// filled disc of diameter ≈ the stroke width.
+fn dot_draw(cx: f32, cy: f32, size: f32) -> Draw {
+    let r = (size * 0.06).max(1.4);
+    Draw::Line {
+        x1: cx,
+        y1: cy,
+        x2: cx + 0.01,
+        y2: cy,
+        stroke_width: r * 2.0,
+    }
+}
+
 fn append_draws(draws: &mut Vec<Draw>, child: &MathBox, dx: f32, dy: f32) {
     for draw in &child.draws {
         draws.push(offset_draw(draw, dx, dy));
@@ -1613,7 +1975,19 @@ fn publish_math_box(layout: MathBox) -> MathTextLayout {
 
 fn publish_draw(draw: Draw) -> MathLayoutDraw {
     match draw {
-        Draw::Text { x, y, size, text } => MathLayoutDraw::Text { x, y, size, text },
+        Draw::Text {
+            x,
+            y,
+            size,
+            text,
+            bold,
+        } => MathLayoutDraw::Text {
+            x,
+            y,
+            size,
+            text,
+            bold,
+        },
         Draw::Line {
             x1,
             y1,
@@ -1654,11 +2028,18 @@ fn publish_draw(draw: Draw) -> MathLayoutDraw {
 
 fn offset_draw(draw: &Draw, dx: f32, dy: f32) -> Draw {
     match draw {
-        Draw::Text { x, y, size, text } => Draw::Text {
+        Draw::Text {
+            x,
+            y,
+            size,
+            text,
+            bold,
+        } => Draw::Text {
             x: x + dx,
             y: y + dy,
             size: *size,
             text: text.clone(),
+            bold: *bold,
         },
         Draw::Line {
             x1,
@@ -1701,12 +2082,19 @@ fn offset_draw(draw: &Draw, dx: f32, dy: f32) -> Draw {
 fn render_box(layout: &MathBox, dx: f32, dy: f32, out: &mut String) {
     for draw in &layout.draws {
         match draw {
-            Draw::Text { x, y, size, text } => {
+            Draw::Text {
+                x,
+                y,
+                size,
+                text,
+                bold,
+            } => {
                 if text.is_empty() {
                     continue;
                 }
+                let weight = if *bold { r#" font-weight="bold""# } else { "" };
                 out.push_str(&format!(
-                    r#"    <text x="{:.1}" y="{:.1}" font-size="{:.1}" stroke="none">{}</text>"#,
+                    r#"    <text x="{:.1}" y="{:.1}" font-size="{:.1}"{weight} stroke="none">{}</text>"#,
                     x + dx,
                     y + dy,
                     size,
@@ -1923,7 +2311,7 @@ fn escape_xml(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -2410,6 +2798,10 @@ fn is_text_like_group_command(name: &str) -> bool {
             | "mathsf"
             | "mathtt"
             | "operatorname"
+            | "boldsymbol"
+            | "bm"
+            | "pmb"
+            | "mathbfit"
     )
 }
 
@@ -2742,6 +3134,9 @@ fn supported_macro(name: &str) -> bool {
     matches!(
         name,
         "frac"
+            | "dfrac"
+            | "tfrac"
+            | "cfrac"
             | "sqrt"
             | "binom"
             | "begin"
@@ -2760,6 +3155,10 @@ fn supported_macro(name: &str) -> bool {
             | "mathsf"
             | "mathtt"
             | "operatorname"
+            | "boldsymbol"
+            | "bm"
+            | "pmb"
+            | "mathbfit"
             | "vec"
             | "bar"
             | "overline"
@@ -3100,6 +3499,9 @@ fn greek_or_symbol(name: &str) -> Option<&'static str> {
         "rangle" => "⟩",
         "lvert" => "|",
         "rvert" => "|",
+        "mid" => "|",
+        "vert" => "|",
+        "Vert" => "‖",
         "lVert" => "‖",
         "rVert" => "‖",
         "lfloor" => "⌊",
@@ -3207,5 +3609,112 @@ mod tests {
         let rendered = translate_with_options(r"$x \in \RR^n$", &options);
 
         assert!(rendered.contains("ℝⁿ"), "{rendered}");
+    }
+
+    #[test]
+    fn markup_scripts_bind_to_last_plain_atom() {
+        let layout = layout_markup_text("MZ^0_\\mu", 100);
+        let texts = layout
+            .draws
+            .iter()
+            .filter_map(|draw| match draw {
+                MathLayoutDraw::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(texts.contains(&"M"), "{texts:?}");
+        assert!(texts.contains(&"Z"), "{texts:?}");
+        assert!(!texts.contains(&"MZ"), "{texts:?}");
+    }
+
+    #[test]
+    fn markup_width_model_leaves_room_for_wide_fields() {
+        let wide = layout_markup_text(r"W^+_\mu W^{-\mu} MZ^0_\mu", 100);
+        let narrow = layout_markup_text(r"i^+_\mu i^{-\mu} lZ^0_\mu", 100);
+
+        assert!(
+            wide.width > narrow.width * 1.35,
+            "wide glyphs should reserve more horizontal layout room: wide={}, narrow={}",
+            wide.width,
+            narrow.width
+        );
+    }
+
+    #[test]
+    fn layout_reserves_width_from_the_supplied_metrics() {
+        // A provider reporting a fixed advance per glyph must drive the
+        // reserved width directly — proving the layout measures the active
+        // face rather than a baked-in table. This is what keeps PDF `--font`
+        // output aligned.
+        struct Fixed(f32);
+        impl GlyphMetrics for Fixed {
+            fn advance_em(&self, _ch: char, _bold: bool) -> f32 {
+                self.0
+            }
+        }
+
+        let wide = layout_markup_text_with("abcd", 100, &Fixed(1.0));
+        let narrow = layout_markup_text_with("abcd", 100, &Fixed(0.5));
+
+        // 4 glyphs × 1.0 em × 28 px base size.
+        assert!((wide.width - 112.0).abs() < 0.5, "wide={}", wide.width);
+        assert!(
+            (wide.width - narrow.width * 2.0).abs() < 0.5,
+            "halving the advance must halve the width: wide={}, narrow={}",
+            wide.width,
+            narrow.width
+        );
+    }
+
+    #[test]
+    fn accents_render_as_centred_geometry_not_combining_glyphs() {
+        // `\bar{X}` must draw a horizontal rule over the base and keep the
+        // base text as a bare "X" — never an "X\u{0304}" combining run, whose
+        // zero-advance mark the renderer would mis-place at the base's edge
+        // (font-dependently). This is what makes the accent font-independent.
+        let layout = layout_markup_text(r"\bar{X}", 100);
+        let has_rule = layout
+            .draws
+            .iter()
+            .any(|d| matches!(d, MathLayoutDraw::Line { .. }));
+        assert!(has_rule, "\\bar must draw a rule: {:?}", layout.draws);
+        for draw in &layout.draws {
+            if let MathLayoutDraw::Text { text, .. } = draw {
+                assert!(
+                    !text.chars().any(|c| ('\u{0300}'..='\u{036f}').contains(&c)),
+                    "base text must not carry a combining mark: {text:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bold_command_marks_text_runs_bold_and_widens_them() {
+        let layout = layout_markup_text(r"a\mathbf{b}\boldsymbol{c}", 100);
+        let bold_texts: Vec<&str> = layout
+            .draws
+            .iter()
+            .filter_map(|draw| match draw {
+                MathLayoutDraw::Text {
+                    text, bold: true, ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        // `b` (\mathbf) and `c` (\boldsymbol) are bold; the leading `a` is not.
+        assert!(bold_texts.contains(&"b"), "{bold_texts:?}");
+        assert!(bold_texts.contains(&"c"), "{bold_texts:?}");
+        assert!(!bold_texts.contains(&"a"), "{bold_texts:?}");
+
+        // Bold reserves more width than the same glyph in regular weight.
+        let regular = layout_markup_text("x", 100);
+        let bold = layout_markup_text(r"\mathbf{x}", 100);
+        assert!(
+            bold.width > regular.width,
+            "bold should be wider: bold={}, regular={}",
+            bold.width,
+            regular.width
+        );
     }
 }

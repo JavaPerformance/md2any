@@ -424,7 +424,7 @@ fn block_plan(index: usize, block: &Block, context: WeightContext, path: String)
                 Vec::new(),
             )
         }
-        Block::Table { headers, rows } => (
+        Block::Table { headers, rows, .. } => (
             "table",
             format!("{} column(s), {} row(s)", headers.len(), rows.len()),
             BlockMetrics {
@@ -564,7 +564,7 @@ fn ir_block(block: &Block) -> IrBlock {
                 .collect(),
             ..IrBlock::empty()
         },
-        Block::Table { headers, rows } => IrBlock {
+        Block::Table { headers, rows, .. } => IrBlock {
             kind: "table".to_string(),
             headers: vec![headers.iter().map(|cell| runs_text(cell)).collect()],
             rows: rows

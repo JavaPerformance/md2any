@@ -948,7 +948,7 @@ fn render_block(
                 ));
             }
         }
-        Block::Table { headers, rows } => render_table(out, headers, rows, theme, rels),
+        Block::Table { headers, rows, .. } => render_table(out, headers, rows, theme, rels),
         Block::Columns { left, right } => {
             render_blocks(out, left, theme, by_src, image_rels, rels);
             render_blocks(out, right, theme, by_src, image_rels, rels);
