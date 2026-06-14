@@ -13,6 +13,32 @@ use crate::ir::FrontMatter;
 use serde_yaml::Value;
 use std::collections::BTreeMap;
 
+/// Quote any front-matter value that is a bare hex colour, so YAML doesn't
+/// treat the leading `#` as a comment and silently drop it. `accent: #22D3EE`
+/// becomes `accent: "#22D3EE"`. Only fires when the value is *exactly* a hex
+/// colour (`#` followed by 3/4/6/8 hex digits and nothing else), so real
+/// trailing comments (`theme: light # note`) and `#`-in-text are untouched.
+fn quote_bare_hex_colours(yaml: &str) -> String {
+    yaml.lines()
+        .map(|line| {
+            let Some(colon) = line.find(':') else {
+                return line.to_string();
+            };
+            let (key, rest) = line.split_at(colon + 1);
+            let val = rest.trim();
+            let is_hex = val.strip_prefix('#').is_some_and(|h| {
+                matches!(h.len(), 3 | 4 | 6 | 8) && h.bytes().all(|b| b.is_ascii_hexdigit())
+            });
+            if is_hex {
+                format!("{key} \"{val}\"")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Split markdown source into `(front_matter, body)`.
 ///
 /// The leading UTF-8 BOM, if any, is stripped first. If the first
@@ -28,7 +54,7 @@ pub fn extract(input: &str) -> (FrontMatter, String) {
     }
     for i in 1..lines.len() {
         if lines[i].trim() == "---" {
-            let yaml: String = lines[1..i].join("\n");
+            let yaml: String = quote_bare_hex_colours(&lines[1..i].join("\n"));
             let body: String = lines[i + 1..].join("\n");
             let mut front = match serde_yaml::from_str::<FrontMatter>(&yaml) {
                 Ok(f) => f,
@@ -126,4 +152,35 @@ fn civil_from_days(z: i64) -> (i32, u32, u32) {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = y + if m <= 2 { 1 } else { 0 };
     (y as i32, m, d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bare_hex_colours_get_quoted_not_treated_as_comments() {
+        // Unquoted hex would be a YAML comment and silently dropped; we quote it.
+        let (front, _) =
+            extract("---\ntitle: T\nstyle:\n  accent: #22D3EE\n  bg: #0F172A\n---\nbody");
+        let style = front.style.expect("style block");
+        assert_eq!(style.accent.as_deref(), Some("#22D3EE"));
+        assert_eq!(style.bg.as_deref(), Some("#0F172A"));
+    }
+
+    #[test]
+    fn real_trailing_comments_and_hash_in_text_are_left_alone() {
+        // A value followed by a comment keeps the value; `#` mid-text is untouched.
+        let yaml = "theme: light # my note\ntitle: Issue #42 triage";
+        let out = quote_bare_hex_colours(yaml);
+        assert_eq!(out, yaml);
+    }
+
+    #[test]
+    fn already_quoted_or_short_three_digit_hex_round_trips() {
+        let (front, _) = extract("---\nstyle:\n  accent: #abc\n  title_color: \"#ffffff\"\n---\nx");
+        let style = front.style.expect("style");
+        assert_eq!(style.accent.as_deref(), Some("#abc"));
+        assert_eq!(style.title_color.as_deref(), Some("#ffffff"));
+    }
 }

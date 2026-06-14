@@ -70,6 +70,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bare hex colours in front-matter were silently dropped.** YAML treats a
+  leading `#` as a comment, so `accent: #22D3EE` parsed as empty and the style
+  override vanished. Front-matter now auto-quotes values that are exactly a hex
+  colour (`#` + 3/4/6/8 hex digits) before parsing; real trailing comments and
+  `#`-in-text are untouched. The AI dock's system prompt also notes colours
+  must be hex.
 - **HTML code blocks rendered empty.** The HTML renderer emitted theme font
   sizes (stored in centipoints, e.g. `1500` = 15pt) straight into CSS as
   `1500pt`. Headings and body text were masked by their `clamp()` upper bound,

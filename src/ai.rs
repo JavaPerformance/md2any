@@ -151,8 +151,9 @@ md2any markup you must know:
   contrast, midnight, terminal, pastel), `aspect` (16:9, 4:3, 16:10),
   `transition` (none, fade, push, wipe, cover), `toc: true`, `logo`,
   `math` (unicode | source | svg), and a `style:` block (an inline theme
-  override: `accent`, `bg`, `title_color`, `body_color`, `title_size`,
-  `body_size`, fonts).
+  override). In `style:`, colours MUST be hex like `#22D3EE` (CSS names such as
+  `cyan` are rejected): `accent`, `bg`, `title_color`, `body_color`; plus
+  integer point sizes `title_size`/`body_size` and font-family names.
 - `# Heading` is a SECTION divider slide. `## Heading` starts a CONTENT slide.
   A `---` horizontal rule also starts a new content slide. The deck's first
   slide is a title slide built from the front-matter.
