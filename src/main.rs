@@ -574,6 +574,23 @@ struct Cli {
     #[arg(long)]
     edit: bool,
 
+    /// Draft a deck with an AI model from a prompt, then render it. Reads the
+    /// API key from $MD2ANY_API_KEY (or $OPENAI_API_KEY). No input file needed.
+    #[arg(long, value_name = "PROMPT", help_heading = "AI")]
+    generate: Option<String>,
+
+    /// Chat-completions endpoint for --generate (OpenAI-compatible).
+    #[arg(long, value_name = "URL", help_heading = "AI")]
+    ai_endpoint: Option<String>,
+
+    /// Model name for --generate.
+    #[arg(long, value_name = "MODEL", help_heading = "AI")]
+    ai_model: Option<String>,
+
+    /// With --generate, also write the drafted markdown to this file.
+    #[arg(long, value_name = "PATH", help_heading = "AI")]
+    save_md: Option<PathBuf>,
+
     /// Build the embedded user manual as PPTX (respects --theme, --layout, --aspect, -o)
     #[arg(long, conflicts_with_all = ["help_odp", "help_pdf", "help_md", "help_docx", "help_odt", "help_html", "help_svg", "help_png"], help_heading = "Manual")]
     help_pptx: bool,
@@ -704,7 +721,31 @@ fn main() -> Result<()> {
         None
     };
 
-    let (input_source, input_path): (String, PathBuf) = if let Some(fmt) = help_format {
+    if cli.generate.is_some() && (cli.serve || cli.watch) {
+        anyhow::bail!(
+            "--generate is a one-shot render; to edit the result, use --generate … --save-md deck.md, then --serve deck.md"
+        );
+    }
+
+    let (input_source, input_path): (String, PathBuf) = if let Some(prompt) = &cli.generate {
+        let opts = md2any::ai::AiOptions::from_env(cli.ai_endpoint.clone(), cli.ai_model.clone())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        eprintln!(
+            "md2any: drafting deck via {} ({})…",
+            opts.endpoint, opts.model
+        );
+        let md =
+            md2any::ai::generate(&opts, prompt).map_err(|e| anyhow::anyhow!("--generate: {e}"))?;
+        if let Some(path) = &cli.save_md {
+            std::fs::write(path, &md).with_context(|| format!("write {}", path.display()))?;
+            eprintln!("md2any: drafted markdown saved to {}", path.display());
+        }
+        let stem = cli
+            .save_md
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("generated.md"));
+        (md, stem)
+    } else if let Some(fmt) = help_format {
         let _ = fmt;
         (HELP_MD.to_string(), PathBuf::from("md2any-help.md"))
     } else {

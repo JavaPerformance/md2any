@@ -151,6 +151,7 @@ md2any hello.md                 # → hello.pptx
 md2any hello.md -o hello.pdf    # → hello.pdf
 md2any hello.md --serve         # live preview at http://localhost:8421
 md2any hello.md --serve --edit  # in-browser editor + live preview
+md2any --generate "a 5-slide intro to Rust ownership" -o intro.pptx  # AI draft → render
 ```
 
 ## Features
@@ -169,6 +170,7 @@ md2any hello.md --serve --edit  # in-browser editor + live preview
 | **Transitions** | `fade`, `push`, `wipe`, `cover`, `split` (PPTX/ODP/PDF) |
 | **RTL / CJK** | `direction: rtl` right-aligns Arabic/Hebrew (no full bidi reordering of mixed runs yet); CJK & emoji need `--cjk <font>` for PDF |
 | **Workflow** | `--watch` for rebuild-on-save, `--serve` for live preview with hot reload, `--serve --edit` for an in-browser editor (edit + live preview side by side), `--check` for lint mode |
+| **AI drafting** | `--generate "prompt"` drafts a deck via an OpenAI-compatible chat API and renders it natively. Endpoint/model/key all configurable (`--ai-endpoint`, `--ai-model`, `$MD2ANY_API_KEY`); `--save-md` keeps the markdown. Optional — drop the default `ai` feature for a network-free binary |
 | **Handouts** | `--handout 2|4|6` for N-up A4 printable PDF |
 | **Multi-file** | Concat multiple `.md` files; `-` reads stdin |
 | **Images** | Local PNG/JPEG/SVG plus cached remote `http(s)` image URLs |

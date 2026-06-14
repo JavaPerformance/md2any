@@ -69,6 +69,7 @@
 //! # Ok::<(), anyhow::Error>(())
 //! ```
 
+pub mod ai;
 pub mod diagram;
 pub mod document;
 pub mod docx;
