@@ -465,6 +465,7 @@ fn render_content_slide(
         rtl,
         valign: slide.valign(),
         col_frac: slide.col_frac().unwrap_or(0.5),
+        text_align: slide.text_align(),
     };
     let _ = render_blocks(&mut ctx, &slide.blocks, x, y, content_w, h - margin * 1.6)?;
     if let Some(logo_uri) = logo_uri {
@@ -490,6 +491,8 @@ struct RenderCtx<'a> {
     valign: &'a str,
     /// Left-column fraction (0..1) for two-column rows; 0.5 is an even split.
     col_frac: f32,
+    /// Horizontal text alignment: "left", "center", or "right".
+    text_align: &'a str,
 }
 
 fn render_blocks(
@@ -518,8 +521,20 @@ fn render_block(
     bottom: f32,
 ) -> Result<f32> {
     let theme = ctx.theme;
-    let anchor = if ctx.rtl { "end" } else { "start" };
-    let tx = if ctx.rtl { x + width } else { x };
+    let anchor = match ctx.text_align {
+        "center" => "middle",
+        "right" if ctx.rtl => "start",
+        "right" => "end",
+        _ if ctx.rtl => "end",
+        _ => "start",
+    };
+    let tx = match ctx.text_align {
+        "center" => x + width / 2.0,
+        "right" if ctx.rtl => x,
+        "right" => x + width,
+        _ if ctx.rtl => x + width,
+        _ => x,
+    };
     let body_size = centipt_to_pt(theme.body_size);
     match block {
         Block::Paragraph(runs) => draw_runs_plain(

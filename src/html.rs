@@ -259,9 +259,14 @@ fn render_slide(
                 Some(f) => format!(" style=\"--cols: {:.3}fr {:.3}fr\"", f, 1.0 - f),
                 None => String::new(),
             };
+            let align_class = match slide.text_align() {
+                "center" => " align-center",
+                "right" => " align-right",
+                _ => "",
+            };
             write!(
                 out,
-                "<div class=\"slide-inner content{valign_class}\"{col_style}>\n"
+                "<div class=\"slide-inner content{valign_class}{align_class}\"{col_style}>\n"
             )?;
             render_content_title(out, slide, idx + 1, total, layout, theme.title_center)?;
             out.push_str("<div class=\"blocks\">\n");
@@ -766,6 +771,9 @@ blockquote {{ margin: .85em 0; padding: .2em 0 .2em 1em; border-left: .22em soli
 .columns {{ display: grid; grid-template-columns: var(--cols, minmax(0, 1fr) minmax(0, 1fr)); gap: 4%; align-items: start; }}
 .valign-center .columns {{ align-items: center; }}
 .valign-bottom .columns {{ align-items: end; }}
+.align-center {{ text-align: center; }}
+.align-center .list-item {{ justify-content: center; }}
+.align-right {{ text-align: right; }}
 .image {{ margin: .8em 0; width: var(--image-width, 100%); max-width: 100%; }}
 .image img {{ display: block; width: 100%; max-height: 47vh; object-fit: contain; }}
 .math-image {{ width: fit-content; margin-left: var(--math-margin-left, auto); margin-right: var(--math-margin-right, auto); }}

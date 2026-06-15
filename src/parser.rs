@@ -617,6 +617,14 @@ impl<'a> State<'a> {
                 } else if let Some(name) = extract_layout(s) {
                     self.current.layout_hint = Some(name);
                     self.started_real_content = true;
+                } else if let Some(align) = extract_align(s) {
+                    // Fold `align=` into the layout-hint string (which also
+                    // carries valign/width), creating it if absent.
+                    let opt = format!("align={align}");
+                    self.current.layout_hint = Some(match self.current.layout_hint.take() {
+                        Some(h) => format!("{h} {opt}"),
+                        None => opt,
+                    });
                 } else if let Some(pct) = extract_img_width(s) {
                     // Attach to the most recent Image block on the
                     // current slide. If no image precedes the directive
@@ -1067,6 +1075,20 @@ fn extract_layout(s: &str) -> Option<String> {
     let kind = body.split_whitespace().next().unwrap_or("");
     match kind {
         "image-left" | "image-right" | "image-full" | "text-full" => Some(body.to_string()),
+        _ => None,
+    }
+}
+
+/// Parse `<!-- align: center|right|left -->` into the alignment value.
+fn extract_align(s: &str) -> Option<String> {
+    let s = s.trim();
+    if !s.starts_with("<!--") || !s.ends_with("-->") {
+        return None;
+    }
+    let inner = s[4..s.len() - 3].trim().to_ascii_lowercase();
+    let v = inner.strip_prefix("align:")?.trim();
+    match v {
+        "center" | "centre" | "middle" | "right" | "end" | "left" | "start" => Some(v.to_string()),
         _ => None,
     }
 }

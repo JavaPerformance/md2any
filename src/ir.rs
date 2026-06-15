@@ -292,6 +292,21 @@ impl Slide {
         })
     }
 
+    /// Horizontal text alignment for the slide's content from an `align=`
+    /// option (`left` default, `center`, or `right`), set by `<!-- align: … -->`
+    /// or appended to a layout hint. Applies to the slide's text blocks.
+    pub fn text_align(&self) -> &str {
+        self.layout_hint
+            .as_deref()
+            .and_then(|h| h.split_whitespace().find_map(|t| t.strip_prefix("align=")))
+            .map(|v| match v {
+                "center" | "centre" | "middle" => "center",
+                "right" | "end" => "right",
+                _ => "left",
+            })
+            .unwrap_or("left")
+    }
+
     /// Return the sole image on a slide that requested full-page image layout.
     pub fn full_page_image(&self) -> Option<(&str, &str, Option<u8>)> {
         if self.layout_kind() != Some("image-full") {
