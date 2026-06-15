@@ -5,7 +5,7 @@
 //! `svg` feature pipeline.
 
 use crate::image;
-use crate::ir::{runs_text, Block, ListItem, Run, Slide, SlideKind};
+use crate::ir::{Block, ListItem, Run, Slide, SlideKind};
 use crate::layout::Layout;
 use crate::syntax::{self, TokenKind};
 use crate::theme::Theme;
@@ -102,6 +102,7 @@ fn render_slide(
     direction: Option<&str>,
 ) -> Result<String> {
     let rtl = matches!(direction, Some("rtl"));
+    set_inline_colors(theme);
     let w = emu_to_px(theme.slide_w);
     let h = emu_to_px(theme.slide_h);
     let mut out = String::new();
@@ -817,8 +818,165 @@ fn render_block(
     }
 }
 
+thread_local! {
+    /// (inline-code colour, link colour, mono-font family) for the active theme.
+    /// Set once per render in [`set_inline_colors`] so `draw_runs_plain` can
+    /// style `code`/link runs without threading `&Theme` through every caller.
+    static INLINE_COLORS: std::cell::RefCell<(String, String, String)> =
+        const {
+            std::cell::RefCell::new((String::new(), String::new(), String::new()))
+        };
+}
+
+fn set_inline_colors(theme: &Theme) {
+    INLINE_COLORS.with(|c| {
+        *c.borrow_mut() = (
+            theme.code_accent.clone(),
+            theme.link.clone(),
+            svg_font_family(&theme.mono_font).to_string(),
+        );
+    });
+}
+
 fn draw_runs_plain(out: &mut String, runs: &[Run], tb: TextBox<'_>) -> Result<f32> {
-    draw_wrapped_text(out, &runs_text(runs), tb)
+    // Per-character styling so inline **bold**, *italic*, `code` and links keep
+    // their formatting (HTML/PDF do; flattening to plain text here was dropping
+    // it). Wrapping mirrors `wrap_text`'s char-count heuristic so layout is
+    // unchanged for plain paragraphs.
+    let (code_color, link_color, mono_font) = INLINE_COLORS.with(|c| c.borrow().clone());
+    let base_bold = tb.weight == "700";
+    let base_italic = tb.style == "italic";
+    #[derive(PartialEq)]
+    struct Sty {
+        bold: bool,
+        italic: bool,
+        mono: bool,
+        fill: String,
+    }
+    let mut styles: Vec<Sty> = Vec::new();
+    let mut chars: Vec<(char, usize)> = Vec::new();
+    for r in runs {
+        let fill = if r.link.is_some() && !link_color.is_empty() {
+            link_color.clone()
+        } else if r.code && !code_color.is_empty() {
+            code_color.clone()
+        } else {
+            tb.fill.to_string()
+        };
+        let sty = Sty {
+            bold: base_bold || r.bold,
+            italic: base_italic || r.italic,
+            mono: r.code && !mono_font.is_empty(),
+            fill,
+        };
+        let sid = match styles.iter().position(|s| *s == sty) {
+            Some(i) => i,
+            None => {
+                styles.push(sty);
+                styles.len() - 1
+            }
+        };
+        for c in r.text.chars() {
+            chars.push((c, sid));
+        }
+    }
+    if chars.is_empty() {
+        return Ok(tb.y);
+    }
+
+    let max_chars = ((tb.width / (tb.font_size * 0.54)).floor() as usize).clamp(8, 140);
+
+    // Split into words (runs of non-space chars); spaces are re-inserted between
+    // words at emit time, matching wrap_text's split_whitespace behaviour.
+    let mut words: Vec<Vec<(char, usize)>> = Vec::new();
+    let mut cur: Vec<(char, usize)> = Vec::new();
+    for &(c, sid) in &chars {
+        if c == ' ' || c == '\t' || c == '\n' {
+            if !cur.is_empty() {
+                words.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push((c, sid));
+        }
+    }
+    if !cur.is_empty() {
+        words.push(cur);
+    }
+
+    // Greedy wrap into lines of words.
+    let mut lines: Vec<Vec<(char, usize)>> = Vec::new();
+    let mut line: Vec<(char, usize)> = Vec::new();
+    for word in words {
+        // Hard-break a word longer than a whole line.
+        if word.len() > max_chars {
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+            }
+            for chunk in word.chunks(max_chars) {
+                lines.push(chunk.to_vec());
+            }
+            continue;
+        }
+        let extra = if line.is_empty() { 0 } else { 1 };
+        if line.len() + extra + word.len() > max_chars && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push((' ', usize::MAX)); // separator; styled as base
+        }
+        line.extend(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+
+    // Emit each line as one <text> with a <tspan> per styled segment.
+    let mut y = tb.y;
+    for line in lines {
+        write!(
+            out,
+            r##"<text x="{:.2}" y="{:.2}" font-family="{}" font-size="{:.2}" text-anchor="{}">"##,
+            tb.x,
+            y,
+            escape_attr(svg_font_family(tb.font)),
+            tb.font_size,
+            tb.anchor,
+        )?;
+        let mut i = 0;
+        while i < line.len() {
+            let sid = line[i].1;
+            let mut seg = String::new();
+            while i < line.len() && line[i].1 == sid {
+                seg.push(line[i].0);
+                i += 1;
+            }
+            let (fill, bold, italic, mono) = match styles.get(sid) {
+                Some(s) => (s.fill.as_str(), s.bold, s.italic, s.mono),
+                None => (tb.fill, base_bold, base_italic, false), // separator space
+            };
+            let font_attr = if mono {
+                format!(r#" font-family="{}""#, escape_attr(&mono_font))
+            } else {
+                String::new()
+            };
+            write!(
+                out,
+                r##"<tspan fill="#{}"{}{}{} xml:space="preserve">{}</tspan>"##,
+                fill,
+                font_attr,
+                if bold { r#" font-weight="700""# } else { "" },
+                if italic {
+                    r#" font-style="italic""#
+                } else {
+                    ""
+                },
+                escape_xml(&seg),
+            )?;
+        }
+        out.push_str("</text>");
+        y += tb.line_height;
+    }
+    Ok(y)
 }
 
 /// Resolve a per-slide background token (`#hex` or a palette keyword) to a hex
