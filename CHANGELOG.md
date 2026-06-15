@@ -90,6 +90,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Cross-renderer fidelity (editor preview vs PDF/PPTX/ODP/PNG).** A
+  slide-by-slide visual diff turned up several renderer-specific bugs, now
+  fixed so the formats agree:
+  - *Code blocks:* HTML rendered them ~2× too tall (stray blank lines from
+    `<pre>` whitespace handling); PDF wrapped two-digit line numbers in the
+    gutter; SVG/PNG dropped the spaces between syntax tokens and overlapped the
+    following paragraph.
+  - *Inline formatting in SVG/PNG:* body paragraphs and table cells lost **all**
+    inline styling (bold, italic, `code`, links) — they're now preserved, with
+    inline code in the mono font + accent colour.
+  - *Images:* SVG/PNG now centre content images to match HTML/PDF; the verbose
+    alt-text is no longer painted as a caption (it stays the HTML `img alt` for
+    screen readers).
+
 - **A `---` before a heading left an empty phantom slide, and content under
   the title slide was dropped.** Thematic breaks now *defer* opening a slide:
   a following heading absorbs the break (no empty slide), while following
