@@ -1178,7 +1178,19 @@ function substantiveLines(arr) {
 }
 function applyOps(ops) {
   const all = ops.find(o => o.op === 'replace-all');
-  if (all) { applyDoc(all.content); return true; }
+  if (all) {
+    // replace-all rewrites the WHOLE deck, so a model omission loses content
+    // across every slide. Guard it the same way as per-slide replaces.
+    const oldN = substantiveLines(ta.value.split('\n'));
+    const newN = substantiveLines(all.content.split('\n'));
+    if (newN < oldN && !confirm(
+          'This rewrites the whole deck and removes ' + (oldN - newN)
+          + ' line(s) of existing content.\n\nApply anyway?')) {
+      return false;
+    }
+    applyDoc(all.content);
+    return true;
+  }
   const { lines, blocks } = parseDeck();
   const actions = [];
   let lost = 0; // substantive lines a replace would drop (model content-loss guard)
