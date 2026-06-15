@@ -1975,6 +1975,8 @@ struct SlideRenderer<'a> {
     /// Slide-level vertical alignment (`valign=`): "top"/"center"/"bottom".
     /// Drives per-column centring in the Columns arm. Reset per slide.
     cur_valign: &'static str,
+    /// Per-slide body-text scale (`text-scale`); 1.0 = theme default.
+    cur_text_scale: f32,
 }
 
 struct LinkRect {
@@ -2005,6 +2007,7 @@ impl<'a> SlideRenderer<'a> {
             cur_text_align: TextAlign::Left,
             cur_col_frac: None,
             cur_valign: "top",
+            cur_text_scale: 1.0,
         }
     }
 
@@ -3213,6 +3216,7 @@ impl<'a> SlideRenderer<'a> {
             "bottom" => "bottom",
             _ => "top",
         };
+        self.cur_text_scale = slide.text_scale();
         let w = theme.slide_w;
         let h = theme.slide_h;
         let base_margin: u32 = 533400;
@@ -3470,16 +3474,18 @@ impl<'a> SlideRenderer<'a> {
                 Block::Paragraph(runs) => {
                     let theme = self.theme;
                     let body_color = theme.body_color.clone();
-                    y = self.paragraph(runs, x, y, w, theme.body_size, &body_color, false, false);
+                    let sz = (theme.body_size as f32 * self.cur_text_scale) as u32;
+                    y = self.paragraph(runs, x, y, w, sz, &body_color, false, false);
                     y += 80000;
                 }
                 Block::Heading { level, runs } => {
                     let theme = self.theme;
-                    let sz = match level {
+                    let base = match level {
                         3 => theme.title_size - 400,
                         4 => theme.title_size - 600,
                         _ => theme.title_size - 800,
                     };
+                    let sz = (base as f32 * self.cur_text_scale) as u32;
                     let title_color = theme.title_color.clone();
                     y = self.paragraph(runs, x, y, w, sz, &title_color, true, false);
                     y += 120000;
@@ -3632,7 +3638,7 @@ impl<'a> SlideRenderer<'a> {
         let theme = self.theme;
         let body_color = theme.body_color.clone();
         let accent = theme.accent.clone();
-        let size = theme.body_size;
+        let size = (theme.body_size as f32 * self.cur_text_scale) as u32;
         let line_h = (size as f32 * 1.30 * EMU_PER_PT / 100.0) as u32;
         let mut y = y_start;
         let mut ordered_counters: Vec<u32> = Vec::new();
@@ -3722,7 +3728,7 @@ impl<'a> SlideRenderer<'a> {
         let theme = self.theme;
         let body_color = theme.body_color.clone();
         let accent = theme.accent.clone();
-        let size = theme.body_size - 100;
+        let size = ((theme.body_size - 100) as f32 * self.cur_text_scale) as u32;
         let bar_x = x;
         let mut y = y_start;
         let start_y = y;

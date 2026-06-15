@@ -744,6 +744,13 @@ impl<'a> State<'a> {
                         Some(h) => format!("{h} {opt}"),
                         None => opt,
                     });
+                } else if let Some(scale) = extract_text_scale(s) {
+                    self.ensure_slide_open();
+                    let opt = format!("tscale={scale}");
+                    self.current.layout_hint = Some(match self.current.layout_hint.take() {
+                        Some(h) => format!("{h} {opt}"),
+                        None => opt,
+                    });
                 } else if let Some(cols) = extract_cards(s) {
                     self.ensure_slide_open();
                     let opt = format!("cards={cols}");
@@ -1263,6 +1270,30 @@ fn extract_cards(s: &str) -> Option<u8> {
         return Some(3);
     }
     rest.parse::<u8>().ok().map(|n| n.clamp(1, 6))
+}
+
+/// Parse `<!-- text-scale: N -->` (a multiplier, or a keyword) into a numeric
+/// scale string for the layout hint (`tscale=N`).
+fn extract_text_scale(s: &str) -> Option<String> {
+    let s = s.trim();
+    if !s.starts_with("<!--") || !s.ends_with("-->") {
+        return None;
+    }
+    let inner = s[4..s.len() - 3].trim().to_ascii_lowercase();
+    let v = inner
+        .strip_prefix("text-scale:")
+        .or_else(|| inner.strip_prefix("text-size:"))
+        .or_else(|| inner.strip_prefix("font-scale:"))?
+        .trim();
+    let scale: f32 = match v {
+        "small" | "smaller" => 0.85,
+        "normal" | "default" => 1.0,
+        "large" => 1.25,
+        "larger" => 1.5,
+        "huge" | "xl" => 1.8,
+        other => other.parse().ok()?,
+    };
+    Some(format!("{:.3}", scale.clamp(0.5, 2.5)))
 }
 
 /// Parse `<!-- valign: center|bottom|top -->` into the value.

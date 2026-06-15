@@ -255,9 +255,18 @@ fn render_slide(
                 "bottom" => " valign-bottom",
                 _ => "",
             };
-            let col_style = match slide.col_frac() {
-                Some(f) => format!(" style=\"--cols: {:.3}fr {:.3}fr\"", f, 1.0 - f),
-                None => String::new(),
+            let mut style_props: Vec<String> = Vec::new();
+            if let Some(f) = slide.col_frac() {
+                style_props.push(format!("--cols: {:.3}fr {:.3}fr", f, 1.0 - f));
+            }
+            let scale = slide.text_scale();
+            if (scale - 1.0).abs() > f32::EPSILON {
+                style_props.push(format!("--text-scale: {scale:.3}"));
+            }
+            let col_style = if style_props.is_empty() {
+                String::new()
+            } else {
+                format!(" style=\"{}\"", style_props.join("; "))
             };
             let align_class = match slide.text_align() {
                 "center" => " align-center",
@@ -780,7 +789,7 @@ body {{ font-family: var(--body-font); overflow: hidden; overflow-wrap: anywhere
 .slide.text-full {{ padding: 0; background: #fff; }}
 .full-page-text {{ position: absolute; inset: 3.2%; margin: 0; overflow: hidden; color: var(--title); background: transparent; font: clamp(5px, .72vw, 8.5px)/1.18 var(--mono-font); white-space: pre; }}
 .full-page-text.math {{ inset: 2.7%; text-align: center; font-family: var(--body-font); font-style: italic; font-size: clamp(5px, .66vw, 8.5px); line-height: 1.1; }}
-.blocks {{ font-size: clamp(15px, 1.45vw, var(--body-size)); line-height: 1.34; }}
+.blocks {{ font-size: calc(clamp(15px, 1.45vw, var(--body-size)) * var(--text-scale, 1)); line-height: 1.34; }}
 p {{ margin: .5em 0 .85em; }}
 h3, h4, h5, h6 {{ margin: .9em 0 .32em; color: var(--title); font-family: var(--title-font); line-height: 1.15; }}
 a {{ color: var(--link); text-decoration-thickness: .08em; text-underline-offset: .16em; }}

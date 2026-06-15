@@ -471,6 +471,7 @@ fn render_content_slide(
         valign: slide.valign(),
         col_frac: slide.col_frac().unwrap_or(0.5),
         text_align: slide.text_align(),
+        text_scale: slide.text_scale(),
     };
     let content_bottom = h - margin * 1.6;
     let vfactor = match slide.valign() {
@@ -520,6 +521,8 @@ struct RenderCtx<'a> {
     col_frac: f32,
     /// Horizontal text alignment: "left", "center", or "right".
     text_align: &'a str,
+    /// Per-slide body-text multiplier (`text-scale`); 1.0 = theme default.
+    text_scale: f32,
 }
 
 fn render_blocks(
@@ -539,6 +542,7 @@ fn render_blocks(
     Ok(y)
 }
 
+// (render_block below scales body text by ctx.text_scale)
 fn render_block(
     ctx: &mut RenderCtx<'_>,
     block: &Block,
@@ -562,7 +566,7 @@ fn render_block(
         _ if ctx.rtl => x + width,
         _ => x,
     };
-    let body_size = centipt_to_pt(theme.body_size);
+    let body_size = centipt_to_pt(theme.body_size) * ctx.text_scale;
     match block {
         Block::Paragraph(runs) => draw_runs_plain(
             ctx.out,
@@ -1024,7 +1028,7 @@ fn render_list(
     width: f32,
 ) -> Result<f32> {
     let theme = ctx.theme;
-    let body_size = centipt_to_pt(theme.body_size);
+    let body_size = centipt_to_pt(theme.body_size) * ctx.text_scale;
     let mut counters = vec![0usize; 10];
     for item in items {
         let level = usize::from(item.level).min(9);

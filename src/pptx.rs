@@ -55,10 +55,18 @@ thread_local! {
     /// Per-slide vertical alignment (`"top"`/`"center"`/`"bottom"`) from the
     /// `valign=` hint, used to offset the content band when it underfills.
     static SLIDE_VALIGN: std::cell::RefCell<&'static str> = const { std::cell::RefCell::new("top") };
+
+    /// Per-slide body-text scale (`text-scale`); 1.0 = theme default.
+    static SLIDE_TEXT_SCALE: std::cell::RefCell<f32> = const { std::cell::RefCell::new(1.0) };
 }
 
 fn slide_align() -> &'static str {
     SLIDE_ALIGN.with(|a| *a.borrow())
+}
+
+/// Scale a centipoint font size by the active slide's text-scale.
+fn tscaled(size: u32) -> u32 {
+    (size as f32 * SLIDE_TEXT_SCALE.with(|s| *s.borrow())) as u32
 }
 
 fn slide_col_frac() -> Option<f32> {
@@ -886,6 +894,7 @@ fn slide_xml(
             _ => "top",
         }
     });
+    SLIDE_TEXT_SCALE.with(|s| *s.borrow_mut() = slide.text_scale());
 
     let (shapes, bg_override) = match &slide.kind {
         SlideKind::Title {
@@ -2191,7 +2200,7 @@ fn render_blocks(
                 let body = render_paragraph(
                     runs,
                     theme,
-                    theme.body_size,
+                    tscaled(theme.body_size),
                     &theme.body_color,
                     false,
                     slide_align(),
@@ -2202,11 +2211,12 @@ fn render_blocks(
                 *id += 1;
             }
             Block::Heading { level, runs } => {
-                let sz = match level {
+                let base = match level {
                     3 => theme.title_size - 400,
                     4 => theme.title_size - 600,
                     _ => theme.title_size - 800,
                 };
+                let sz = tscaled(base);
                 let body = render_paragraph(
                     runs,
                     theme,

@@ -173,7 +173,21 @@ md2any markup you must know:
 - Slide-level controls (each its own comment): `<!-- align: center|right -->`
   (text alignment), `<!-- valign: center|bottom -->` (vertically centre the
   whole content), `<!-- bg: #hex | accent | section | dark | light -->`
-  (background tint) or `<!-- bg: path -->` (background image).
+  (background tint) or `<!-- bg: path -->` (background image), and
+  `<!-- text-scale: 1.3 -->` (or keywords small/large/larger/huge) to enlarge or
+  shrink JUST THAT SLIDE's body text. IMPORTANT: to change font size on one
+  slide, use `text-scale` on that slide — do NOT edit the front-matter `style:`
+  block (that resizes the whole deck) unless the user explicitly asks for a
+  deck-wide change.
+- PLACEMENT: every slide-level directive comment goes on the line(s)
+  IMMEDIATELY AFTER that slide's `#`/`##` heading — never before the heading
+  (a comment above a heading binds to the previous slide). Example — bigger
+  text on one slide:
+    ````md2any op=replace slide=23
+    ## Game Boy's Sharp LR35902
+    <!-- text-scale: larger -->
+    Nintendo's 1989 handheld ... (rest of the slide, unchanged) ...
+    ````
 - Callouts: `> [!NOTE|TIP|IMPORTANT|WARNING|CAUTION]` then the body on following
   `>` lines render as a coloured, titled box.
 - Card grid: `<!-- cards: 3 -->` then a run of `### Card Title` + a short

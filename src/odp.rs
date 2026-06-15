@@ -29,6 +29,13 @@ thread_local! {
     static SLIDE_COL_FRAC: std::cell::RefCell<Option<f32>> = const { std::cell::RefCell::new(None) };
     /// Per-slide vertical alignment (`"top"`/`"center"`/`"bottom"`).
     static SLIDE_VALIGN: std::cell::RefCell<&'static str> = const { std::cell::RefCell::new("top") };
+    /// Per-slide body-text scale (`text-scale`); 1.0 = theme default.
+    static SLIDE_TEXT_SCALE: std::cell::RefCell<f32> = const { std::cell::RefCell::new(1.0) };
+}
+
+/// Scale a centipoint font size by the active slide's text-scale.
+fn tscaled(size: u32) -> u32 {
+    (size as f32 * SLIDE_TEXT_SCALE.with(|s| *s.borrow())) as u32
 }
 
 fn slide_align() -> &'static str {
@@ -681,6 +688,7 @@ fn build_content(
                 _ => "top",
             }
         });
+        SLIDE_TEXT_SCALE.with(|s| *s.borrow_mut() = slide.text_scale());
         let xml = match &slide.kind {
             SlideKind::Title {
                 subtitle,
@@ -1655,7 +1663,7 @@ fn render_blocks(
                     "top",
                     slide_align(),
                     runs,
-                    theme.body_size,
+                    tscaled(theme.body_size),
                     &theme.body_color,
                     false,
                     false,
@@ -1663,11 +1671,12 @@ fn render_blocks(
                 ));
             }
             Block::Heading { level, runs } => {
-                let sz = match level {
+                let base = match level {
                     3 => theme.title_size - 400,
                     4 => theme.title_size - 600,
                     _ => theme.title_size - 800,
                 };
+                let sz = tscaled(base);
                 out.push_str(&text_frame(
                     reg,
                     x,

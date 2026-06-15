@@ -325,6 +325,18 @@ impl Slide {
             .unwrap_or("left")
     }
 
+    /// Per-slide body-text scale from `<!-- text-scale: N -->` (or keywords
+    /// small/large/larger/huge). Multiplies the slide's body/list/heading font
+    /// sizes. `1.0` (default) means the theme size unchanged; clamped 0.5–2.5.
+    pub fn text_scale(&self) -> f32 {
+        self.layout_hint
+            .as_deref()
+            .and_then(|h| h.split_whitespace().find_map(|t| t.strip_prefix("tscale=")))
+            .and_then(|v| v.parse::<f32>().ok())
+            .map(|s| s.clamp(0.5, 2.5))
+            .unwrap_or(1.0)
+    }
+
     /// Requested column count for a card grid, from `<!-- cards: N -->`. The
     /// parser's post-pass uses this to group the slide's `### Title` blocks into
     /// a [`Block::Cards`]. `None` means no card grid on this slide.
