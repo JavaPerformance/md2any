@@ -21,6 +21,36 @@ use std::path::Path;
 use zip::write::FileOptions;
 use zip::CompressionMethod;
 
+thread_local! {
+    /// Per-slide body alignment (`"left"`/`"center"`/`"right"`) from the
+    /// `align=` hint, read by `render_blocks` text frames.
+    static SLIDE_ALIGN: std::cell::RefCell<&'static str> = const { std::cell::RefCell::new("left") };
+    /// Per-slide left-column fraction from `width=` (`None` = even split).
+    static SLIDE_COL_FRAC: std::cell::RefCell<Option<f32>> = const { std::cell::RefCell::new(None) };
+}
+
+fn slide_align() -> &'static str {
+    SLIDE_ALIGN.with(|a| *a.borrow())
+}
+
+fn slide_col_frac() -> Option<f32> {
+    SLIDE_COL_FRAC.with(|f| *f.borrow())
+}
+
+/// Resolve a per-slide `bg:` token into a bare 6-digit hex. Mirrors PDF/PPTX.
+fn resolve_bg_color(token: &str, theme: &Theme) -> String {
+    if let Some(hex) = token.strip_prefix('#') {
+        return hex.to_string();
+    }
+    match token.to_ascii_lowercase().as_str() {
+        "accent" => theme.accent.clone(),
+        "section" => theme.section_bg.clone(),
+        "dark" => "0F172A".to_string(),
+        "light" => "FFFFFF".to_string(),
+        _ => theme.bg.clone(),
+    }
+}
+
 const NS: &str = concat!(
     " xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\"",
     " xmlns:style=\"urn:oasis:names:tc:opendocument:xmlns:style:1.0\"",
@@ -361,9 +391,13 @@ struct Registry {
     text: HashMap<TextStyleKey, String>,
     para: HashMap<ParaStyleKey, String>,
     graphic: HashMap<GraphicStyleKey, String>,
+    /// Per-slide drawing-page styles keyed by fill colour (bare hex), for
+    /// `bg:` tinting. Emitted into content.xml automatic-styles.
+    drawing_page: HashMap<String, String>,
     text_seq: u32,
     para_seq: u32,
     graphic_seq: u32,
+    dp_seq: u32,
 }
 
 impl Registry {
@@ -372,10 +406,24 @@ impl Registry {
             text: HashMap::new(),
             para: HashMap::new(),
             graphic: HashMap::new(),
+            drawing_page: HashMap::new(),
             text_seq: 0,
             para_seq: 0,
             graphic_seq: 0,
+            dp_seq: 0,
         }
+    }
+
+    /// Register a drawing-page style filling the page with `fill` (bare hex)
+    /// and return its style name for a `draw:page draw:style-name`.
+    fn dp_name(&mut self, fill: String) -> String {
+        if let Some(n) = self.drawing_page.get(&fill) {
+            return n.clone();
+        }
+        let n = format!("dpx{}", self.dp_seq);
+        self.dp_seq += 1;
+        self.drawing_page.insert(fill, n.clone());
+        n
     }
 
     fn text_name(&mut self, k: TextStyleKey) -> String {
@@ -410,6 +458,16 @@ impl Registry {
 
     fn emit(&self) -> String {
         let mut s = String::new();
+
+        let mut dps: Vec<(&String, &String)> = self.drawing_page.iter().collect();
+        dps.sort_by(|a, b| a.1.cmp(b.1));
+        for (fill, name) in dps {
+            s.push_str(&format!(
+                r##"<style:style style:name="{n}" style:family="drawing-page"><style:drawing-page-properties draw:fill="solid" draw:fill-color="#{c}" presentation:background-objects-visible="true" presentation:background-visible="true" presentation:display-header="false" presentation:display-footer="false" presentation:display-page-number="false" presentation:display-date-time="false"/></style:style>"##,
+                n = name,
+                c = fill,
+            ));
+        }
 
         let mut paras: Vec<(&ParaStyleKey, &String)> = self.para.iter().collect();
         paras.sort_by(|a, b| a.1.cmp(b.1));
@@ -511,6 +569,15 @@ fn build_content(
     for (i, slide) in slides.iter().enumerate() {
         let num = i + 1;
         let total = slides.len();
+        // Publish per-slide layout hints for the block renderers.
+        SLIDE_ALIGN.with(|a| {
+            *a.borrow_mut() = match slide.text_align() {
+                "center" => "center",
+                "right" => "right",
+                _ => "left",
+            }
+        });
+        SLIDE_COL_FRAC.with(|f| *f.borrow_mut() = slide.col_frac());
         let xml = match &slide.kind {
             SlideKind::Title {
                 subtitle,
@@ -558,9 +625,14 @@ fn build_content(
 }
 
 fn page_open(name: &str, master: &str) -> String {
+    page_open_styled(name, master, "dp-default")
+}
+
+fn page_open_styled(name: &str, master: &str, dp_style: &str) -> String {
     format!(
-        r#"<draw:page draw:name="{n}" draw:style-name="dp-default" draw:master-page-name="{m}">"#,
+        r#"<draw:page draw:name="{n}" draw:style-name="{dp}" draw:master-page-name="{m}">"#,
         n = escape_xml(name),
+        dp = dp_style,
         m = master,
     )
 }
@@ -700,7 +772,12 @@ fn render_content_slide(
     imgs: &Imgs,
     reg: &mut Registry,
 ) -> String {
-    let mut s = page_open(&format!("page{}", num), "Default");
+    // Per-slide bg: tint → a registered drawing-page style; else the default.
+    let dp_style = match slide.bg_color() {
+        Some(c) => reg.dp_name(resolve_bg_color(c, theme)),
+        None => "dp-default".to_string(),
+    };
+    let mut s = page_open_styled(&format!("page{}", num), "Default", &dp_style);
     s.push_str(&bg_image_xml(slide, theme, imgs, reg));
     if let Some((src, alt, _)) = slide.full_page_image() {
         s.push_str(&render_full_page_image(src, alt, theme, imgs, reg));
@@ -1463,7 +1540,7 @@ fn render_blocks(
                     w,
                     h,
                     "top",
-                    "left",
+                    slide_align(),
                     runs,
                     theme.body_size,
                     &theme.body_color,
@@ -1485,7 +1562,7 @@ fn render_blocks(
                     w,
                     h,
                     "top",
-                    "left",
+                    slide_align(),
                     runs,
                     sz,
                     &theme.title_color,
@@ -1558,15 +1635,20 @@ fn render_blocks(
             }
             Block::Columns { left, right } => {
                 let gap: u32 = 280000;
-                let half = w.saturating_sub(gap) / 2;
-                render_blocks(out, left, theme, x, y, half, h, imgs, reg);
+                let avail = w.saturating_sub(gap);
+                let left_w = match slide_col_frac() {
+                    Some(f) => (avail as f32 * f) as u32,
+                    None => avail / 2,
+                };
+                let right_w = avail.saturating_sub(left_w);
+                render_blocks(out, left, theme, x, y, left_w, h, imgs, reg);
                 render_blocks(
                     out,
                     right,
                     theme,
-                    x + half + gap,
+                    x + left_w + gap,
                     y,
-                    w - half - gap,
+                    right_w,
                     h,
                     imgs,
                     reg,
