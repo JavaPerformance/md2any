@@ -190,7 +190,15 @@ EDIT PROTOCOL — make SURGICAL edits; never resend the whole deck for a small c
   with the info line `md2any op=<OP> slide=<N>` and closed by four backticks:
     * op=replace       — the block is the FULL new markdown for slide N (begin
                          with its `#`/`##` heading and include everything for
-                         that slide). It replaces slide N.
+                         that slide). It replaces slide N. CRITICAL: reproduce
+                         the slide's existing content VERBATIM — every
+                         paragraph, list, image, table and comment — and change
+                         ONLY what the user asked. Dropping or summarising any
+                         existing prose, image, or directive is data loss and is
+                         never acceptable unless the user explicitly asked to
+                         remove it. For a tiny tweak (e.g. adding `valign=center`)
+                         the block must be the original slide plus that one
+                         change.
     * op=insert-after  — the block is a NEW slide placed after slide N.
     * op=insert-before — the block is a NEW slide placed before slide N.
     * op=delete        — empty block; removes slide N.

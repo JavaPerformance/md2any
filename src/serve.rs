@@ -1170,19 +1170,38 @@ function extractOps(reply) {
   }
   return ops;
 }
+// Count substantive lines (prose/images/lists/headings); blanks and <!-- -->
+// directive comments don't count, so adding a directive isn't seen as growth
+// and dropping a paragraph IS seen as loss.
+function substantiveLines(arr) {
+  return arr.filter(l => { const t = l.trim(); return t && !t.startsWith('<!--'); }).length;
+}
 function applyOps(ops) {
   const all = ops.find(o => o.op === 'replace-all');
-  if (all) { applyDoc(all.content); return; }
+  if (all) { applyDoc(all.content); return true; }
   const { lines, blocks } = parseDeck();
   const actions = [];
+  let lost = 0; // substantive lines a replace would drop (model content-loss guard)
   for (const o of ops) {
     if (o.n == null) continue;
     const b = blocks[o.n - 1];
     if (!b) continue;
-    if (o.op === 'replace') actions.push({ start: b.start, end: b.end, text: o.content });
+    if (o.op === 'replace') {
+      const oldN = substantiveLines(lines.slice(b.start, b.end));
+      const newN = substantiveLines(o.content.split('\n'));
+      if (newN < oldN) lost += oldN - newN;
+      actions.push({ start: b.start, end: b.end, text: o.content });
+    }
     else if (o.op === 'delete') actions.push({ start: b.start, end: b.end, text: null });
     else if (o.op === 'insert-after') actions.push({ start: b.end, end: b.end, text: o.content });
     else if (o.op === 'insert-before') actions.push({ start: b.start, end: b.start, text: o.content });
+  }
+  // Models occasionally regenerate a slide for op=replace and omit existing
+  // prose. If the edit drops content the user didn't ask to remove, confirm.
+  if (lost > 0 && !confirm(
+        'This edit removes ' + lost + ' line(s) of existing content (paragraphs, '
+        + 'images, etc.) that you may not have asked to delete.\n\nApply anyway?')) {
+    return false;
   }
   actions.sort((a, b) => b.start - a.start); // bottom-up so line indices stay valid
   for (const a of actions) {
@@ -1192,6 +1211,7 @@ function applyOps(ops) {
   ta.value = lines.join('\n').replace(/\n{3,}/g, '\n\n');
   ta.selectionStart = ta.selectionEnd = 0;
   setStatus('applying…'); scheduleSave(); readStyle(); syncControls(); focusCaret(true);
+  return true;
 }
 let chatHistory = [];   // [{role:'user'|'assistant', content}]
 let chatBusy = false;
@@ -1249,7 +1269,10 @@ function finalizeBotMsg(bubble, reply) {
   const label = ops.length === 1 && ops[0].op === 'replace-all'
     ? '✓ Apply' : '✓ Apply ' + ops.length + ' edit' + (ops.length > 1 ? 's' : '');
   btn.textContent = label;
-  btn.onclick = () => { applyOps(ops); btn.textContent = '✓ Applied'; btn.disabled = true; clearActive(); };
+  btn.onclick = () => {
+    if (!applyOps(ops)) return; // guard declined (e.g. would drop content)
+    btn.textContent = '✓ Applied'; btn.disabled = true; clearActive();
+  };
   wrap.appendChild(btn); bubble.appendChild(wrap);
   chatEl.scrollTop = chatEl.scrollHeight;
 }
