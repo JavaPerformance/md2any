@@ -88,9 +88,54 @@ pub fn parse_with_options(
     let mut slides = st.finish();
     for slide in &mut slides {
         convert_callouts(&mut slide.blocks);
+        if let Some(cols) = slide.cards_cols() {
+            convert_cards(&mut slide.blocks, cols);
+        }
     }
     apply_layout_hints(&mut slides);
     slides
+}
+
+/// Group a slide's `### Title` + paragraph blocks (from the first H3 onward)
+/// into a single [`Block::Cards`] grid when `<!-- cards: N -->` is set.
+fn convert_cards(blocks: &mut Vec<Block>, cols: u8) {
+    let Some(start) = blocks
+        .iter()
+        .position(|b| matches!(b, Block::Heading { level: 3, .. }))
+    else {
+        return;
+    };
+    let tail = blocks.split_off(start);
+    let mut cards: Vec<Card> = Vec::new();
+    let mut cur: Option<Card> = None;
+    for b in tail {
+        match b {
+            Block::Heading { level: 3, runs } => {
+                if let Some(c) = cur.take() {
+                    cards.push(c);
+                }
+                cur = Some(Card {
+                    title: runs_text(&runs),
+                    body: Vec::new(),
+                });
+            }
+            Block::Paragraph(runs) => {
+                if let Some(c) = cur.as_mut() {
+                    if !c.body.is_empty() {
+                        c.body.push(Run::plain(" "));
+                    }
+                    c.body.extend(runs);
+                }
+            }
+            _ => {}
+        }
+    }
+    if let Some(c) = cur.take() {
+        cards.push(c);
+    }
+    if !cards.is_empty() {
+        blocks.push(Block::Cards { cols, cards });
+    }
 }
 
 /// Convert blockquotes that open with a GitHub alert marker
@@ -641,6 +686,13 @@ impl<'a> State<'a> {
                         Some(h) => format!("{h} {opt}"),
                         None => opt,
                     });
+                } else if let Some(cols) = extract_cards(s) {
+                    let opt = format!("cards={cols}");
+                    self.current.layout_hint = Some(match self.current.layout_hint.take() {
+                        Some(h) => format!("{h} {opt}"),
+                        None => opt,
+                    });
+                    self.started_real_content = true;
                 } else if let Some(pct) = extract_img_width(s) {
                     // Attach to the most recent Image block on the
                     // current slide. If no image precedes the directive
@@ -1093,6 +1145,22 @@ fn extract_layout(s: &str) -> Option<String> {
         "image-left" | "image-right" | "image-full" | "text-full" => Some(body.to_string()),
         _ => None,
     }
+}
+
+/// Parse `<!-- cards -->` or `<!-- cards: N -->` into the column count
+/// (defaulting to 3).
+fn extract_cards(s: &str) -> Option<u8> {
+    let s = s.trim();
+    if !s.starts_with("<!--") || !s.ends_with("-->") {
+        return None;
+    }
+    let inner = s[4..s.len() - 3].trim().to_ascii_lowercase();
+    let rest = inner.strip_prefix("cards")?;
+    let rest = rest.trim_start_matches([':', ' ']).trim();
+    if rest.is_empty() {
+        return Some(3);
+    }
+    rest.parse::<u8>().ok().map(|n| n.clamp(1, 6))
 }
 
 /// Parse `<!-- valign: center|bottom|top -->` into the value.

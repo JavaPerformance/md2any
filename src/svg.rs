@@ -700,6 +700,59 @@ fn render_block(
             ctx.out.insert_str(mark, &rect);
             Ok(y + box_h + 6.0)
         }
+        Block::Cards { cols, cards } => {
+            let n = cards.len().max(1);
+            let cols = (*cols as usize).clamp(1, n);
+            let rows = n.div_ceil(cols);
+            let gap = 16.0;
+            let cw = (width - (cols as f32 - 1.0) * gap) / cols as f32;
+            let avail = (bottom - y).max(60.0);
+            let ch = ((avail - (rows as f32 - 1.0) * gap) / rows as f32).clamp(40.0, 220.0);
+            for (i, card) in cards.iter().enumerate() {
+                let cx = x + (i % cols) as f32 * (cw + gap);
+                let cy = y + (i / cols) as f32 * (ch + gap);
+                write!(
+                    ctx.out,
+                    r##"<rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" rx="8" fill="#{}"/>"##,
+                    cx, cy, cw, ch, theme.accent_soft
+                )?;
+                draw_runs_plain(
+                    ctx.out,
+                    &[Run::plain(card.title.clone())],
+                    TextBox {
+                        x: cx + 13.0,
+                        y: cy + 25.0,
+                        width: cw - 26.0,
+                        font_size: body_size * 1.04,
+                        line_height: body_size * 1.25,
+                        fill: &theme.title_color,
+                        font: &theme.title_font,
+                        weight: "700",
+                        style: "normal",
+                        anchor: "start",
+                    },
+                )?;
+                if !card.body.is_empty() {
+                    draw_runs_plain(
+                        ctx.out,
+                        &card.body,
+                        TextBox {
+                            x: cx + 13.0,
+                            y: cy + 25.0 + body_size * 1.6,
+                            width: cw - 26.0,
+                            font_size: body_size * 0.9,
+                            line_height: body_size * 1.2,
+                            fill: &theme.body_color,
+                            font: &theme.body_font,
+                            weight: "400",
+                            style: "normal",
+                            anchor: "start",
+                        },
+                    )?;
+                }
+            }
+            Ok(y + rows as f32 * (ch + gap))
+        }
         Block::Table {
             headers,
             rows,

@@ -326,6 +326,7 @@ fn block_weight(block: &Block) -> f32 {
             left.iter().map(block_weight).sum::<f32>() + right.iter().map(block_weight).sum::<f32>()
         }
         Block::Image { .. } => 8.0,
+        Block::Cards { cards, .. } => cards_as_blocks(cards).iter().map(block_weight).sum(),
         Block::Footnotes(items) => 1.0 + items.len() as f32,
         Block::ColumnBreak => 0.0,
     }

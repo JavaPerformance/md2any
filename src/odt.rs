@@ -656,6 +656,11 @@ fn render_block(out: &mut String, b: &Block, theme: &Theme, by_src: &HashMap<Str
             render_blocks(out, left, theme, by_src);
             render_blocks(out, right, theme, by_src);
         }
+        Block::Cards { cards, .. } => {
+            for cb in &crate::ir::cards_as_blocks(cards) {
+                render_block(out, cb, theme, by_src);
+            }
+        }
         Block::ColumnBreak => {}
         Block::Image {
             src,

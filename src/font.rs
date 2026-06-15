@@ -310,6 +310,9 @@ impl AuditBuilder<'_> {
                 Block::Image { alt, .. } => {
                     self.text(slide, "image alt", alt, FaceKind::SansRegular.index());
                 }
+                Block::Cards { cards, .. } => {
+                    self.blocks(slide, &crate::ir::cards_as_blocks(cards))
+                }
                 Block::ColumnBreak => {}
             }
         }

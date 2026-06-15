@@ -894,6 +894,10 @@ fn block_weight(b: &Block, wscale: f32, allow_auto_columns: bool) -> f32 {
                 13.0
             }
         }
+        Block::Cards { cards, .. } => cards_as_blocks(cards)
+            .iter()
+            .map(|b| block_weight(b, wscale, allow_auto_columns))
+            .sum(),
         Block::Footnotes(items) => {
             // Small text, so each line is ~half the weight of a normal list line.
             let total: f32 = items

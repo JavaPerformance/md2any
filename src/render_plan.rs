@@ -440,6 +440,12 @@ fn block_plan(index: usize, block: &Block, context: WeightContext, path: String)
             BlockMetrics::default(),
             Vec::new(),
         ),
+        Block::Cards { cols, cards } => (
+            "cards",
+            format!("{} cards, {} cols", cards.len(), cols),
+            BlockMetrics::default(),
+            Vec::new(),
+        ),
         Block::Columns { left, right } => {
             let child_context = WeightContext {
                 width_scale: context.width_scale * 0.5,
@@ -581,6 +587,11 @@ fn ir_block(block: &Block) -> IrBlock {
             kind: "columns".to_string(),
             left: left.iter().map(ir_block).collect(),
             right: right.iter().map(ir_block).collect(),
+            ..IrBlock::empty()
+        },
+        Block::Cards { cards, .. } => IrBlock {
+            kind: "cards".to_string(),
+            left: cards_as_blocks(cards).iter().map(ir_block).collect(),
             ..IrBlock::empty()
         },
         Block::Image {

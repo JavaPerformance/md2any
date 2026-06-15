@@ -953,6 +953,11 @@ fn render_block(
             render_blocks(out, left, theme, by_src, image_rels, rels);
             render_blocks(out, right, theme, by_src, image_rels, rels);
         }
+        Block::Cards { cards, .. } => {
+            for cb in &crate::ir::cards_as_blocks(cards) {
+                render_block(out, cb, theme, by_src, image_rels, rels);
+            }
+        }
         Block::ColumnBreak => {}
         Block::Image {
             src,

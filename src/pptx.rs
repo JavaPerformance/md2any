@@ -2295,6 +2295,11 @@ fn render_blocks(
             Block::Footnotes(items) => {
                 shapes.push_str(&render_footnotes_block(items, theme, x, y, w, h, id));
             }
+            Block::Cards { cards, .. } => {
+                let (s, _) =
+                    render_blocks(&cards_as_blocks(cards), theme, x, y, w, h, id, imgs, rels);
+                shapes.push_str(&s);
+            }
         }
         y += h + 80000;
     }
@@ -2440,6 +2445,10 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
                 .sum::<u32>();
             total + 120000
         }
+        Block::Cards { cards, .. } => cards_as_blocks(cards)
+            .iter()
+            .map(|b| block_height_emu(b, w, theme, imgs))
+            .sum(),
     }
 }
 

@@ -114,6 +114,13 @@ pub enum ColumnAlign {
     Right,
 }
 
+/// One card in a [`Block::Cards`] grid: a short title and a body paragraph.
+#[derive(Debug, Clone)]
+pub struct Card {
+    pub title: String,
+    pub body: Vec<Run>,
+}
+
 /// One entry inside a [`Block::List`]. Nesting is encoded with `level` (0 = top)
 /// rather than a recursive `Vec<ListItem>` because that mirrors how
 /// pulldown-cmark emits list events and keeps the IR cheap to pattern-match
@@ -175,6 +182,11 @@ pub enum Block {
     /// paragraphs after the marker. Renderers that don't style it specially
     /// fall back to rendering `body` as a plain quote.
     Callout { kind: String, body: Vec<Vec<Run>> },
+    /// A grid of cards (from `<!-- cards: N -->` before a run of `### Title`
+    /// blocks). Each card is a title + a short body. `cols` is the requested
+    /// column count. Renderers without a card layout fall back to a heading +
+    /// paragraph per card.
+    Cards { cols: u8, cards: Vec<Card> },
     /// GitHub-flavoured table. `headers` is the first row; `rows` are the
     /// data rows. Cells are run lists so inline formatting works inside them.
     /// `aligns` carries the per-column alignment from the GFM delimiter row
@@ -307,6 +319,17 @@ impl Slide {
             .unwrap_or("left")
     }
 
+    /// Requested column count for a card grid, from `<!-- cards: N -->`. The
+    /// parser's post-pass uses this to group the slide's `### Title` blocks into
+    /// a [`Block::Cards`]. `None` means no card grid on this slide.
+    pub fn cards_cols(&self) -> Option<u8> {
+        self.layout_hint
+            .as_deref()
+            .and_then(|h| h.split_whitespace().find_map(|t| t.strip_prefix("cards=")))
+            .and_then(|v| v.parse().ok())
+            .map(|n: u8| n.clamp(1, 6))
+    }
+
     /// Per-slide background colour token from `<!-- bg: #hex|accent|section -->`
     /// (a `#hex` or palette keyword). Renderers resolve keywords against the
     /// theme. `None` means the theme's default background.
@@ -364,6 +387,36 @@ impl Slide {
         }
         code
     }
+}
+
+/// Lower a card grid to a flat block list (a level-3 heading + a paragraph per
+/// card). Renderers without a real card layout use this for a sensible fallback.
+pub fn cards_as_blocks(cards: &[Card]) -> Vec<Block> {
+    let mut out = Vec::with_capacity(cards.len() * 2);
+    for card in cards {
+        out.push(Block::Heading {
+            level: 3,
+            runs: vec![Run::plain(card.title.clone())],
+        });
+        if !card.body.is_empty() {
+            out.push(Block::Paragraph(card.body.clone()));
+        }
+    }
+    out
+}
+
+/// Replace every [`Block::Cards`] in a list with its lowered heading+paragraph
+/// blocks. Used by renderers that lay out a flat block stream and don't draw a
+/// real card grid.
+pub fn lower_cards(blocks: &[Block]) -> Vec<Block> {
+    let mut out = Vec::with_capacity(blocks.len());
+    for b in blocks {
+        match b {
+            Block::Cards { cards, .. } => out.extend(cards_as_blocks(cards)),
+            other => out.push(other.clone()),
+        }
+    }
+    out
 }
 
 /// Concatenate all run text into a single plain string. Strips all

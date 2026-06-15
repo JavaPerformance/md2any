@@ -396,6 +396,20 @@ fn render_block(out: &mut String, block: &Block, theme: &Theme, base_dir: &Path)
             rows,
             aligns,
         } => render_table(out, headers, rows, aligns)?,
+        Block::Cards { cols, cards } => {
+            write!(out, "<div class=\"cards\" style=\"--n: {}\">\n", cols)?;
+            for card in cards {
+                out.push_str("<div class=\"card\">\n");
+                write!(out, "<h3>{}</h3>\n", escape_html(&card.title))?;
+                if !card.body.is_empty() {
+                    out.push_str("<p>");
+                    render_runs(out, &card.body)?;
+                    out.push_str("</p>\n");
+                }
+                out.push_str("</div>\n");
+            }
+            out.push_str("</div>\n");
+        }
         Block::ColumnBreak => {}
         Block::Columns { left, right } => {
             out.push_str("<div class=\"columns\">\n<div>\n");
@@ -777,6 +791,10 @@ blockquote {{ margin: .85em 0; padding: .2em 0 .2em 1em; border-left: .22em soli
 .align-center {{ text-align: center; }}
 .align-center .list-item {{ justify-content: center; }}
 .align-right {{ text-align: right; }}
+.cards {{ display: grid; grid-template-columns: repeat(var(--n, 3), minmax(0, 1fr)); gap: 3%; margin: .8em 0; }}
+.card {{ background: var(--accent-soft); border: 1px solid var(--divider); border-radius: .5em; padding: .9em 1em; }}
+.card h3 {{ margin: 0 0 .35em; color: var(--accent); font-size: 1.02em; }}
+.card p {{ margin: 0; font-size: .94em; }}
 .image {{ margin: .8em 0; width: var(--image-width, 100%); max-width: 100%; }}
 .image img {{ display: block; width: 100%; max-height: 47vh; object-fit: contain; }}
 .math-image {{ width: fit-content; margin-left: var(--math-margin-left, auto); margin-right: var(--math-margin-right, auto); }}

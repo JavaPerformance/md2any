@@ -3458,6 +3458,9 @@ impl<'a> SlideRenderer<'a> {
                     y = self.render_footnotes(items, x, y, w);
                     y += 80000;
                 }
+                Block::Cards { cards, .. } => {
+                    y = self.render_blocks(&cards_as_blocks(cards), x, y, w, _h_total, imgs);
+                }
             }
         }
         y

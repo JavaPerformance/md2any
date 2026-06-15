@@ -1598,6 +1598,9 @@ fn render_blocks(
                 // Render footnotes as a small-text list block, in muted color.
                 out.push_str(&render_footnotes_block(reg, x, y, w, h, items, theme));
             }
+            Block::Cards { cards, .. } => {
+                render_blocks(out, &cards_as_blocks(cards), theme, x, y, w, h, imgs, reg);
+            }
         }
         y += h + 80000;
     }
@@ -1739,6 +1742,10 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
                 .sum::<u32>();
             total + 120000
         }
+        Block::Cards { cards, .. } => cards_as_blocks(cards)
+            .iter()
+            .map(|b| block_height_emu(b, w, theme, imgs))
+            .sum(),
     }
 }
 

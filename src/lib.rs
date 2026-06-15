@@ -235,6 +235,16 @@ fn block_snapshot(b: &ir::Block, depth: usize, out: &mut String) {
                 out.push_str(&format!("{}  • {}\n", pad, runs_repr(&item.runs)));
             }
         }
+        Block::Cards { cols, cards } => {
+            out.push_str(&format!("{pad}Cards(cols={cols}, n={}):\n", cards.len()));
+            for card in cards {
+                out.push_str(&format!(
+                    "{pad}  ▢ {} — {}\n",
+                    card.title,
+                    runs_repr(&card.body)
+                ));
+            }
+        }
     }
 }
 
