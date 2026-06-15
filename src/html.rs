@@ -422,6 +422,8 @@ fn render_block(out: &mut String, block: &Block, theme: &Theme, base_dir: &Path)
             src,
             alt,
             width_pct,
+            fit,
+            rounded,
         } => {
             let math_meta = crate::math::math_image_meta(src, alt);
             let mut style_parts = Vec::new();
@@ -451,13 +453,26 @@ fn render_block(out: &mut String, block: &Block, theme: &Theme, base_dir: &Path)
                 "image"
             };
             let visible_alt = crate::math::visible_image_alt(src, alt);
+            let mut img_style = Vec::new();
+            if let Some(f) = fit {
+                img_style.push(format!("object-fit:{f}"));
+            }
+            if *rounded {
+                img_style.push("border-radius:.6em".to_string());
+            }
+            let img_style = if img_style.is_empty() {
+                String::new()
+            } else {
+                format!(" style=\"{}\"", img_style.join(";"))
+            };
             write!(
                 out,
-                "<figure class=\"{}\"{}><img src=\"{}\" alt=\"{}\"></figure>\n",
+                "<figure class=\"{}\"{}><img src=\"{}\" alt=\"{}\"{}></figure>\n",
                 class,
                 style,
                 escape_attr(&image_data_uri(base_dir, src)),
-                escape_attr(visible_alt)
+                escape_attr(visible_alt),
+                img_style
             )?;
         }
         Block::Footnotes(items) => {

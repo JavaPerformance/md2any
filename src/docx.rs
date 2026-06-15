@@ -963,6 +963,8 @@ fn render_block(
             src,
             alt,
             width_pct: _,
+            fit: _,
+            rounded: _,
         } => {
             if let Some(&idx) = by_src.get(src) {
                 if let Some(rid) = image_rels.get(idx) {

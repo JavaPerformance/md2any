@@ -666,6 +666,8 @@ fn render_block(out: &mut String, b: &Block, theme: &Theme, by_src: &HashMap<Str
             src,
             alt,
             width_pct: _,
+            fit: _,
+            rounded: _,
         } => {
             render_image(out, src, alt, by_src);
         }

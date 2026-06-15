@@ -226,6 +226,8 @@ fn block_snapshot(b: &ir::Block, depth: usize, out: &mut String) {
             src,
             alt,
             width_pct: _,
+            fit: _,
+            rounded: _,
         } => {
             out.push_str(&format!("{}Image({}, alt={:?})\n", pad, src, alt));
         }

@@ -2584,6 +2584,8 @@ fn deck_doctor_reports_accessibility_and_structure_warnings() {
                     src: "missing.png".into(),
                     alt: String::new(),
                     width_pct: None,
+                    fit: None,
+                    rounded: false,
                 },
                 Block::Columns {
                     left: Vec::new(),

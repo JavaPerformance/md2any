@@ -3446,6 +3446,8 @@ impl<'a> SlideRenderer<'a> {
                     src,
                     alt,
                     width_pct,
+                    fit: _,
+                    rounded: _,
                 } => {
                     let effective_w = match width_pct {
                         Some(pct) => w * (*pct as u32) / 100,

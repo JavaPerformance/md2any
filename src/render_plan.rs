@@ -486,6 +486,8 @@ fn block_plan(index: usize, block: &Block, context: WeightContext, path: String)
             src,
             alt,
             width_pct,
+            fit: _,
+            rounded: _,
         } => (
             "image",
             truncate(alt, 96),
@@ -598,6 +600,8 @@ fn ir_block(block: &Block) -> IrBlock {
             src,
             alt,
             width_pct,
+            fit: _,
+            rounded: _,
         } => IrBlock {
             kind: "image".to_string(),
             src: Some(src.clone()),

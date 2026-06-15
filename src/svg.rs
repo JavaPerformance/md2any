@@ -796,7 +796,20 @@ fn render_block(
             src,
             alt,
             width_pct,
-        } => render_image(ctx, src, alt, *width_pct, x, y, width, bottom),
+            fit,
+            rounded,
+        } => render_image(
+            ctx,
+            src,
+            alt,
+            *width_pct,
+            fit.as_deref(),
+            *rounded,
+            x,
+            y,
+            width,
+            bottom,
+        ),
         Block::Footnotes(items) => {
             let foot_y = bottom - (items.len().max(1) as f32 * 11.0);
             render_list(ctx, items, x, foot_y, width)
@@ -1418,11 +1431,14 @@ fn render_table(
     Ok(yy)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_image(
     ctx: &mut RenderCtx<'_>,
     src: &str,
     alt: &str,
     width_pct: Option<u8>,
+    fit: Option<&str>,
+    rounded: bool,
     x: f32,
     y: f32,
     width: f32,
@@ -1462,12 +1478,38 @@ fn render_image(
         }
     }
     let uri = escape_attr(&data_uri(&meta));
+    // `cover` fills the box (and crops) via `slice`; otherwise fit-to-contain.
+    let (iw, ih) = if fit == Some("cover") {
+        (max_w, max_h)
+    } else {
+        (img_w, img_h)
+    };
+    let par = if fit == Some("cover") {
+        "xMidYMid slice"
+    } else {
+        "xMidYMid meet"
+    };
+    let clip = if rounded {
+        let id = format!(
+            "imgr{}",
+            ((img_x as i64) * 7 + (y as i64) * 13 + (iw as i64)).rem_euclid(1_000_000)
+        );
+        let r = (iw.min(ih) * 0.06).clamp(6.0, 28.0);
+        write!(
+            ctx.out,
+            r##"<clipPath id="{id}"><rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" rx="{:.1}"/></clipPath>"##,
+            img_x, y, iw, ih, r
+        )?;
+        format!(r#" clip-path="url(#{id})""#)
+    } else {
+        String::new()
+    };
     write!(
         ctx.out,
-        r#"<image href="{uri}" xlink:href="{uri}" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" preserveAspectRatio="xMidYMid meet"/>"#,
-        img_x, y, img_w, img_h
+        r#"<image href="{uri}" xlink:href="{uri}" x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" preserveAspectRatio="{par}"{clip}/>"#,
+        img_x, y, iw, ih
     )?;
-    Ok(y + img_h + 8.0)
+    Ok(y + ih + 8.0)
 }
 
 fn inline_generated_math_svg(src: &str, x: f32, y: f32, width: f32, height: f32) -> Option<String> {

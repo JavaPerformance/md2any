@@ -313,11 +313,27 @@ fn extract_image_attrs(line: &str) -> String {
         if bytes[i] == b')' && bytes.get(i + 1) == Some(&b'{') {
             if let Some(close_rel) = bytes[i + 2..].iter().position(|&b| b == b'}') {
                 let attr = &line[i + 2..i + 2 + close_rel];
-                if let Some(pct) = parse_width_pct(attr) {
-                    // Flush everything before and including the `)`, then
-                    // emit the comment and skip past the closing `}`.
+                let pct = parse_width_pct(attr);
+                let fit = attr
+                    .split_whitespace()
+                    .find_map(|t| t.strip_prefix("fit="))
+                    .filter(|v| matches!(*v, "cover" | "contain"));
+                let round = attr
+                    .split_whitespace()
+                    .any(|t| t == "round" || t == "rounded");
+                if pct.is_some() || fit.is_some() || round {
+                    // Flush everything before and including the `)`, then emit a
+                    // comment per recognised attribute and skip past the `}`.
                     out.push_str(&line[copied..=i]);
-                    out.push_str(&format!("<!--md2any-imgwidth:{}-->", pct));
+                    if let Some(pct) = pct {
+                        out.push_str(&format!("<!--md2any-imgwidth:{}-->", pct));
+                    }
+                    if let Some(f) = fit {
+                        out.push_str(&format!("<!--md2any-imgfit:{}-->", f));
+                    }
+                    if round {
+                        out.push_str("<!--md2any-imground-->");
+                    }
                     i = i + 2 + close_rel + 1;
                     copied = i;
                     continue;
@@ -610,6 +626,8 @@ impl<'a> State<'a> {
             src: uri,
             alt: String::new(),
             width_pct: None,
+            fit: None,
+            rounded: false,
         });
         self.started_real_content = true;
     }
@@ -700,6 +718,20 @@ impl<'a> State<'a> {
                     for b in self.current.blocks.iter_mut().rev() {
                         if let Block::Image { width_pct, .. } = b {
                             *width_pct = Some(pct);
+                            break;
+                        }
+                    }
+                } else if let Some(f) = extract_img_fit(s) {
+                    for b in self.current.blocks.iter_mut().rev() {
+                        if let Block::Image { fit, .. } = b {
+                            *fit = Some(f);
+                            break;
+                        }
+                    }
+                } else if is_img_round(s) {
+                    for b in self.current.blocks.iter_mut().rev() {
+                        if let Block::Image { rounded, .. } = b {
+                            *rounded = true;
                             break;
                         }
                     }
@@ -979,6 +1011,8 @@ impl<'a> State<'a> {
                             src,
                             alt,
                             width_pct: None,
+                            fit: None,
+                            rounded: false,
                         });
                         self.started_real_content = true;
                     }
@@ -1125,6 +1159,23 @@ fn extract_img_width(s: &str) -> Option<u8> {
     let inner = s[4..s.len() - 3].trim();
     let rest = inner.strip_prefix("md2any-imgwidth:")?.trim();
     rest.parse::<u8>().ok().filter(|n| (1..=100).contains(n))
+}
+
+fn extract_img_fit(s: &str) -> Option<String> {
+    let s = s.trim();
+    if !s.starts_with("<!--") || !s.ends_with("-->") {
+        return None;
+    }
+    let v = s[4..s.len() - 3]
+        .trim()
+        .strip_prefix("md2any-imgfit:")?
+        .trim();
+    matches!(v, "cover" | "contain").then(|| v.to_string())
+}
+
+fn is_img_round(s: &str) -> bool {
+    let s = s.trim();
+    s.starts_with("<!--") && s.ends_with("-->") && s[4..s.len() - 3].trim() == "md2any-imground"
 }
 
 /// Recognised values: `image-left`, `image-right`, `image-full`, `text-full`.

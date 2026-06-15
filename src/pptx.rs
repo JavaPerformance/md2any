@@ -2274,6 +2274,8 @@ fn render_blocks(
                 src,
                 alt,
                 width_pct,
+                fit: _,
+                rounded: _,
             } => {
                 let effective_w = match width_pct {
                     Some(pct) => w * (*pct as u32) / 100,
@@ -2418,6 +2420,8 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
             src,
             alt,
             width_pct: _,
+            fit: _,
+            rounded: _,
         } => {
             // 65% of slide height is a friendly default — leaves room for
             // the slide title plus surrounding content. Hardcoded EMU caps

@@ -82,6 +82,8 @@ fn render_blocks(blocks: &mut Vec<Block>, cache_dir: &Path, idx: &mut usize) -> 
                         src,
                         alt: format!("{} diagram", kind.tool()),
                         width_pct: None,
+                        fit: None,
+                        rounded: false,
                     };
                     rendered += 1;
                 }

@@ -214,6 +214,12 @@ pub enum Block {
         /// area (1..=100). Flowing-document renderers (DOCX / ODT) ignore
         /// it; for those, the consumer app handles sizing.
         width_pct: Option<u8>,
+        /// Object fit from `{fit=cover|contain}`: `cover` fills the box and
+        /// crops, `contain` (default when `None`) fits without cropping.
+        /// Honoured by HTML + SVG.
+        fit: Option<String>,
+        /// Rounded corners from `{round}`. Honoured by HTML + SVG.
+        rounded: bool,
     },
     /// Inline footnote definitions associated with this slide. Rendered as
     /// small muted text at the bottom of the slide.
@@ -353,6 +359,8 @@ impl Slide {
                     src,
                     alt,
                     width_pct,
+                    fit: _,
+                    rounded: _,
                 } => {
                     if image.is_some() {
                         return None;
