@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     tint (alongside the existing `<!-- bg: path -->` image).
   - Callouts: `> [!NOTE|TIP|IMPORTANT|WARNING|CAUTION]` → coloured titled boxes.
   - Card grid: `<!-- cards: N -->` + `### Title` blocks → an N-column card grid.
+  - `<!-- text-scale: 1.3 -->` (or small/large/larger/huge) scales **one
+    slide's** body/list/quote/heading text, in every renderer — distinct from
+    the deck-wide front-matter `style:` sizes.
   - The `--serve --edit` AI dock knows all of the above, so you can ask for them.
   - **Native-renderer support:**
     - **PDF**: full — text-align, valign, column-width ratio, boxed callouts,
