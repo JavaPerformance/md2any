@@ -77,6 +77,7 @@ pub mod font;
 pub mod front_matter;
 pub mod html;
 pub mod image;
+pub mod imgsearch;
 pub mod ir;
 pub mod layout;
 pub mod lint;

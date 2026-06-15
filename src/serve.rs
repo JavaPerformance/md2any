@@ -301,6 +301,15 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()
                 }
             }
         }
+        // Image search across free + keyed providers. `GET /image-search?q=…`
+        // → JSON array of {title,image_url,thumb_url,license,author,source}.
+        // Backs the AI dock's photo-finding and any manual insert UI.
+        ("GET", "/image-search") => {
+            let q = query_param(&raw_path, "q").unwrap_or_default();
+            let hits = crate::imgsearch::search(&q, 4);
+            let body = serde_json::to_vec(&hits).unwrap_or_else(|_| b"[]".to_vec());
+            write_response(&mut stream, 200, "OK", "application/json", &body)?;
+        }
         // AI dock: one chat turn, streamed. Body is `{messages:[…]}`; the
         // response is newline-delimited JSON — `{"delta":"…"}` per fragment,
         // then `{"done":true}` or `{"error":"…"}`.
