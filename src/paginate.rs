@@ -284,6 +284,11 @@ fn paginate_inner(
             out.push(slide);
             continue;
         }
+        // A per-slide `text-scale` enlarges rendered text without changing
+        // block weights, so a scaled-up slide needs proportionally less content
+        // to fill a page. Shrink this slide's budget so it splits before the
+        // bigger text overflows (renderers have no shrink-to-fit for content).
+        let budget = budget / slide.text_scale().max(0.1);
         let total: f32 = slide
             .blocks
             .iter()
