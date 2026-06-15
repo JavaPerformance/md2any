@@ -130,10 +130,14 @@ fn render_slide(
             total
         ))
     )?;
+    let bg_hex = slide
+        .bg_color()
+        .map(|c| resolve_bg_color(c, theme))
+        .unwrap_or_else(|| theme.bg.clone());
     write!(
         out,
         r##"<rect x="0" y="0" width="{:.2}" height="{:.2}" fill="#{}"/>"##,
-        w, h, theme.bg
+        w, h, bg_hex
     )?;
     if let Some(bg) = &slide.bg_image {
         let uri = escape_attr(&image_data_uri(base_dir, bg));
@@ -467,7 +471,29 @@ fn render_content_slide(
         col_frac: slide.col_frac().unwrap_or(0.5),
         text_align: slide.text_align(),
     };
-    let _ = render_blocks(&mut ctx, &slide.blocks, x, y, content_w, h - margin * 1.6)?;
+    let content_bottom = h - margin * 1.6;
+    let vfactor = match slide.valign() {
+        "center" => 0.5,
+        "bottom" => 1.0,
+        _ => 0.0,
+    };
+    // Columns handle their own vertical alignment; only centre the whole content
+    // stack for plain (non-column) slides.
+    let has_columns = slide
+        .blocks
+        .iter()
+        .any(|b| matches!(b, Block::Columns { .. }));
+    if vfactor > 0.0 && !has_columns {
+        let mark = ctx.out.len();
+        let end = render_blocks(&mut ctx, &slide.blocks, x, y, content_w, content_bottom)?;
+        ctx.out.truncate(mark);
+        let ch = (end - y).max(0.0);
+        let avail = (content_bottom - y).max(0.0);
+        let oy = y + (avail - ch).max(0.0) * vfactor;
+        let _ = render_blocks(&mut ctx, &slide.blocks, x, oy, content_w, content_bottom)?;
+    } else {
+        let _ = render_blocks(&mut ctx, &slide.blocks, x, y, content_w, content_bottom)?;
+    }
     if let Some(logo_uri) = logo_uri {
         let uri = escape_attr(logo_uri);
         write!(
@@ -727,6 +753,21 @@ fn render_block(
 
 fn draw_runs_plain(out: &mut String, runs: &[Run], tb: TextBox<'_>) -> Result<f32> {
     draw_wrapped_text(out, &runs_text(runs), tb)
+}
+
+/// Resolve a per-slide background token (`#hex` or a palette keyword) to a hex
+/// string without the leading `#`.
+fn resolve_bg_color(token: &str, theme: &Theme) -> String {
+    if let Some(hex) = token.strip_prefix('#') {
+        return hex.to_string();
+    }
+    match token.to_ascii_lowercase().as_str() {
+        "accent" => theme.accent.clone(),
+        "section" => theme.section_bg.clone(),
+        "dark" => "0F172A".to_string(),
+        "light" => "FFFFFF".to_string(),
+        _ => theme.bg.clone(),
+    }
 }
 
 /// Accent colour (hex, no `#`) for a callout kind.

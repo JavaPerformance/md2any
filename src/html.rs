@@ -143,16 +143,16 @@ fn render_slide(
     } else {
         ""
     };
-    let bg_style = slide
-        .bg_image
-        .as_ref()
-        .map(|src| {
-            format!(
-                " style=\"background-image:url('{}')\"",
-                image_data_uri(base_dir, src)
-            )
-        })
-        .unwrap_or_default();
+    let bg_style = if let Some(src) = slide.bg_image.as_ref() {
+        format!(
+            " style=\"background-image:url('{}')\"",
+            image_data_uri(base_dir, src)
+        )
+    } else if let Some(tok) = slide.bg_color() {
+        format!(" style=\"background:#{}\"", resolve_bg_color(tok, theme))
+    } else {
+        String::new()
+    };
     write!(
         out,
         "<section class=\"slide slide-{}{}{}\" data-slide=\"{}\" data-line=\"{}\" aria-label=\"Slide {} of {}\"{}>\n",
@@ -771,6 +771,9 @@ blockquote {{ margin: .85em 0; padding: .2em 0 .2em 1em; border-left: .22em soli
 .columns {{ display: grid; grid-template-columns: var(--cols, minmax(0, 1fr) minmax(0, 1fr)); gap: 4%; align-items: start; }}
 .valign-center .columns {{ align-items: center; }}
 .valign-bottom .columns {{ align-items: end; }}
+.slide-inner.content.valign-center, .slide-inner.content.valign-bottom {{ display: flex; flex-direction: column; }}
+.valign-center .blocks {{ margin-top: auto; margin-bottom: auto; }}
+.valign-bottom .blocks {{ margin-top: auto; }}
 .align-center {{ text-align: center; }}
 .align-center .list-item {{ justify-content: center; }}
 .align-right {{ text-align: right; }}
@@ -864,6 +867,21 @@ fn escape_html(s: &str) -> String {
 
 fn escape_attr(s: &str) -> String {
     escape_html(s)
+}
+
+/// Resolve a per-slide background token (`#hex` or palette keyword) to a hex
+/// string without the leading `#`.
+fn resolve_bg_color(token: &str, theme: &Theme) -> String {
+    if let Some(hex) = token.strip_prefix('#') {
+        return hex.to_string();
+    }
+    match token.to_ascii_lowercase().as_str() {
+        "accent" => theme.accent.clone(),
+        "section" => theme.section_bg.clone(),
+        "dark" => "0F172A".to_string(),
+        "light" => "FFFFFF".to_string(),
+        _ => theme.bg.clone(),
+    }
 }
 
 /// Icon + display label for a callout kind. Unknown kinds get a generic note.

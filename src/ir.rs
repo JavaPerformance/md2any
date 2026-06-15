@@ -307,6 +307,16 @@ impl Slide {
             .unwrap_or("left")
     }
 
+    /// Per-slide background colour token from `<!-- bg: #hex|accent|section -->`
+    /// (a `#hex` or palette keyword). Renderers resolve keywords against the
+    /// theme. `None` means the theme's default background.
+    pub fn bg_color(&self) -> Option<&str> {
+        self.layout_hint.as_deref().and_then(|h| {
+            h.split_whitespace()
+                .find_map(|t| t.strip_prefix("bgcolor="))
+        })
+    }
+
     /// Return the sole image on a slide that requested full-page image layout.
     pub fn full_page_image(&self) -> Option<(&str, &str, Option<u8>)> {
         if self.layout_kind() != Some("image-full") {

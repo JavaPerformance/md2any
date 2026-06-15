@@ -603,8 +603,18 @@ impl<'a> State<'a> {
                     self.flush_paragraph();
                     self.current.blocks.push(Block::ColumnBreak);
                     self.started_real_content = true;
-                } else if let Some(path) = extract_bg(s) {
-                    self.current.bg_image = Some(path);
+                } else if let Some(val) = extract_bg(s) {
+                    // A colour (`#hex` or a keyword) tints the slide; anything
+                    // else is treated as a background-image path.
+                    if is_bg_color(&val) {
+                        let opt = format!("bgcolor={val}");
+                        self.current.layout_hint = Some(match self.current.layout_hint.take() {
+                            Some(h) => format!("{h} {opt}"),
+                            None => opt,
+                        });
+                    } else {
+                        self.current.bg_image = Some(val);
+                    }
                     self.started_real_content = true;
                 } else if let Some(note) = extract_note(s) {
                     let existing = self.current.notes.take().unwrap_or_default();
@@ -621,6 +631,12 @@ impl<'a> State<'a> {
                     // Fold `align=` into the layout-hint string (which also
                     // carries valign/width), creating it if absent.
                     let opt = format!("align={align}");
+                    self.current.layout_hint = Some(match self.current.layout_hint.take() {
+                        Some(h) => format!("{h} {opt}"),
+                        None => opt,
+                    });
+                } else if let Some(valign) = extract_valign(s) {
+                    let opt = format!("valign={valign}");
                     self.current.layout_hint = Some(match self.current.layout_hint.take() {
                         Some(h) => format!("{h} {opt}"),
                         None => opt,
@@ -1077,6 +1093,30 @@ fn extract_layout(s: &str) -> Option<String> {
         "image-left" | "image-right" | "image-full" | "text-full" => Some(body.to_string()),
         _ => None,
     }
+}
+
+/// Parse `<!-- valign: center|bottom|top -->` into the value.
+fn extract_valign(s: &str) -> Option<String> {
+    let s = s.trim();
+    if !s.starts_with("<!--") || !s.ends_with("-->") {
+        return None;
+    }
+    let inner = s[4..s.len() - 3].trim().to_ascii_lowercase();
+    let v = inner.strip_prefix("valign:")?.trim();
+    match v {
+        "center" | "centre" | "middle" | "bottom" | "end" | "top" => Some(v.to_string()),
+        _ => None,
+    }
+}
+
+/// True if a `bg:` value names a colour (a `#hex` or a palette keyword) rather
+/// than an image path.
+fn is_bg_color(v: &str) -> bool {
+    v.starts_with('#')
+        || matches!(
+            v.to_ascii_lowercase().as_str(),
+            "accent" | "section" | "dark" | "light"
+        )
 }
 
 /// Parse `<!-- align: center|right|left -->` into the alignment value.
