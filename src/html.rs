@@ -822,7 +822,7 @@ tbody tr:nth-child(even) {{ background: var(--table-band-bg); }}
 .code-block {{ margin: .75em 0; background: var(--code-bg); border: 1px solid var(--divider); color: var(--code-text); overflow: hidden; }}
 .code-block figcaption {{ display: flex; justify-content: space-between; gap: 1em; padding: .45em .75em; color: var(--muted); border-bottom: 1px solid var(--divider); font: 600 .72em var(--body-font); }}
 .code-lang {{ margin-left: auto; text-transform: uppercase; letter-spacing: .08em; }}
-pre {{ margin: 0; padding: .65em .75em; overflow: hidden; font: clamp(11px, 1.15vw, var(--code-size))/1.35 var(--mono-font); }}
+pre {{ margin: 0; padding: .65em .75em; overflow: hidden; font: clamp(11px, 1.15vw, var(--code-size))/1.35 var(--mono-font); white-space: normal; }}
 code {{ font-family: inherit; }}
 .code-line {{ display: grid; grid-template-columns: auto 1fr; gap: .75em; min-height: 1.35em; }}
 .code-line.no-gutter {{ grid-template-columns: 1fr; }}

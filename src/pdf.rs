@@ -4097,7 +4097,10 @@ impl<'a> SlideRenderer<'a> {
                         false,
                         true,
                         TextAlign::Left,
-                        gutter_emu,
+                        // Small slack: gutter_emu is truncated from gutter_pt, so
+                        // passing it verbatim leaves the number a hair too wide
+                        // and text_line wraps multi-digit numbers ("10" → 1/0).
+                        gutter_emu + 40000,
                     );
                 }
                 text_x += gutter_emu + 240000;

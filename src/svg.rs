@@ -998,7 +998,7 @@ fn render_code_block(
         let mut xx = x + gutter + 10.0;
         write!(
             ctx.out,
-            r##"<text x="{:.2}" y="{:.2}" font-family="{}" font-size="{:.2}" fill="#{}">"##,
+            r##"<text x="{:.2}" y="{:.2}" xml:space="preserve" font-family="{}" font-size="{:.2}" fill="#{}">"##,
             xx,
             yy,
             escape_attr(svg_font_family(&theme.mono_font)),
@@ -1031,7 +1031,10 @@ fn render_code_block(
         ctx.out.push_str("</text>");
         yy += lh;
     }
-    Ok(y + height)
+    // Return the box bottom plus one body-text ascent: the following block draws
+    // its first line with the *baseline* at this y, so without the ascent its
+    // glyphs would rise back up into the code box.
+    Ok(y + height + centipt_to_pt(theme.body_size) * 0.85)
 }
 
 fn render_full_page_code(
