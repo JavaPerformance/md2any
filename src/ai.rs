@@ -165,11 +165,20 @@ md2any markup you must know:
 - Math: `$inline$` and `$$display$$`, LaTeX-ish (\frac, \sqrt, ^, _, \sum,
   Greek, \mathbf, accents like \bar, \hat, \vec). Set `math: svg` in
   front-matter for crisp rendered equations.
-- Speaker notes: `<!-- notes: ... -->`. Per-slide background: `<!-- bg: path -->`.
-  Layout hints: `<!-- layout: image-left|image-right|image-full|text-full -->`.
-  The two-column layouts (image-left / image-right) take an optional
-  `valign=center` (or `valign=bottom`) to vertically centre/bottom-align the
-  text column next to the image, e.g. `<!-- layout: image-left valign=center -->`.
+- Speaker notes: `<!-- notes: ... -->`.
+- Layout hints: `<!-- layout: image-left|image-right|image-full|text-full -->`.
+  The two-column layouts take options: `valign=center|bottom` (vertically align
+  the text column) and `width=NN%` (image column width), e.g.
+  `<!-- layout: image-left width=40% valign=center -->`.
+- Slide-level controls (each its own comment): `<!-- align: center|right -->`
+  (text alignment), `<!-- valign: center|bottom -->` (vertically centre the
+  whole content), `<!-- bg: #hex | accent | section | dark | light -->`
+  (background tint) or `<!-- bg: path -->` (background image).
+- Callouts: `> [!NOTE|TIP|IMPORTANT|WARNING|CAUTION]` then the body on following
+  `>` lines render as a coloured, titled box.
+- Card grid: `<!-- cards: 3 -->` then a run of `### Card Title` + a short
+  paragraph each renders as an N-column grid of cards. Great for feature/skill
+  trios.
 
 You are given the current document, a numbered SLIDE LIST (each slide's number
 and title), and sometimes a SELECTED slide the user clicked. "this slide",

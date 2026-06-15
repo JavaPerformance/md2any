@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Formatting controls** (HTML + SVG; native renderers degrade gracefully):
+  - Two-column tuning on `image-left`/`image-right`: `valign=center|bottom`
+    (align the text column) and `width=NN%` (image column width).
+  - `<!-- align: center|right -->` slide text alignment and
+    `<!-- valign: center|bottom -->` whole-slide vertical centring.
+  - `<!-- bg: #hex | accent | section | dark | light -->` per-slide background
+    tint (alongside the existing `<!-- bg: path -->` image).
+  - Callouts: `> [!NOTE|TIP|IMPORTANT|WARNING|CAUTION]` → coloured titled boxes.
+  - Card grid: `<!-- cards: N -->` + `### Title` blocks → an N-column card grid.
+  - The `--serve --edit` AI dock knows all of the above, so you can ask for them.
+
 - **In-browser editor** (`--serve --edit`): edit the markdown and see a live
   preview side by side. Edits autosave to the source file, which the existing
   watcher rebuilds — no external dependencies, fully offline. The preview is
