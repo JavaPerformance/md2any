@@ -833,6 +833,21 @@ fn deflate(data: &[u8]) -> Vec<u8> {
     e.finish().expect("deflate finish")
 }
 
+/// Resolve a per-slide background token (`#hex` or palette keyword) to a hex
+/// string without the leading `#`.
+fn resolve_bg_color(token: &str, theme: &Theme) -> String {
+    if let Some(hex) = token.strip_prefix('#') {
+        return hex.to_string();
+    }
+    match token.to_ascii_lowercase().as_str() {
+        "accent" => theme.accent.clone(),
+        "section" => theme.section_bg.clone(),
+        "dark" => "0F172A".to_string(),
+        "light" => "FFFFFF".to_string(),
+        _ => theme.bg.clone(),
+    }
+}
+
 fn collect_block_images(
     blocks: &[Block],
     base_dir: &Path,
@@ -2589,7 +2604,11 @@ impl<'a> SlideRenderer<'a> {
     // -------------------- entry point per slide --------------------
 
     fn render(&mut self, slide: &Slide, num: usize, total: usize, deck_title: &str, imgs: &Imgs) {
-        self.fill_background(&self.theme.bg.clone());
+        let bg = slide
+            .bg_color()
+            .map(|c| resolve_bg_color(c, self.theme))
+            .unwrap_or_else(|| self.theme.bg.clone());
+        self.fill_background(&bg);
 
         if let Some(bg) = &slide.bg_image {
             if imgs.index(bg).is_some() {
