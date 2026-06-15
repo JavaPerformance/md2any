@@ -1880,7 +1880,7 @@ fn render_blocks(
                             ry,
                             col_w,
                             row_h,
-                            &theme.bg,
+                            &theme.accent_soft,
                             Some(&border),
                             60000,
                             "top",

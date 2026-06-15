@@ -2444,7 +2444,7 @@ fn render_blocks(
                             col_w,
                             row_h,
                             &inner,
-                            &theme.bg,
+                            &theme.accent_soft,
                             Some(&card_border),
                             "t",
                         ));
