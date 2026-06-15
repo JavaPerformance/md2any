@@ -726,6 +726,9 @@ const EDITOR_HTML: &str = r##"<!DOCTYPE html>
   #ai.collapsed #aichips { display: none; }
   .chip { background: #1f2937; color: #cbd5e1; border: 1px solid #374151; border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
   .chip:hover { background: #374151; color: #fff; }
+  #activeChip { display: none; align-items: center; gap: 8px; margin: 0 12px 6px; padding: 4px 10px; background: #0c2540; border: 1px solid #1d4ed8; border-radius: 6px; font-size: 12px; color: #bfdbfe; }
+  #activeChip b { color: #fff; }
+  #activeChip button { margin-left: auto; background: none; border: 0; color: #93c5fd; cursor: pointer; font-size: 13px; }
   #airow { display: flex; gap: 8px; padding: 9px 12px; border-top: 1px solid #1f2937; flex: 0 0 auto; }
   #aiInput { flex: 1 1 auto; resize: none; background: #0b1220; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 6px; padding: 8px 10px; font: 13px/1.4 system-ui, sans-serif; }
   #aiInput:focus { outline: none; border-color: #2563eb; }
@@ -760,8 +763,9 @@ const EDITOR_HTML: &str = r##"<!DOCTYPE html>
     <button class="chip">Add speaker notes to each slide</button>
     <button class="chip">Suggest a better title</button>
   </div>
+  <div id="activeChip"><span>✏️ Editing</span> <b id="activeChipLabel"></b><button id="activeChipX" title="Clear selection">✕</button></div>
   <div id="airow">
-    <textarea id="aiInput" rows="1" placeholder="e.g. “add a slide summarising the key points” or “tighten the intro”…"></textarea>
+    <textarea id="aiInput" rows="1" placeholder="click a slide to target it, then ask — e.g. “add a takeaway here” or “add a diagram on the left”…"></textarea>
     <button class="tool" id="aiSend">Send</button>
   </div>
 </div>
@@ -887,6 +891,8 @@ function bindFrameClicks() {
     const ln = ta.value.slice(0, off).split('\n').length - 1;
     ta.scrollTop = Math.max(0, ln * lh - ta.clientHeight / 2);
     focusCaret(true);
+    // Click-to-select: target this slide for the AI dock.
+    setActive(blockAtTaLine(frontMatterLines(ta.value) + Number(s.getAttribute('data-line') || 0)));
   });
 }
 
@@ -1107,6 +1113,81 @@ const aibar = document.getElementById('aibar');
 const chatEl = document.getElementById('chat');
 const aiInput = document.getElementById('aiInput');
 const aiSend = document.getElementById('aiSend');
+const activeChip = document.getElementById('activeChip');
+const activeChipLabel = document.getElementById('activeChipLabel');
+let activeSlide = null;   // 1-based logical slide the user clicked to target
+
+// --- Slide model + surgical ops -------------------------------------------
+// Parse the textarea into logical slide blocks: block 1 = title (front-matter +
+// preamble), then one block per `#`/`##` heading or `---` rule (code fences are
+// skipped so `#` inside code isn't mistaken for a slide start).
+function parseDeck() {
+  const lines = ta.value.split('\n');
+  const fm = frontMatterLines(ta.value);
+  const isStart = (l) => /^#{1,2}\s/.test(l) || /^---\s*$/.test(l);
+  const starts = [];
+  let inCode = false;
+  for (let k = fm; k < lines.length; k++) {
+    if (/^\s*(```|~~~)/.test(lines[k])) { inCode = !inCode; continue; }
+    if (!inCode && isStart(lines[k])) starts.push(k);
+  }
+  const blocks = [];
+  const titleEnd = starts.length ? starts[0] : lines.length;
+  blocks.push({ start: 0, end: titleEnd, title: 'Title' });
+  for (let s = 0; s < starts.length; s++) {
+    const start = starts[s], end = (s + 1 < starts.length) ? starts[s + 1] : lines.length;
+    let t = /^---\s*$/.test(lines[start]) ? '(rule)' : lines[start].replace(/^#{1,2}\s*/, '').trim();
+    blocks.push({ start, end, title: t || '(untitled)' });
+  }
+  return { lines, blocks };
+}
+function slideManifest() { return parseDeck().blocks.map((b, i) => ({ n: i + 1, title: b.title })); }
+function blockAtTaLine(taLine) {
+  const { blocks } = parseDeck();
+  let idx = 0;
+  for (let i = 0; i < blocks.length; i++) if (taLine >= blocks[i].start) idx = i;
+  return idx + 1;
+}
+function setActive(n) {
+  activeSlide = n;
+  const m = slideManifest()[n - 1];
+  activeChip.style.display = 'flex';
+  activeChipLabel.textContent = 'slide ' + n + (m && m.title ? ' · ' + m.title : '');
+}
+function clearActive() { activeSlide = null; activeChip.style.display = 'none'; }
+// Pull surgical op blocks: ````md2any op=replace slide=12  …  ````
+function extractOps(reply) {
+  const ops = [];
+  const re = /````[ \t]*md2any[ \t]+op=([a-z-]+)(?:[ \t]+slide=(\d+))?[^\n]*\r?\n([\s\S]*?)````/g;
+  let m;
+  while ((m = re.exec(reply)) !== null) {
+    ops.push({ op: m[1], n: m[2] ? Number(m[2]) : null, content: m[3].replace(/\s+$/, '') });
+  }
+  return ops;
+}
+function applyOps(ops) {
+  const all = ops.find(o => o.op === 'replace-all');
+  if (all) { applyDoc(all.content); return; }
+  const { lines, blocks } = parseDeck();
+  const actions = [];
+  for (const o of ops) {
+    if (o.n == null) continue;
+    const b = blocks[o.n - 1];
+    if (!b) continue;
+    if (o.op === 'replace') actions.push({ start: b.start, end: b.end, text: o.content });
+    else if (o.op === 'delete') actions.push({ start: b.start, end: b.end, text: null });
+    else if (o.op === 'insert-after') actions.push({ start: b.end, end: b.end, text: o.content });
+    else if (o.op === 'insert-before') actions.push({ start: b.start, end: b.start, text: o.content });
+  }
+  actions.sort((a, b) => b.start - a.start); // bottom-up so line indices stay valid
+  for (const a of actions) {
+    const repl = a.text == null ? [] : a.text.split('\n').concat(['']);
+    lines.splice(a.start, a.end - a.start, ...repl);
+  }
+  ta.value = lines.join('\n').replace(/\n{3,}/g, '\n\n');
+  ta.selectionStart = ta.selectionEnd = 0;
+  setStatus('applying…'); scheduleSave(); readStyle(); syncControls(); focusCaret(true);
+}
 let chatHistory = [];   // [{role:'user'|'assistant', content}]
 let chatBusy = false;
 
@@ -1143,15 +1224,27 @@ function applyDoc(doc) {
   ta.selectionStart = ta.selectionEnd = 0;
   setStatus('applying…'); scheduleSave(); readStyle(); syncControls(); focusCaret(true);
 }
-// Replace a finished bot bubble's raw text with a clean explanation + an
-// "Apply" button when the reply carried a document block.
+// Turn a finished reply into a clean summary + an Apply button. Prefers
+// surgical op blocks; falls back to a whole-document block if the model sent one.
 function finalizeBotMsg(bubble, reply) {
-  const ext = extractDoc(reply);
-  if (!ext) { bubble.textContent = reply; return; }
-  bubble.textContent = ext.explain;
+  let ops = extractOps(reply);
+  let summary;
+  if (ops.length) {
+    const i = reply.search(/````[ \t]*md2any/);
+    summary = (i > 0 ? reply.slice(0, i).trim() : '') || ('Proposed ' + ops.length + ' edit' + (ops.length > 1 ? 's' : '') + '.');
+  } else {
+    const ext = extractDoc(reply);
+    if (!ext) { bubble.textContent = reply; return; }   // plain answer
+    ops = [{ op: 'replace-all', n: null, content: ext.doc }];
+    summary = ext.explain;
+  }
+  bubble.textContent = summary;
   const wrap = document.createElement('div'); wrap.className = 'apply';
-  const btn = document.createElement('button'); btn.textContent = '✓ Apply to document';
-  btn.onclick = () => { applyDoc(ext.doc); btn.textContent = '✓ Applied'; btn.disabled = true; };
+  const btn = document.createElement('button');
+  const label = ops.length === 1 && ops[0].op === 'replace-all'
+    ? '✓ Apply' : '✓ Apply ' + ops.length + ' edit' + (ops.length > 1 ? 's' : '');
+  btn.textContent = label;
+  btn.onclick = () => { applyOps(ops); btn.textContent = '✓ Applied'; btn.disabled = true; clearActive(); };
   wrap.appendChild(btn); bubble.appendChild(wrap);
   chatEl.scrollTop = chatEl.scrollHeight;
 }
@@ -1165,7 +1258,7 @@ async function sendChat() {
   const bubble = addMsg('bot busy', 'thinking…');
   let acc = '', errored = null;
   try {
-    const r = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: chatHistory }) });
+    const r = await fetch('/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: chatHistory, doc: ta.value, slides: slideManifest(), active: activeSlide }) });
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -1204,6 +1297,7 @@ aiInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKe
 document.querySelectorAll('#aichips .chip').forEach(c =>
   c.addEventListener('click', () => { if (chatBusy) return; aiInput.value = c.textContent; sendChat(); }));
 aiInput.addEventListener('input', () => { aiInput.style.height = 'auto'; aiInput.style.height = Math.min(aiInput.scrollHeight, 120) + 'px'; });
+document.getElementById('activeChipX').addEventListener('click', clearActive);
 
 fetch('/source', { cache: 'no-store' }).then(r => r.text()).then(t => { ta.value = t; focusCaret(true); }).catch(() => {});
 setInterval(tick, 500);

@@ -3414,7 +3414,7 @@ impl<'a> SlideRenderer<'a> {
                     );
                     y += 120000;
                 }
-                Block::Quote(paras) => {
+                Block::Quote(paras) | Block::Callout { body: paras, .. } => {
                     y = self.render_quote(paras, x, y, w);
                     y += 80000;
                 }

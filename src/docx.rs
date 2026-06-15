@@ -940,7 +940,7 @@ fn render_block(
                 ));
             }
         }
-        Block::Quote(paras) => {
+        Block::Quote(paras) | Block::Callout { body: paras, .. } => {
             for para in paras {
                 out.push_str(&format!(
                     r#"<w:p><w:pPr><w:pStyle w:val="Quote"/></w:pPr>{}</w:p>"#,

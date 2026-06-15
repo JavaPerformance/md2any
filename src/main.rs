@@ -2243,19 +2243,42 @@ fn chat_turn(
         .and_then(|m| m.as_array())
         .cloned()
         .unwrap_or_default();
-    let document = doc_path
-        .and_then(|p| std::fs::read_to_string(p).ok())
+    // Prefer the client's live (possibly unsaved) document; fall back to disk.
+    let document = req
+        .get("doc")
+        .and_then(|d| d.as_str())
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| doc_path.and_then(|p| std::fs::read_to_string(p).ok()))
         .unwrap_or_default();
+    // A numbered slide list lets the model address slides by number/title.
+    let slide_list = req
+        .get("slides")
+        .and_then(|s| s.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|s| {
+                    let n = s.get("n")?.as_u64()?;
+                    let title = s.get("title")?.as_str()?;
+                    Some(format!("{n}. {title}"))
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .unwrap_or_default();
+    let active = req.get("active").and_then(|a| a.as_u64());
     let opts = md2any::ai::AiOptions::resolve(endpoint, model)?;
+    let mut context =
+        format!("Current md2any document (between <doc> tags):\n<doc>\n{document}\n</doc>");
+    if !slide_list.is_empty() {
+        context.push_str(&format!("\n\nSLIDE LIST (number. title):\n{slide_list}"));
+    }
+    if let Some(a) = active {
+        context.push_str(&format!("\n\nSELECTED slide: {a}"));
+    }
     let mut messages = vec![
         serde_json::json!({ "role": "system", "content": md2any::ai::editor_system_prompt() }),
-        serde_json::json!({
-            "role": "system",
-            "content": format!(
-                "Here is the user's current md2any document, between <doc> tags. \
-                 Base your answers and edits on it.\n<doc>\n{document}\n</doc>"
-            ),
-        }),
+        serde_json::json!({ "role": "system", "content": context }),
     ];
     messages.extend(history);
     md2any::ai::chat_stream(&opts, &messages, on_delta)

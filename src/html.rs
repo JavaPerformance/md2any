@@ -250,7 +250,19 @@ fn render_slide(
             out.push_str("</div>\n");
         }
         SlideKind::Content => {
-            out.push_str("<div class=\"slide-inner content\">\n");
+            let valign_class = match slide.valign() {
+                "center" => " valign-center",
+                "bottom" => " valign-bottom",
+                _ => "",
+            };
+            let col_style = match slide.col_frac() {
+                Some(f) => format!(" style=\"--cols: {:.3}fr {:.3}fr\"", f, 1.0 - f),
+                None => String::new(),
+            };
+            write!(
+                out,
+                "<div class=\"slide-inner content{valign_class}\"{col_style}>\n"
+            )?;
             render_content_title(out, slide, idx + 1, total, layout, theme.title_center)?;
             out.push_str("<div class=\"blocks\">\n");
             render_blocks(out, &slide.blocks, theme, base_dir)?;
@@ -357,6 +369,22 @@ fn render_block(out: &mut String, block: &Block, theme: &Theme, base_dir: &Path)
                 out.push_str("</p>\n");
             }
             out.push_str("</blockquote>\n");
+        }
+        Block::Callout { kind, body } => {
+            let (icon, label) = callout_label(kind);
+            write!(
+                out,
+                "<aside class=\"callout callout-{}\">\n<div class=\"callout-title\">{} {}</div>\n",
+                escape_attr(kind),
+                icon,
+                label
+            )?;
+            for runs in body {
+                out.push_str("<p>");
+                render_runs(out, runs)?;
+                out.push_str("</p>\n");
+            }
+            out.push_str("</aside>\n");
         }
         Block::Table {
             headers,
@@ -727,7 +755,17 @@ a {{ color: var(--link); text-decoration-thickness: .08em; text-underline-offset
 .list-item {{ display: grid; grid-template-columns: 2.1em 1fr; gap: .35em; margin: .26em 0 .26em calc(var(--level) * 1.45em); }}
 .marker {{ color: var(--accent); font-weight: 700; text-align: end; }}
 blockquote {{ margin: .85em 0; padding: .2em 0 .2em 1em; border-left: .22em solid var(--accent); color: var(--title); }}
-.columns {{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 4%; align-items: start; }}
+.callout {{ margin: .8em 0; padding: .65em .95em; border-left: .3em solid var(--accent); background: var(--accent-soft); border-radius: .35em; }}
+.callout-title {{ font-weight: 700; color: var(--title); margin-bottom: .25em; font-size: .92em; letter-spacing: .01em; }}
+.callout p {{ margin: .2em 0; }}
+.callout-note {{ border-color: #3b82f6; background: color-mix(in srgb, #3b82f6 13%, var(--bg)); }}
+.callout-tip {{ border-color: #22c55e; background: color-mix(in srgb, #22c55e 13%, var(--bg)); }}
+.callout-important {{ border-color: #a855f7; background: color-mix(in srgb, #a855f7 13%, var(--bg)); }}
+.callout-warning {{ border-color: #f59e0b; background: color-mix(in srgb, #f59e0b 15%, var(--bg)); }}
+.callout-caution {{ border-color: #ef4444; background: color-mix(in srgb, #ef4444 13%, var(--bg)); }}
+.columns {{ display: grid; grid-template-columns: var(--cols, minmax(0, 1fr) minmax(0, 1fr)); gap: 4%; align-items: start; }}
+.valign-center .columns {{ align-items: center; }}
+.valign-bottom .columns {{ align-items: end; }}
 .image {{ margin: .8em 0; width: var(--image-width, 100%); max-width: 100%; }}
 .image img {{ display: block; width: 100%; max-height: 47vh; object-fit: contain; }}
 .math-image {{ width: fit-content; margin-left: var(--math-margin-left, auto); margin-right: var(--math-margin-right, auto); }}
@@ -818,6 +856,17 @@ fn escape_html(s: &str) -> String {
 
 fn escape_attr(s: &str) -> String {
     escape_html(s)
+}
+
+/// Icon + display label for a callout kind. Unknown kinds get a generic note.
+fn callout_label(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "tip" => ("\u{1F4A1}", "Tip"),
+        "important" => ("\u{2757}", "Important"),
+        "warning" => ("\u{26A0}", "Warning"),
+        "caution" => ("\u{1F6D1}", "Caution"),
+        _ => ("\u{2139}", "Note"),
+    }
 }
 
 /// Extra rules for the `--serve --edit` continuous-scroll preview: unhide every

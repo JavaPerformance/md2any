@@ -63,7 +63,22 @@ inner: LD   A, (HL)   ; load byte
        RET
 ```
 
+## Z80 Block Copy Example
+```asm
+; Copy BC bytes from (HL) to (DE)
+memcpy: LD   A, (HL)   ; load source byte
+        LD   (DE), A   ; store to destination
+        INC  HL
+        INC  DE
+        DEC  BC
+        LD   A, B
+        OR   C
+        JR   NZ, memcpy
+        RET
+```
+
 ## The Software Explosion
+<!-- layout: text-full -->
 Assemblers, BASIC interpreters, early spreadsheets, and bedroom-coded games poured forth. The Z80 turned every machine it powered into a platform, laying the foundation for the personal-computing software industry we still inhabit today.
 
 # Home Computers
@@ -89,6 +104,12 @@ From the moment the TRS-80 Model I appeared in 1977, the Z80 became the heartbea
 ## Sega Master System
 Released in 1985, the Master System ran its Z80 at 3.58 MHz alongside a superb sound chip. Titles like Phantasy Star proved the little processor could still deliver rich worlds long after its desktop rivals had moved on.
 
+## Nintendo Game Boy
+<!-- layout: image-left -->
+![Game Boy](assets/z80-story/gameboy.jpg)
+
+The original Game Boy (1989) used Sharp's LR35902, a Z80-derived CPU running at ~4.19 MHz with a reduced instruction set. Its efficient design, combined with clever graphics hardware, launched the portable gaming era and sold more than 118 million units worldwide.
+
 ## Game Boy's Sharp LR35902
 Nintendo's 1989 handheld used a custom Z80 variant stripped for efficiency yet still unmistakably Z80 at heart. Paired with clever graphics hardware, it launched the portable-gaming revolution and sold more than 118 million units.
 
@@ -99,6 +120,15 @@ While flashier processors came and went, the Z80 remained in production for over
 
 ## Modern Legacy
 Open-source cores such as T80 keep the Z80 alive inside FPGAs. Retro enthusiasts and chiptune artists still celebrate its elegant instruction set. More than a processor, it became a symbol of practical, enduring engineering—the rebel chip that refused to fade away.
+
+## Z80 Today
+Zilog still ships new Z80 parts in 2024. You’ll find them in smart electricity meters, guitar effects pedals, industrial controllers, and retro-computing kits. Open-source cores (T80, Z80SoftCore) keep the architecture alive inside FPGAs, while hobbyists continue writing new software for classic machines.
+
+## Z80 Behind the Iron Curtain
+Eastern Bloc factories produced near-perfect clones for decades: the Soviet T34VM1, East German U880, Romanian MMN80, and Bulgarian clone all powered locally-made computers and industrial gear. Because the Z80 needed only a single 5 V supply and ran CP/M, it became the unofficial standard across the Warsaw Pact.
+
+## Z80 in the Arcades
+The same chip that powered home computers also dominated early coin-op machines. Pac-Man, Galaga, Frogger, and dozens of 1980–83 titles ran on Z80-based boards from Namco, Sega, and Konami. Its rich instruction set and low cost made it the go-to CPU until 16-bit systems arrived.
 
 ## Image Credits
 

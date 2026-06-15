@@ -86,8 +86,56 @@ pub fn parse_with_options(
         st.handle(event);
     }
     let mut slides = st.finish();
+    for slide in &mut slides {
+        convert_callouts(&mut slide.blocks);
+    }
     apply_layout_hints(&mut slides);
     slides
+}
+
+/// Convert blockquotes that open with a GitHub alert marker
+/// (`> [!NOTE]` / `[!tip]` / `[!important]` / `[!warning]` / `[!caution]`)
+/// into [`Block::Callout`]s, stripping the marker from the body.
+fn convert_callouts(blocks: &mut [Block]) {
+    for b in blocks.iter_mut() {
+        if let Block::Columns { left, right } = b {
+            convert_callouts(left);
+            convert_callouts(right);
+            continue;
+        }
+        let Block::Quote(paras) = b else { continue };
+        if paras.is_empty() {
+            continue;
+        }
+        let first = runs_text(&paras[0]);
+        let trimmed = first.trim_start();
+        let Some(close) = trimmed.find(']') else {
+            continue;
+        };
+        if !trimmed.starts_with("[!") {
+            continue;
+        }
+        let kind = trimmed[2..close].trim().to_ascii_lowercase();
+        if !matches!(
+            kind.as_str(),
+            "note" | "tip" | "important" | "warning" | "caution"
+        ) {
+            continue;
+        }
+        let mut body = std::mem::take(paras);
+        // Strip `[!KIND]` (and any following whitespace) from the first run.
+        if let Some(run) = body[0].first_mut() {
+            if let Some(c) = run.text.find(']') {
+                run.text = run.text[c + 1..]
+                    .trim_start_matches([' ', '\t', '\n', '\r'])
+                    .to_string();
+            }
+        }
+        if runs_text(&body[0]).trim().is_empty() {
+            body.remove(0);
+        }
+        *b = Block::Callout { kind, body };
+    }
 }
 
 /// Honour `<!-- layout: image-left | image-right -->` by reshaping the
@@ -96,10 +144,13 @@ pub fn parse_with_options(
 /// or with an unrecognised/post-renderer hint, pass through unchanged.
 fn apply_layout_hints(slides: &mut Vec<Slide>) {
     for slide in slides {
-        let Some(hint) = slide.layout_hint.as_deref() else {
-            continue;
+        // The hint may carry options (e.g. `image-left valign=center`); match on
+        // the kind only.
+        let kind = match slide.layout_kind() {
+            Some(k) => k.to_string(),
+            None => continue,
         };
-        if hint != "image-left" && hint != "image-right" {
+        if kind != "image-left" && kind != "image-right" {
             continue;
         }
         let image_count = slide
@@ -123,7 +174,7 @@ fn apply_layout_hints(slides: &mut Vec<Slide>) {
             Some(b) => b,
             None => continue,
         };
-        let (left, right) = match hint {
+        let (left, right) = match kind.as_str() {
             "image-left" => (vec![image], rest),
             _ => (rest, vec![image]),
         };
@@ -1011,7 +1062,10 @@ fn extract_layout(s: &str) -> Option<String> {
     let inner = s[4..s.len() - 3].trim();
     let lower = inner.to_ascii_lowercase();
     let body = lower.strip_prefix("layout:")?.trim();
-    match body {
+    // The hint may carry options after the kind, e.g. `image-left valign=center`.
+    // Validate the kind, but keep the whole body so options survive.
+    let kind = body.split_whitespace().next().unwrap_or("");
+    match kind {
         "image-left" | "image-right" | "image-full" | "text-full" => Some(body.to_string()),
         _ => None,
     }

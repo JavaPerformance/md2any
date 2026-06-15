@@ -177,6 +177,12 @@ fn block_snapshot(b: &ir::Block, depth: usize, out: &mut String) {
                 out.push_str(&format!("{}  > {}\n", pad, runs_repr(para)));
             }
         }
+        Block::Callout { kind, body } => {
+            out.push_str(&format!("{pad}Callout[{kind}]:\n"));
+            for para in body {
+                out.push_str(&format!("{}  > {}\n", pad, runs_repr(para)));
+            }
+        }
         Block::Table { headers, rows, .. } => {
             out.push_str(&format!(
                 "{}Table(cols={}, rows={}):\n",

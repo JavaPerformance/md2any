@@ -170,6 +170,11 @@ pub enum Block {
     },
     /// Block quote — each inner `Vec<Run>` is one paragraph of the quote.
     Quote(Vec<Vec<Run>>),
+    /// GitHub-style callout / admonition (`> [!NOTE]` etc.). `kind` is one of
+    /// `note`, `tip`, `important`, `warning`, `caution`; `body` holds the
+    /// paragraphs after the marker. Renderers that don't style it specially
+    /// fall back to rendering `body` as a plain quote.
+    Callout { kind: String, body: Vec<Vec<Run>> },
     /// GitHub-flavoured table. `headers` is the first row; `rows` are the
     /// data rows. Cells are run lists so inline formatting works inside them.
     /// `aligns` carries the per-column alignment from the GFM delimiter row
@@ -245,9 +250,51 @@ pub struct Slide {
 }
 
 impl Slide {
+    /// The layout-hint *kind* — the first whitespace token of `layout_hint`,
+    /// e.g. `image-left` from `image-left valign=center`. Lets a hint carry
+    /// extra options (like `valign=`) without breaking kind matching.
+    pub fn layout_kind(&self) -> Option<&str> {
+        self.layout_hint
+            .as_deref()
+            .and_then(|h| h.split_whitespace().next())
+    }
+
+    /// Vertical alignment of column content from a `valign=` option on the
+    /// layout hint (`top` default, `center`, or `bottom`). Applies to the
+    /// `image-left`/`image-right`/`:::` two-column layouts.
+    pub fn valign(&self) -> &str {
+        self.layout_hint
+            .as_deref()
+            .and_then(|h| h.split_whitespace().find_map(|t| t.strip_prefix("valign=")))
+            .map(|v| match v {
+                "center" | "middle" => "center",
+                "bottom" | "end" => "bottom",
+                _ => "top",
+            })
+            .unwrap_or("top")
+    }
+
+    /// The left-column fraction (0..1) for an `image-left`/`image-right` slide
+    /// whose hint carries `width=NN%`. `width=` sizes the *image* column, so for
+    /// `image-right` (image on the right) the left/text column gets `1 - frac`.
+    /// `None` means the default even split.
+    pub fn col_frac(&self) -> Option<f32> {
+        let hint = self.layout_hint.as_deref()?;
+        let w = hint
+            .split_whitespace()
+            .find_map(|t| t.strip_prefix("width="))?;
+        let pct: f32 = w.trim_end_matches('%').parse().ok()?;
+        let frac = (pct / 100.0).clamp(0.15, 0.85);
+        Some(if self.layout_kind() == Some("image-right") {
+            1.0 - frac
+        } else {
+            frac
+        })
+    }
+
     /// Return the sole image on a slide that requested full-page image layout.
     pub fn full_page_image(&self) -> Option<(&str, &str, Option<u8>)> {
-        if self.layout_hint.as_deref() != Some("image-full") {
+        if self.layout_kind() != Some("image-full") {
             return None;
         }
 
@@ -273,7 +320,7 @@ impl Slide {
 
     /// Return the sole code block on a slide that requested full-page text layout.
     pub fn full_page_code(&self) -> Option<(&[String], Option<&str>)> {
-        if self.layout_hint.as_deref() != Some("text-full") {
+        if self.layout_kind() != Some("text-full") {
             return None;
         }
 

@@ -463,6 +463,8 @@ fn render_content_slide(
         theme,
         base_dir,
         rtl,
+        valign: slide.valign(),
+        col_frac: slide.col_frac().unwrap_or(0.5),
     };
     let _ = render_blocks(&mut ctx, &slide.blocks, x, y, content_w, h - margin * 1.6)?;
     if let Some(logo_uri) = logo_uri {
@@ -484,6 +486,10 @@ struct RenderCtx<'a> {
     theme: &'a Theme,
     base_dir: &'a Path,
     rtl: bool,
+    /// Vertical alignment for two-column rows: "top", "center", or "bottom".
+    valign: &'a str,
+    /// Left-column fraction (0..1) for two-column rows; 0.5 is an even split.
+    col_frac: f32,
 }
 
 fn render_blocks(
@@ -601,6 +607,58 @@ fn render_block(
             }
             Ok(yy)
         }
+        Block::Callout { kind, body } => {
+            let color = callout_color(kind);
+            let color_hex = format!("#{color}");
+            let (_icon, label) = callout_label(kind);
+            let padx = 14.0;
+            let text_x = x + padx;
+            let text_w = width - 2.0 * padx;
+            let mark = ctx.out.len();
+            // Title line (in the callout colour), then the body paragraphs.
+            let mut yy = draw_runs_plain(
+                ctx.out,
+                &[Run::plain(label)],
+                TextBox {
+                    x: text_x,
+                    y: y + padx + body_size,
+                    width: text_w,
+                    font_size: body_size * 0.92,
+                    line_height: body_size * 1.2,
+                    fill: &color_hex,
+                    font: &theme.body_font,
+                    weight: "700",
+                    style: "normal",
+                    anchor: "start",
+                },
+            )? + 4.0;
+            for runs in body {
+                yy = draw_runs_plain(
+                    ctx.out,
+                    runs,
+                    TextBox {
+                        x: text_x,
+                        y: yy,
+                        width: text_w,
+                        font_size: body_size,
+                        line_height: body_size * 1.28,
+                        fill: &theme.title_color,
+                        font: &theme.body_font,
+                        weight: "400",
+                        style: "normal",
+                        anchor: "start",
+                    },
+                )? + 3.0;
+            }
+            let box_h = (yy - y) + padx * 0.4;
+            // Insert the tinted background + colour bar *before* the text.
+            let rect = format!(
+                r##"<rect x="{:.2}" y="{:.2}" width="{:.2}" height="{:.2}" rx="6" fill="{color_hex}" fill-opacity="0.13"/><rect x="{:.2}" y="{:.2}" width="4" height="{:.2}" rx="2" fill="{color_hex}"/>"##,
+                x, y, width, box_h, x, y, box_h
+            );
+            ctx.out.insert_str(mark, &rect);
+            Ok(y + box_h + 6.0)
+        }
         Block::Table {
             headers,
             rows,
@@ -609,10 +667,35 @@ fn render_block(
         Block::ColumnBreak => Ok(y),
         Block::Columns { left, right } => {
             let gap = 22.0;
-            let col_w = (width - gap) / 2.0;
-            let left_y = render_blocks(ctx, left, x, y, col_w, bottom)?;
-            let right_x = x + col_w + gap;
-            let right_y = render_blocks(ctx, right, right_x, y, col_w, bottom)?;
+            let avail_w = width - gap;
+            let lcw = avail_w * ctx.col_frac;
+            let rcw = avail_w - lcw;
+            let right_x = x + lcw + gap;
+            let factor = match ctx.valign {
+                "center" => 0.5,
+                "bottom" => 1.0,
+                _ => 0.0,
+            };
+            if factor == 0.0 {
+                let left_y = render_blocks(ctx, left, x, y, lcw, bottom)?;
+                let right_y = render_blocks(ctx, right, right_x, y, rcw, bottom)?;
+                return Ok(left_y.max(right_y));
+            }
+            // Measure each column's height by rendering then rewinding the buffer,
+            // then place it within the available height so the shorter column
+            // (usually the text beside a tall image) is centred/bottom-aligned.
+            // Using the available height (not the taller column) guarantees the
+            // offset can never push content past `bottom`.
+            let avail = (bottom - y).max(0.0);
+            let mark = ctx.out.len();
+            let lh = (render_blocks(ctx, left, x, y, lcw, bottom)? - y).max(0.0);
+            ctx.out.truncate(mark);
+            let rh = (render_blocks(ctx, right, right_x, y, rcw, bottom)? - y).max(0.0);
+            ctx.out.truncate(mark);
+            let ly = y + (avail - lh).max(0.0) * factor;
+            let ry = y + (avail - rh).max(0.0) * factor;
+            let left_y = render_blocks(ctx, left, x, ly, lcw, bottom)?;
+            let right_y = render_blocks(ctx, right, right_x, ry, rcw, bottom)?;
             Ok(left_y.max(right_y))
         }
         Block::Image {
@@ -629,6 +712,28 @@ fn render_block(
 
 fn draw_runs_plain(out: &mut String, runs: &[Run], tb: TextBox<'_>) -> Result<f32> {
     draw_wrapped_text(out, &runs_text(runs), tb)
+}
+
+/// Accent colour (hex, no `#`) for a callout kind.
+fn callout_color(kind: &str) -> &'static str {
+    match kind {
+        "tip" => "22C55E",
+        "important" => "A855F7",
+        "warning" => "F59E0B",
+        "caution" => "EF4444",
+        _ => "3B82F6",
+    }
+}
+
+/// Icon + display label for a callout kind.
+fn callout_label(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "tip" => ("\u{1F4A1}", "Tip"),
+        "important" => ("\u{2757}", "Important"),
+        "warning" => ("\u{26A0}", "Warning"),
+        "caution" => ("\u{1F6D1}", "Caution"),
+        _ => ("\u{2139}", "Note"),
+    }
 }
 
 fn render_list(

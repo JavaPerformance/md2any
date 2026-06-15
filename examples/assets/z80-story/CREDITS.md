@@ -9,3 +9,4 @@ Creative Commons licenses. Attribution as required:
 | `z80_chip.jpg` | Z80 chip package | Gennadiy Shvets | CC BY 2.5 | https://commons.wikimedia.org/wiki/File:Zilog_Z80.jpg |
 | `faggin.jpg` | Federico Faggin | Intel Free Press | CC BY-SA 2.0 | https://commons.wikimedia.org/wiki/File:Federico_Faggin_(cropped).jpg |
 | `zx_spectrum.jpg` | ZX Spectrum | Bill Bertram (Pixel8) | CC BY-SA 2.5 | https://commons.wikimedia.org/wiki/File:ZXSpectrum48k.jpg |
+| `gameboy.jpg` | Game Boy motherboard | Raimond Spekking | CC BY-SA 4.0 | https://commons.wikimedia.org/wiki/File:Nintendo_Game_Boy_DMG-01_-_board_with_card_slot-9880.jpg |

@@ -642,7 +642,7 @@ fn render_block(out: &mut String, b: &Block, theme: &Theme, by_src: &HashMap<Str
                 ));
             }
         }
-        Block::Quote(paras) => {
+        Block::Quote(paras) | Block::Callout { body: paras, .. } => {
             for para in paras {
                 out.push_str(&format!(
                     r#"<text:p text:style-name="Quote">{}</text:p>"#,

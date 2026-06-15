@@ -409,7 +409,7 @@ fn block_plan(index: usize, block: &Block, context: WeightContext, path: String)
                 Vec::new(),
             )
         }
-        Block::Quote(paras) => {
+        Block::Quote(paras) | Block::Callout { body: paras, .. } => {
             let chars = paras
                 .iter()
                 .map(|runs| runs_text(runs).chars().count())
@@ -556,7 +556,7 @@ fn ir_block(block: &Block) -> IrBlock {
             include_error: include_error.clone(),
             ..IrBlock::empty()
         },
-        Block::Quote(paras) => IrBlock {
+        Block::Quote(paras) | Block::Callout { body: paras, .. } => IrBlock {
             kind: "quote".to_string(),
             rows: paras
                 .iter()

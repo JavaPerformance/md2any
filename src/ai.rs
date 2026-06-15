@@ -167,19 +167,47 @@ md2any markup you must know:
   front-matter for crisp rendered equations.
 - Speaker notes: `<!-- notes: ... -->`. Per-slide background: `<!-- bg: path -->`.
   Layout hints: `<!-- layout: image-left|image-right|image-full|text-full -->`.
+  The two-column layouts (image-left / image-right) take an optional
+  `valign=center` (or `valign=bottom`) to vertically centre/bottom-align the
+  text column next to the image, e.g. `<!-- layout: image-left valign=center -->`.
 
-EDIT PROTOCOL — follow exactly:
-- If the user asks you to change the deck, reply with a one or two sentence
-  summary of what you changed, then the COMPLETE updated document wrapped in a
-  fenced block that OPENS with a line of FOUR backticks followed by `md2any`
-  (````md2any) and CLOSES with a line of four backticks. Four backticks are
-  required so the document can itself contain normal ``` code blocks without
-  ending the block early. Include the front-matter; do not abbreviate or use
-  placeholders like "...": output the whole file so it can be applied verbatim.
-- If the user only asks a question or for advice, answer normally and DO NOT
-  include a document block.
-- Keep slides focused and well-paced; preserve the user's voice and existing
-  content unless asked to change it."#
+You are given the current document, a numbered SLIDE LIST (each slide's number
+and title), and sometimes a SELECTED slide the user clicked. "this slide",
+"here", and "the selected slide" all mean the SELECTED slide's number.
+
+EDIT PROTOCOL — make SURGICAL edits; never resend the whole deck for a small change:
+- When the user asks to change the deck, reply with a one-sentence summary, then
+  one or more EDIT OPERATIONS. Each operation is a block opened by FOUR backticks
+  with the info line `md2any op=<OP> slide=<N>` and closed by four backticks:
+    * op=replace       — the block is the FULL new markdown for slide N (begin
+                         with its `#`/`##` heading and include everything for
+                         that slide). It replaces slide N.
+    * op=insert-after  — the block is a NEW slide placed after slide N.
+    * op=insert-before — the block is a NEW slide placed before slide N.
+    * op=delete        — empty block; removes slide N.
+  Example:
+    Added a takeaway to the CP/M slide.
+    ````md2any op=replace slide=12
+    ## CP/M and the Software Boom
+    Gary Kildall's CP/M ... (the full slide) ...
+    ````
+- Emit operations ONLY for slides you actually change; never restate unchanged
+  slides. Each block must be a COMPLETE slide (no "..." placeholders). The four
+  backticks let a slide's own ```lang code block survive.
+- Only for a deliberate whole-deck rewrite may you send a single
+  `op=replace-all` block containing the entire document (front-matter included).
+- If the user only asks a question or for advice, answer in prose with NO
+  operation blocks.
+
+Adding a picture:
+- For diagrams, icons, charts or logos, DRAW an inline `<svg viewBox="0 0 W H">
+  …</svg>` inside the slide — never link to an image you are unsure exists.
+- For a real photo, use `![alt](URL)` ONLY if the user gave you the URL; else
+  describe the photo you'd add and ask (automatic photo search is coming soon).
+- Place images with a layout hint, e.g. `<!-- layout: image-left -->` (also
+  image-right / image-full) above the image.
+
+Keep slides focused; preserve the user's voice and any content you aren't changing."#
         .to_string()
 }
 

@@ -246,7 +246,7 @@ fn paginate_inner(
     for mut slide in slides {
         slide.blocks = fit_tables(std::mem::take(&mut slide.blocks), theme, options.table_fit);
         slide.blocks = coalesce_columns(std::mem::take(&mut slide.blocks));
-        if slide.layout_hint.as_deref() != Some("text-full") {
+        if slide.layout_kind() != Some("text-full") {
             slide.blocks = fit_code_columns(std::mem::take(&mut slide.blocks), theme, options);
         }
 
@@ -842,7 +842,7 @@ fn block_weight(b: &Block, wscale: f32, allow_auto_columns: bool) -> f32 {
         Block::CodeBlock {
             lines, title, lang, ..
         } => code_block_weight(lines.len(), title, lang),
-        Block::Quote(paras) => {
+        Block::Quote(paras) | Block::Callout { body: paras, .. } => {
             paras
                 .iter()
                 .map(|runs| (total_chars(runs) as f32 / (70.0 * wscale)).max(1.0))

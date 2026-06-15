@@ -1528,7 +1528,7 @@ fn render_blocks(
                     theme,
                 ));
             }
-            Block::Quote(paras) => {
+            Block::Quote(paras) | Block::Callout { body: paras, .. } => {
                 out.push_str(&rect(reg, x, y, 60000, h, &theme.accent));
                 let mut runs: Vec<Run> = Vec::new();
                 for (i, prun) in paras.iter().enumerate() {
@@ -1683,7 +1683,7 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
             };
             (lines.len() as u32).max(1) * 280000 + 320000 + title_h
         }
-        Block::Quote(paras) => {
+        Block::Quote(paras) | Block::Callout { body: paras, .. } => {
             paras
                 .iter()
                 .map(|runs| {

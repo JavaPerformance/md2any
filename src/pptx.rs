@@ -2216,7 +2216,7 @@ fn render_blocks(
                     id,
                 ));
             }
-            Block::Quote(paras) => {
+            Block::Quote(paras) | Block::Callout { body: paras, .. } => {
                 shapes.push_str(&filled_rect(*id, "QuoteBar", x, y, 60000, h, &theme.accent));
                 *id += 1;
                 let mut quote_body = String::new();
@@ -2381,7 +2381,7 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
             };
             (lines.len() as u32).max(1) * 280000 + 320000 + title_h
         }
-        Block::Quote(paras) => {
+        Block::Quote(paras) | Block::Callout { body: paras, .. } => {
             paras
                 .iter()
                 .map(|runs| {

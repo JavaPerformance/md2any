@@ -308,7 +308,7 @@ fn block_weight(block: &Block) -> f32 {
         }
         Block::List(items) => items.len() as f32 * 1.35,
         Block::CodeBlock { lines, .. } => lines.len() as f32 * 1.15 + 2.0,
-        Block::Quote(paras) => {
+        Block::Quote(paras) | Block::Callout { body: paras, .. } => {
             2.0 + paras
                 .iter()
                 .flatten()

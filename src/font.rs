@@ -290,7 +290,10 @@ impl AuditBuilder<'_> {
                         self.text(slide, "code", line, FaceKind::Mono.index());
                     }
                 }
-                Block::Quote(paragraphs) => {
+                Block::Quote(paragraphs)
+                | Block::Callout {
+                    body: paragraphs, ..
+                } => {
                     for runs in paragraphs {
                         self.runs(slide, "quote", runs, FaceKind::SansRegular.index());
                     }
