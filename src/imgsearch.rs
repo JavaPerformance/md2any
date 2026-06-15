@@ -51,6 +51,54 @@ fn strip_html(s: &str) -> String {
     out.trim().to_string()
 }
 
+/// Trim a natural-language request down to a tight image query: drop filler
+/// words and cap length. Commons full-text search ANDs every word, so
+/// "real photo of a Zilog Z80 chip package" finds nothing while "Zilog Z80
+/// chip" finds plenty.
+fn normalize_query(q: &str) -> String {
+    const FILLER: &[&str] = &[
+        "a",
+        "an",
+        "the",
+        "of",
+        "for",
+        "real",
+        "photo",
+        "photograph",
+        "image",
+        "picture",
+        "pic",
+        "shot",
+        "find",
+        "please",
+        "add",
+        "showing",
+        "show",
+        "close",
+        "up",
+        "closeup",
+        "high",
+        "res",
+        "resolution",
+        "with",
+    ];
+    let words: Vec<&str> = q
+        .split_whitespace()
+        .filter(|w| {
+            let lw = w
+                .trim_matches(|c: char| !c.is_alphanumeric())
+                .to_ascii_lowercase();
+            !lw.is_empty() && !FILLER.contains(&lw.as_str())
+        })
+        .take(6)
+        .collect();
+    if words.is_empty() {
+        q.trim().to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
 #[cfg(feature = "ureq")]
 fn read_key(file: &str) -> Option<String> {
     std::fs::read_to_string(file)
@@ -68,6 +116,7 @@ pub fn search(query: &str, per_source: usize) -> Vec<ImageHit> {
         .user_agent(UA)
         .build();
     let n = per_source.clamp(1, 10);
+    let query = &normalize_query(query);
     let mut hits = Vec::new();
     hits.extend(commons(&agent, query, n).unwrap_or_default());
     hits.extend(openverse(&agent, query, n).unwrap_or_default());
@@ -77,7 +126,32 @@ pub fn search(query: &str, per_source: usize) -> Vec<ImageHit> {
     if let Some(key) = read_key("pexels-api.key") {
         hits.extend(pexels(&agent, query, n, &key).unwrap_or_default());
     }
+    // md2any embeds only JPEG/PNG/SVG. Drop anything else, but first try the
+    // provider's thumbnail (Commons renders webp/tiff originals to a JPEG
+    // thumb), so a great photo in an unsupported original format still works.
+    hits.retain_mut(|h| {
+        if supported(&h.image_url) {
+            true
+        } else if supported(&h.thumb_url) {
+            h.image_url = h.thumb_url.clone();
+            true
+        } else {
+            false
+        }
+    });
     hits
+}
+
+/// True if md2any can embed this image URL (by extension): JPEG/PNG/SVG.
+fn supported(url: &str) -> bool {
+    let u = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .to_ascii_lowercase();
+    [".jpg", ".jpeg", ".png", ".svg"]
+        .iter()
+        .any(|e| u.ends_with(e))
 }
 
 #[cfg(not(feature = "ureq"))]
@@ -95,8 +169,29 @@ fn get_json(agent: &ureq::Agent, url: &str, headers: &[(&str, &str)]) -> Option<
     serde_json::from_str(&text).ok()
 }
 
+/// Commons ANDs every search word, so a too-specific query finds nothing.
+/// Try the full query, then progressively shorter prefixes, until one hits.
 #[cfg(feature = "ureq")]
 fn commons(agent: &ureq::Agent, query: &str, n: usize) -> Option<Vec<ImageHit>> {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    let mut seen = std::collections::HashSet::new();
+    for take in [words.len(), 3, 2] {
+        let take = take.min(words.len()).max(1);
+        let q = words[..take].join(" ");
+        if !seen.insert(q.clone()) {
+            continue;
+        }
+        if let Some(hits) = commons_once(agent, &q, n) {
+            if !hits.is_empty() {
+                return Some(hits);
+            }
+        }
+    }
+    Some(Vec::new())
+}
+
+#[cfg(feature = "ureq")]
+fn commons_once(agent: &ureq::Agent, query: &str, n: usize) -> Option<Vec<ImageHit>> {
     let url = format!(
         "https://commons.wikimedia.org/w/api.php?action=query&generator=search\
          &gsrsearch={}&gsrnamespace=6&gsrlimit={n}&prop=imageinfo\

@@ -233,13 +233,13 @@ EDIT PROTOCOL — make SURGICAL edits; never resend the whole deck for a small c
 Adding a picture:
 - For diagrams, icons, charts or logos, DRAW an inline `<svg viewBox="0 0 W H">
   …</svg>` inside the slide — never link to an image you are unsure exists.
-- For a real photo, use `![alt](URL)`. md2any DOES download http(s) image URLs
-  (and local paths) at render time and embeds them — so a real URL works.
-  The catch is YOU can't browse the web to find one and must not invent URLs
-  (they 404). So: if the user gives a URL, use it; otherwise ask them for one
-  (or to confirm a specific Wikimedia/Commons file) — do NOT tell them md2any
-  "can't fetch images", because it can. Offer an inline-SVG placeholder mean-
-  while if useful.
+- For a real photo, you have a `search_images` tool — CALL IT with a concise
+  query to get real, license-cleared candidates (each has image_url, license,
+  author). Pick the most relevant one and insert it as `![alt](image_url)`,
+  then add a short credit line (e.g. `*Photo: <author> / <license>*`). md2any
+  downloads the URL at render time. If the user already gave a URL, just use
+  it. Never invent image URLs. If a search returns nothing useful, say so and
+  offer an inline-SVG placeholder.
 - Place images with a layout hint, e.g. `<!-- layout: image-left -->` (also
   image-right / image-full) above the image.
 
@@ -469,6 +469,137 @@ pub fn chat_stream(
 pub fn chat_stream(
     _opts: &AiOptions,
     _messages: &[serde_json::Value],
+    _on_delta: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    Err("this build has no network support (rebuild with the `ai` feature)".to_string())
+}
+
+/// Stream a chat completion that may call tools. Behaves exactly like
+/// [`chat_stream`] when the model just answers (text streams via `on_delta`).
+/// When the model emits `tool_calls`, each is executed by `on_tool(name, args)
+/// -> result_json`, the call + result are appended to the conversation, and the
+/// model's follow-up is streamed — looping until it answers in plain text (or a
+/// round cap). This keeps token-by-token streaming for the common no-tool turn.
+#[cfg(feature = "ureq")]
+pub fn chat_stream_with_tools(
+    opts: &AiOptions,
+    mut messages: Vec<serde_json::Value>,
+    tools: serde_json::Value,
+    on_tool: &mut dyn FnMut(&str, &str) -> String,
+    on_delta: &mut dyn FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    use std::io::BufRead;
+    for _round in 0..4 {
+        let body = serde_json::json!({
+            "model": opts.model,
+            "temperature": 0.5,
+            "stream": true,
+            "messages": messages,
+            "tools": tools,
+        })
+        .to_string();
+        let resp = ureq::post(&opts.endpoint)
+            .set("Authorization", &format!("Bearer {}", opts.api_key))
+            .set("Content-Type", "application/json")
+            .send_string(&body);
+        let reader = match resp {
+            Ok(r) => std::io::BufReader::new(r.into_reader()),
+            Err(ureq::Error::Status(code, r)) => {
+                let detail = r.into_string().unwrap_or_default();
+                return match parse_chat_response(&detail) {
+                    Err(msg) if msg.starts_with("API error:") => Err(msg),
+                    _ => Err(format!("API returned HTTP {code}: {}", detail.trim())),
+                };
+            }
+            Err(e) => return Err(format!("request to {} failed: {e}", opts.endpoint)),
+        };
+        // Accumulate streamed tool-call fragments by index: (id, name, args).
+        let mut calls: Vec<(String, String, String)> = Vec::new();
+        for line in reader.lines() {
+            let line = line.map_err(|e| format!("stream read: {e}"))?;
+            let Some(payload) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let payload = payload.trim();
+            if payload.is_empty() {
+                continue;
+            }
+            if payload == "[DONE]" {
+                break;
+            }
+            let v: serde_json::Value = match serde_json::from_str(payload) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let Some(delta) = v
+                .get("choices")
+                .and_then(|c| c.get(0))
+                .and_then(|c| c.get("delta"))
+            else {
+                continue;
+            };
+            if let Some(text) = delta.get("content").and_then(|c| c.as_str()) {
+                if !text.is_empty() {
+                    on_delta(text)?;
+                }
+            }
+            if let Some(tcs) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+                for tc in tcs {
+                    let idx = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as usize;
+                    while calls.len() <= idx {
+                        calls.push((String::new(), String::new(), String::new()));
+                    }
+                    if let Some(id) = tc.get("id").and_then(|s| s.as_str()) {
+                        if !id.is_empty() {
+                            calls[idx].0 = id.to_string();
+                        }
+                    }
+                    if let Some(f) = tc.get("function") {
+                        if let Some(name) = f.get("name").and_then(|s| s.as_str()) {
+                            if !name.is_empty() {
+                                calls[idx].1 = name.to_string();
+                            }
+                        }
+                        if let Some(args) = f.get("arguments").and_then(|s| s.as_str()) {
+                            calls[idx].2.push_str(args);
+                        }
+                    }
+                }
+            }
+        }
+        if calls.is_empty() {
+            return Ok(()); // model answered in text; already streamed
+        }
+        // Replay the assistant's tool_calls, then each tool result, and loop.
+        let tool_call_json: Vec<serde_json::Value> = calls
+            .iter()
+            .map(|(id, name, args)| {
+                serde_json::json!({
+                    "id": id,
+                    "type": "function",
+                    "function": { "name": name, "arguments": args },
+                })
+            })
+            .collect();
+        messages.push(serde_json::json!({
+            "role": "assistant", "content": null, "tool_calls": tool_call_json,
+        }));
+        for (id, name, args) in &calls {
+            let result = on_tool(name, args);
+            messages.push(serde_json::json!({
+                "role": "tool", "tool_call_id": id, "content": result,
+            }));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(feature = "ureq"))]
+pub fn chat_stream_with_tools(
+    _opts: &AiOptions,
+    _messages: Vec<serde_json::Value>,
+    _tools: serde_json::Value,
+    _on_tool: &mut dyn FnMut(&str, &str) -> String,
     _on_delta: &mut dyn FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
     Err("this build has no network support (rebuild with the `ai` feature)".to_string())

@@ -2306,7 +2306,47 @@ fn chat_turn(
         serde_json::json!({ "role": "system", "content": context }),
     ];
     messages.extend(history);
-    md2any::ai::chat_stream(&opts, &messages, on_delta)
+
+    // Give the model a real image-search tool so it can find + insert actual
+    // photos (md2any downloads the chosen URL at render time).
+    let tools = serde_json::json!([{
+        "type": "function",
+        "function": {
+            "name": "search_images",
+            "description": "Search Wikimedia Commons, Openverse and (if configured) \
+                Unsplash/Pexels for a real, license-cleared photo to place on a slide. \
+                Returns candidates each with a directly-embeddable image_url plus license \
+                and author. Call this when the user wants a real photo and did not supply a \
+                URL; then insert the chosen one as ![alt](image_url) and add a small credit \
+                line (author + license).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Concise image search query, e.g. 'Zilog Z80 chip die shot'."
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    }]);
+    let mut on_tool = |name: &str, args: &str| -> String {
+        if name != "search_images" {
+            return "{\"error\":\"unknown tool\"}".to_string();
+        }
+        let query = serde_json::from_str::<serde_json::Value>(args)
+            .ok()
+            .and_then(|v| {
+                v.get("query")
+                    .and_then(|q| q.as_str())
+                    .map(|s| s.to_string())
+            })
+            .unwrap_or_default();
+        let hits = md2any::imgsearch::search(&query, 4);
+        serde_json::to_string(&hits).unwrap_or_else(|_| "[]".to_string())
+    };
+    md2any::ai::chat_stream_with_tools(&opts, messages, tools, &mut on_tool, on_delta)
 }
 
 #[derive(Clone)]
