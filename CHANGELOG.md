@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Formatting controls** (HTML + SVG; native renderers degrade gracefully):
+- **Formatting controls** (HTML + SVG/PNG fully; native renderers below):
   - Two-column tuning on `image-left`/`image-right`: `valign=center|bottom`
     (align the text column) and `width=NN%` (image column width).
   - `<!-- align: center|right -->` slide text alignment and
@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Callouts: `> [!NOTE|TIP|IMPORTANT|WARNING|CAUTION]` → coloured titled boxes.
   - Card grid: `<!-- cards: N -->` + `### Title` blocks → an N-column card grid.
   - The `--serve --edit` AI dock knows all of the above, so you can ask for them.
+  - **Native-renderer support:**
+    - **PDF**: full — text-align, valign, column-width ratio, boxed callouts,
+      card grids, and per-slide bg tint all render natively.
+    - **PPTX / ODP**: text-align, column-width ratio, and per-slide bg tint
+      render natively; valign and boxed callouts/cards degrade gracefully
+      (callouts → quote, cards → stacked headings) since both formats position
+      blocks absolutely with auto-fit scaling.
+  - Fixes a latent bug where an H1 (section) slide split into a divider + content
+    slide silently dropped its align/valign/width/bgcolor hints from the body.
 
 - **In-browser editor** (`--serve --edit`): edit the markdown and see a live
   preview side by side. Edits autosave to the source file, which the existing

@@ -3794,7 +3794,16 @@ impl<'a> SlideRenderer<'a> {
                 inner_w,
             );
             yy += lines as u32 * title_h + 40000;
-            yy = s.paragraph(&card.body, ix, yy, inner_w, body_size, &body_color, false, false);
+            yy = s.paragraph(
+                &card.body,
+                ix,
+                yy,
+                inner_w,
+                body_size,
+                &body_color,
+                false,
+                false,
+            );
             yy + pad
         };
 
@@ -3815,7 +3824,13 @@ impl<'a> SlideRenderer<'a> {
             for (i, card) in row.iter().enumerate() {
                 let cx = x + i as u32 * (col_w + gap);
                 self.rect(cx, y, col_w, row_h, &border);
-                self.rect(cx + 8000, y + 8000, col_w - 16000, row_h - 16000, &self.theme.bg.clone());
+                self.rect(
+                    cx + 8000,
+                    y + 8000,
+                    col_w - 16000,
+                    row_h - 16000,
+                    &self.theme.bg.clone(),
+                );
                 card_inner(self, card, cx, y);
             }
             y += row_h + gap;

@@ -1388,6 +1388,17 @@ fn zip_read(bytes: &[u8], name: &str) -> String {
     s
 }
 
+/// Like [`zip_read`] but returns `None` if the entry is absent (handy when
+/// iterating a fixed range of slide files past the deck's actual length).
+fn zip_read_opt(bytes: &[u8], name: &str) -> Option<String> {
+    let cursor = std::io::Cursor::new(bytes);
+    let mut archive = zip::ZipArchive::new(cursor).ok()?;
+    let mut file = archive.by_name(name).ok()?;
+    let mut s = String::new();
+    file.read_to_string(&mut s).ok()?;
+    Some(s)
+}
+
 fn find_bytes(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
     haystack[start..]
         .windows(needle.len())
@@ -3012,4 +3023,68 @@ fn odt_rtl_flips_writing_mode() {
     .unwrap();
     let styles = zip_read(&bytes, "styles.xml");
     assert!(styles.contains("rl-tb"), "expected rl-tb writing mode");
+}
+
+/// Regression: an H1 (section) slide carrying formatting hints used to drop
+/// them when paginate split it into a divider + content slide. The hint must
+/// reach the content half across every renderer that honours it.
+#[test]
+fn section_slide_propagates_formatting_hints() {
+    // H1 → section divider + content slide; the align/bg hints sit under the H1.
+    let md = "---\ntitle: t\n---\n\
+              # Centered\n\
+              <!-- align: center -->\n\
+              <!-- bg: accent -->\n\
+              \n\
+              Body text that should be centered on a tinted background.\n";
+
+    // HTML: content slide gets the align-center class.
+    let (front, body) = md2any::front_matter::extract(md);
+    let theme = md2any::theme::Theme::resolve("light", "16:9", None).unwrap();
+    let layout = md2any::layout::Layout::resolve("clean").unwrap();
+    let slides = md2any::paginate::paginate(md2any::parser::parse(&body, &front, "test"), &theme);
+    let html = String::from_utf8(
+        md2any::html::write(
+            &slides,
+            &theme,
+            &layout,
+            "t",
+            "tests",
+            &assets(),
+            None,
+            None,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        html.contains("align-center"),
+        "HTML content slide should carry align-center from the section H1"
+    );
+
+    // PPTX: the body paragraph is centre-aligned and the page is tinted.
+    let pptx = render_markdown("pptx", md);
+    let joined: String = (1..=8)
+        .filter_map(|n| zip_read_opt(&pptx, &format!("ppt/slides/slide{n}.xml")))
+        .collect();
+    assert!(
+        joined.contains(r#"algn="ctr""#),
+        "PPTX body should be centre-aligned"
+    );
+    assert!(
+        joined.contains("bgPr"),
+        "PPTX content slide should be tinted"
+    );
+
+    // ODP: a centre paragraph style and a per-slide drawing-page fill exist.
+    let odp = render_markdown("odp", md);
+    let content = zip_read(&odp, "content.xml");
+    assert!(
+        content.contains(r#"fo:text-align="center""#),
+        "ODP should emit a centre-aligned paragraph style"
+    );
+    assert!(
+        content.contains(r#"style:family="drawing-page""#),
+        "ODP should register a per-slide drawing-page style for the bg tint"
+    );
 }
