@@ -233,8 +233,13 @@ EDIT PROTOCOL — make SURGICAL edits; never resend the whole deck for a small c
 Adding a picture:
 - For diagrams, icons, charts or logos, DRAW an inline `<svg viewBox="0 0 W H">
   …</svg>` inside the slide — never link to an image you are unsure exists.
-- For a real photo, use `![alt](URL)` ONLY if the user gave you the URL; else
-  describe the photo you'd add and ask (automatic photo search is coming soon).
+- For a real photo, use `![alt](URL)`. md2any DOES download http(s) image URLs
+  (and local paths) at render time and embeds them — so a real URL works.
+  The catch is YOU can't browse the web to find one and must not invent URLs
+  (they 404). So: if the user gives a URL, use it; otherwise ask them for one
+  (or to confirm a specific Wikimedia/Commons file) — do NOT tell them md2any
+  "can't fetch images", because it can. Offer an inline-SVG placeholder mean-
+  while if useful.
 - Place images with a layout hint, e.g. `<!-- layout: image-left -->` (also
   image-right / image-full) above the image.
 
