@@ -1625,12 +1625,15 @@ fn render_image(
         let scale = (max_w / meta.width.max(1) as f32).min(max_h / meta.height.max(1) as f32);
         (meta.width as f32 * scale, meta.height as f32 * scale)
     };
+    // Displayed width: `cover` fills the box, otherwise the contained size.
+    let disp_w = if fit == Some("cover") { max_w } else { img_w };
     let img_x = match math_meta.map(|meta| meta.align) {
         Some(crate::math::MathBlockAlign::Left) => x,
         Some(crate::math::MathBlockAlign::Right) => x + width - img_w,
         Some(crate::math::MathBlockAlign::Center) => x + (width - img_w) / 2.0,
-        None if ctx.rtl => x + width - img_w,
-        None => x,
+        None if ctx.rtl => x + width - disp_w,
+        // Centre content images to match the HTML and PDF renderers.
+        None => x + ((width - disp_w) / 2.0).max(0.0),
     };
     if math_meta.is_some() {
         if let Some(svg) = inline_generated_math_svg(src, img_x, y, img_w, img_h) {

@@ -4446,7 +4446,12 @@ impl<'a> SlideRenderer<'a> {
         w: u32,
         imgs: &Imgs,
     ) -> u32 {
-        let caption_alt = crate::math::visible_image_alt(src, alt);
+        // Image alt text is an accessibility description, not a display
+        // caption — HTML keeps it as the `<img alt>` and SVG omits it, so the
+        // PDF no longer paints it under the image either (kept consistent across
+        // renderers). `alt` still drives the placeholder text when the image is
+        // missing, via fit_image_for_block/image_x_for_block below.
+        let caption_alt = "";
         let caption_h = if caption_alt.is_empty() { 0 } else { 260000 };
         // Cap image to 65% of the slide height so titles and surrounding
         // content stay visible. Deriving from `theme.slide_h` keeps this
