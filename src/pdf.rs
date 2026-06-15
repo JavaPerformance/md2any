@@ -1972,6 +1972,9 @@ struct SlideRenderer<'a> {
     /// Slide-level left-column fraction (`width=`), applied to Columns.
     /// `None` = even split. Reset per slide.
     cur_col_frac: Option<f32>,
+    /// Slide-level vertical alignment (`valign=`): "top"/"center"/"bottom".
+    /// Drives per-column centring in the Columns arm. Reset per slide.
+    cur_valign: &'static str,
 }
 
 struct LinkRect {
@@ -2001,6 +2004,7 @@ impl<'a> SlideRenderer<'a> {
             used_glyphs: vec![std::collections::HashSet::new(); fonts.face_count()],
             cur_text_align: TextAlign::Left,
             cur_col_frac: None,
+            cur_valign: "top",
         }
     }
 
@@ -3204,6 +3208,11 @@ impl<'a> SlideRenderer<'a> {
             _ => TextAlign::Left,
         };
         self.cur_col_frac = slide.col_frac();
+        self.cur_valign = match slide.valign() {
+            "center" => "center",
+            "bottom" => "bottom",
+            _ => "top",
+        };
         let w = theme.slide_w;
         let h = theme.slide_h;
         let base_margin: u32 = 533400;
@@ -3350,8 +3359,14 @@ impl<'a> SlideRenderer<'a> {
         // Vertical alignment: measure the content block, discard the trial
         // render, then re-render shifted so it sits centred/bottom-aligned in
         // the available band. (Mirrors the SVG renderer's measure-then-offset.)
+        // Column slides centre each column independently in the Columns arm, so
+        // skip the whole-stack offset for them (else the text would double-shift).
+        let has_columns = slide
+            .blocks
+            .iter()
+            .any(|b| matches!(b, Block::Columns { .. }));
         let valign = slide.valign();
-        if valign != "top" {
+        if valign != "top" && !has_columns {
             let ops_mark = self.ops.len();
             let links_mark = self.links.len();
             let end_y = self.render_blocks(
@@ -3528,17 +3543,45 @@ impl<'a> SlideRenderer<'a> {
                         None => avail / 2,
                     };
                     let right_w = avail.saturating_sub(left_w);
+                    let rx = x + left_w + gap;
                     let start_y = y;
-                    let left_y = self.render_blocks(left, x, start_y, left_w, _h_total, imgs);
-                    let right_y = self.render_blocks(
-                        right,
-                        x + left_w + gap,
-                        start_y,
-                        right_w,
-                        _h_total,
-                        imgs,
-                    );
-                    y = left_y.max(right_y);
+                    let factor = match self.cur_valign {
+                        "center" => 0.5,
+                        "bottom" => 1.0,
+                        _ => 0.0,
+                    };
+                    if factor > 0.0 {
+                        // Centre each column within the taller column's height
+                        // (e.g. text beside an image), like HTML/SVG. Measure
+                        // both via the truncate trick, then re-render at offsets.
+                        let om = self.ops.len();
+                        let lm = self.links.len();
+                        let lh = self
+                            .render_blocks(left, x, start_y, left_w, _h_total, imgs)
+                            .saturating_sub(start_y);
+                        self.ops.truncate(om);
+                        self.links.truncate(lm);
+                        let om2 = self.ops.len();
+                        let lm2 = self.links.len();
+                        let rh = self
+                            .render_blocks(right, rx, start_y, right_w, _h_total, imgs)
+                            .saturating_sub(start_y);
+                        self.ops.truncate(om2);
+                        self.links.truncate(lm2);
+                        let maxh = lh.max(rh);
+                        let loff = ((maxh.saturating_sub(lh)) as f32 * factor) as u32;
+                        let roff = ((maxh.saturating_sub(rh)) as f32 * factor) as u32;
+                        let ly =
+                            self.render_blocks(left, x, start_y + loff, left_w, _h_total, imgs);
+                        let ry =
+                            self.render_blocks(right, rx, start_y + roff, right_w, _h_total, imgs);
+                        y = ly.max(ry);
+                    } else {
+                        let left_y = self.render_blocks(left, x, start_y, left_w, _h_total, imgs);
+                        let right_y =
+                            self.render_blocks(right, rx, start_y, right_w, _h_total, imgs);
+                        y = left_y.max(right_y);
+                    }
                 }
                 Block::ColumnBreak => {}
                 Block::Image {

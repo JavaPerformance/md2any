@@ -1158,10 +1158,15 @@ function clearActive() { activeSlide = null; activeChip.style.display = 'none'; 
 // Pull surgical op blocks: ````md2any op=replace slide=12  …  ````
 function extractOps(reply) {
   const ops = [];
-  const re = /````[ \t]*md2any[ \t]+op=([a-z-]+)(?:[ \t]+slide=(\d+))?[^\n]*\r?\n([\s\S]*?)````/g;
+  // Accept 3- OR 4-backtick fences: models (Grok especially) default to a
+  // plain ``` fence even when told to use ````. The closing fence must match
+  // the opening run length (\1), so a 4-backtick wrapper still survives inner
+  // ``` code fences; a 3-backtick wrapper works for slides without code (the
+  // common case — e.g. layout/valign tweaks).
+  const re = /(`{3,4})[ \t]*md2any[ \t]+op=([a-z-]+)(?:[ \t]+slide=(\d+))?[^\n]*\r?\n([\s\S]*?)\1/g;
   let m;
   while ((m = re.exec(reply)) !== null) {
-    ops.push({ op: m[1], n: m[2] ? Number(m[2]) : null, content: m[3].replace(/\s+$/, '') });
+    ops.push({ op: m[2], n: m[3] ? Number(m[3]) : null, content: m[4].replace(/\s+$/, '') });
   }
   return ops;
 }
@@ -1230,7 +1235,7 @@ function finalizeBotMsg(bubble, reply) {
   let ops = extractOps(reply);
   let summary;
   if (ops.length) {
-    const i = reply.search(/````[ \t]*md2any/);
+    const i = reply.search(/`{3,4}[ \t]*md2any/);
     summary = (i > 0 ? reply.slice(0, i).trim() : '') || ('Proposed ' + ops.length + ' edit' + (ops.length > 1 ? 's' : '') + '.');
   } else {
     const ext = extractDoc(reply);
