@@ -44,6 +44,21 @@ thread_local! {
     /// each URL with rels and rewrite the placeholders into real `rId` values.
     static LINK_BUFFER: std::cell::RefCell<Vec<String>> =
         std::cell::RefCell::new(Vec::new());
+
+    /// Per-slide body alignment (`"l"`/`"ctr"`/`"r"`), set from the slide's
+    /// `align=` hint and applied to body paragraphs/headings in `render_blocks`.
+    static SLIDE_ALIGN: std::cell::RefCell<&'static str> = const { std::cell::RefCell::new("l") };
+
+    /// Per-slide left-column fraction from the `width=` hint (`None` = even).
+    static SLIDE_COL_FRAC: std::cell::RefCell<Option<f32>> = const { std::cell::RefCell::new(None) };
+}
+
+fn slide_align() -> &'static str {
+    SLIDE_ALIGN.with(|a| *a.borrow())
+}
+
+fn slide_col_frac() -> Option<f32> {
+    SLIDE_COL_FRAC.with(|f| *f.borrow())
 }
 
 fn take_link_buffer() -> Vec<String> {
@@ -846,6 +861,17 @@ fn slide_xml(
 ) -> String {
     let _ = take_link_buffer();
     let mut id: u32 = 100;
+    // Publish per-slide layout hints to the thread-locals that the block
+    // renderers read. Cleared at the end of this function.
+    SLIDE_ALIGN.with(|a| {
+        *a.borrow_mut() = match slide.text_align() {
+            "center" => "ctr",
+            "right" => "r",
+            _ => "l",
+        }
+    });
+    SLIDE_COL_FRAC.with(|f| *f.borrow_mut() = slide.col_frac());
+
     let (shapes, bg_override) = match &slide.kind {
         SlideKind::Title {
             subtitle,
@@ -870,7 +896,7 @@ fn slide_xml(
             render_content_slide(
                 slide, num, total, deck_title, theme, layout, &mut id, imgs, rels,
             ),
-            None,
+            slide.bg_color().map(|c| resolve_bg_color(c, theme)),
         ),
     };
 
@@ -2141,7 +2167,7 @@ fn render_blocks(
                     theme.body_size,
                     &theme.body_color,
                     false,
-                    "l",
+                    slide_align(),
                     false,
                     &theme.body_font,
                 );
@@ -2160,7 +2186,7 @@ fn render_blocks(
                     sz,
                     &theme.title_color,
                     true,
-                    "l",
+                    slide_align(),
                     false,
                     &theme.title_font,
                 );
@@ -2253,14 +2279,19 @@ fn render_blocks(
             }
             Block::Columns { left, right } => {
                 let gap: u32 = 280000;
-                let half = w.saturating_sub(gap) / 2;
-                let (l_xml, _) = render_blocks(left, theme, x, y, half, h, id, imgs, rels);
+                let avail = w.saturating_sub(gap);
+                let left_w = match slide_col_frac() {
+                    Some(f) => (avail as f32 * f) as u32,
+                    None => avail / 2,
+                };
+                let right_w = avail.saturating_sub(left_w);
+                let (l_xml, _) = render_blocks(left, theme, x, y, left_w, h, id, imgs, rels);
                 let (r_xml, _) = render_blocks(
                     right,
                     theme,
-                    x + half + gap,
+                    x + left_w + gap,
                     y,
-                    w - half - gap,
+                    right_w,
                     h,
                     id,
                     imgs,
@@ -3373,4 +3404,19 @@ fn progress_width(width: u32, num: usize, total: usize) -> u32 {
     ((width as u64 * num.max(1) as u64) / total as u64)
         .min(width as u64)
         .max(1) as u32
+}
+
+/// Resolve a per-slide `bg:` token (a `#hex` or palette keyword) into a bare
+/// 6-digit hex string for a PPTX `<a:srgbClr>`. Mirrors the PDF/SVG resolver.
+fn resolve_bg_color(token: &str, theme: &Theme) -> String {
+    if let Some(hex) = token.strip_prefix('#') {
+        return hex.to_string();
+    }
+    match token.to_ascii_lowercase().as_str() {
+        "accent" => theme.accent.clone(),
+        "section" => theme.section_bg.clone(),
+        "dark" => "0F172A".to_string(),
+        "light" => "FFFFFF".to_string(),
+        _ => theme.bg.clone(),
+    }
 }
