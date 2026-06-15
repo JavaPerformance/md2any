@@ -255,6 +255,9 @@ fn paginate_inner(
             let title = slide.title.clone();
             let notes = slide.notes.clone();
             let bg = slide.bg_image.clone();
+            // Carry formatting hints (align/valign/width/bgcolor/layout) onto
+            // the content half so they apply to the body, not just the divider.
+            let hint = slide.layout_hint.clone();
             let src_line = slide.source_line;
             out.push(slide);
             if !blocks.is_empty() {
@@ -264,7 +267,7 @@ fn paginate_inner(
                     blocks,
                     notes,
                     bg_image: bg,
-                    layout_hint: None,
+                    layout_hint: hint,
                     source_line: src_line,
                 };
                 for s in paginate_inner(vec![follow], theme, budget, wscale, options) {

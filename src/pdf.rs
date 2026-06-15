@@ -1966,6 +1966,12 @@ struct SlideRenderer<'a> {
     /// Per-face set of glyph IDs we've emitted. Drives font subsetting at
     /// write time so the PDF only carries the glyphs it actually uses.
     used_glyphs: Vec<std::collections::HashSet<u16>>,
+    /// Slide-level text alignment (`align=`), applied to body paragraphs and
+    /// headings. Reset per slide in [`render_content_slide`].
+    cur_text_align: TextAlign,
+    /// Slide-level left-column fraction (`width=`), applied to Columns.
+    /// `None` = even split. Reset per slide.
+    cur_col_frac: Option<f32>,
 }
 
 struct LinkRect {
@@ -1993,6 +1999,8 @@ impl<'a> SlideRenderer<'a> {
             links: Vec::new(),
             fonts,
             used_glyphs: vec![std::collections::HashSet::new(); fonts.face_count()],
+            cur_text_align: TextAlign::Left,
+            cur_col_frac: None,
         }
     }
 
@@ -2477,11 +2485,32 @@ impl<'a> SlideRenderer<'a> {
             base_italic,
         );
         let line_height_emu = (size_centipt as f32 * 1.25 * EMU_PER_PT / 100.0) as u32;
+        let size_pt = size_centipt as f32 / 100.0;
         let mut y = y_start;
         for line in lines {
+            // Slide-level alignment: shift the line within [x, x+max_w] by its
+            // measured width. Left alignment is the no-op fast path.
+            let lx = if matches!(self.cur_text_align, TextAlign::Left) {
+                x
+            } else {
+                let line_w_pt: f32 = line
+                    .iter()
+                    .map(|r| {
+                        let fi = font_index(base_bold || r.bold, base_italic || r.italic, r.code);
+                        text_width_pt(self.fonts, &r.text, fi, size_pt)
+                    })
+                    .sum();
+                let line_w_emu = (line_w_pt * EMU_PER_PT) as u32;
+                let slack = max_w_emu.saturating_sub(line_w_emu);
+                match self.cur_text_align {
+                    TextAlign::Center => x + slack / 2,
+                    TextAlign::Right => x + slack,
+                    TextAlign::Left => x,
+                }
+            };
             self.text_runs_line(
                 &line,
-                x,
+                lx,
                 y,
                 size_centipt,
                 base_color_hex,
@@ -3168,6 +3197,13 @@ impl<'a> SlideRenderer<'a> {
     ) {
         let theme = self.theme;
         let layout = self.layout;
+        // Slide-level formatting hints, threaded into block rendering below.
+        self.cur_text_align = match slide.text_align() {
+            "center" => TextAlign::Center,
+            "right" => TextAlign::Right,
+            _ => TextAlign::Left,
+        };
+        self.cur_col_frac = slide.col_frac();
         let w = theme.slide_w;
         let h = theme.slide_h;
         let base_margin: u32 = 533400;
@@ -3311,14 +3347,48 @@ impl<'a> SlideRenderer<'a> {
         let content_max_y = footer_y - 100000;
         let content_h = content_max_y.saturating_sub(content_y_start);
 
-        let _ = self.render_blocks(
-            &slide.blocks,
-            content_x,
-            content_y_start,
-            content_w,
-            content_h,
-            imgs,
-        );
+        // Vertical alignment: measure the content block, discard the trial
+        // render, then re-render shifted so it sits centred/bottom-aligned in
+        // the available band. (Mirrors the SVG renderer's measure-then-offset.)
+        let valign = slide.valign();
+        if valign != "top" {
+            let ops_mark = self.ops.len();
+            let links_mark = self.links.len();
+            let end_y = self.render_blocks(
+                &slide.blocks,
+                content_x,
+                content_y_start,
+                content_w,
+                content_h,
+                imgs,
+            );
+            self.ops.truncate(ops_mark);
+            self.links.truncate(links_mark);
+            let used = end_y.saturating_sub(content_y_start);
+            let slack = content_h.saturating_sub(used);
+            let offset = match valign {
+                "center" => slack / 2,
+                "bottom" => slack,
+                _ => 0,
+            };
+            let _ = self.render_blocks(
+                &slide.blocks,
+                content_x,
+                content_y_start + offset,
+                content_w,
+                content_h,
+                imgs,
+            );
+        } else {
+            let _ = self.render_blocks(
+                &slide.blocks,
+                content_x,
+                content_y_start,
+                content_w,
+                content_h,
+                imgs,
+            );
+        }
 
         if !layout.shows_sidebar() {
             // Logo replaces the deck-title text in the footer when present.
@@ -3433,8 +3503,12 @@ impl<'a> SlideRenderer<'a> {
                     );
                     y += 120000;
                 }
-                Block::Quote(paras) | Block::Callout { body: paras, .. } => {
+                Block::Quote(paras) => {
                     y = self.render_quote(paras, x, y, w);
+                    y += 80000;
+                }
+                Block::Callout { kind, body } => {
+                    y = self.render_callout(kind, body, x, y, w);
                     y += 80000;
                 }
                 Block::Table {
@@ -3447,14 +3521,20 @@ impl<'a> SlideRenderer<'a> {
                 }
                 Block::Columns { left, right } => {
                     let gap: u32 = 280000;
-                    let half = w.saturating_sub(gap) / 2;
+                    let avail = w.saturating_sub(gap);
+                    // Honour the slide-level `width=` ratio; default to even.
+                    let left_w = match self.cur_col_frac {
+                        Some(f) => (avail as f32 * f) as u32,
+                        None => avail / 2,
+                    };
+                    let right_w = avail.saturating_sub(left_w);
                     let start_y = y;
-                    let left_y = self.render_blocks(left, x, start_y, half, _h_total, imgs);
+                    let left_y = self.render_blocks(left, x, start_y, left_w, _h_total, imgs);
                     let right_y = self.render_blocks(
                         right,
-                        x + half + gap,
+                        x + left_w + gap,
                         start_y,
-                        w - half - gap,
+                        right_w,
                         _h_total,
                         imgs,
                     );
@@ -3479,8 +3559,9 @@ impl<'a> SlideRenderer<'a> {
                     y = self.render_footnotes(items, x, y, w);
                     y += 80000;
                 }
-                Block::Cards { cards, .. } => {
-                    y = self.render_blocks(&cards_as_blocks(cards), x, y, w, _h_total, imgs);
+                Block::Cards { cards, cols } => {
+                    y = self.render_cards(cards, *cols, x, y, w);
+                    y += 80000;
                 }
             }
         }
@@ -3619,6 +3700,127 @@ impl<'a> SlideRenderer<'a> {
         }
         self.rect(bar_x, start_y, 60000, y.saturating_sub(start_y), &accent);
         y
+    }
+
+    /// Admonition box: tinted background, coloured left bar, icon+label
+    /// heading, then the body paragraphs. Measure-then-draw so the box wraps
+    /// the content.
+    fn render_callout(
+        &mut self,
+        kind: &str,
+        paras: &[Vec<Run>],
+        x: u32,
+        y_start: u32,
+        w: u32,
+    ) -> u32 {
+        let accent = callout_color(kind).to_string();
+        let (icon, label) = callout_label(kind);
+        let body_color = self.theme.body_color.clone();
+        let size = self.theme.body_size.saturating_sub(100);
+        let label_size = self.theme.body_size;
+        let pad: u32 = 150000;
+        let bar_w: u32 = 60000;
+        let inner_x = x + bar_w + pad;
+        let inner_w = w.saturating_sub(bar_w + pad * 2);
+        let label_h = Self::line_h_emu(label_size);
+
+        // Lay the inner content out once to discover the box height, then
+        // discard the trial ops/links and draw the box behind a real pass.
+        let body_layout = |s: &mut Self, top: u32| -> u32 {
+            let mut yy = top + pad + label_h; // label line sits at top+pad
+            for (i, runs) in paras.iter().enumerate() {
+                if i > 0 {
+                    yy += 80000;
+                }
+                yy = s.paragraph(runs, inner_x, yy, inner_w, size, &body_color, false, false);
+            }
+            yy + pad
+        };
+
+        let ops_mark = self.ops.len();
+        let links_mark = self.links.len();
+        let bottom = body_layout(self, y_start);
+        self.ops.truncate(ops_mark);
+        self.links.truncate(links_mark);
+        let box_h = bottom.saturating_sub(y_start);
+
+        let tint = light_tint(callout_color(kind));
+        self.rect(x, y_start, w, box_h, &tint);
+        self.rect(x, y_start, bar_w, box_h, &accent);
+        self.text_line(
+            inner_x,
+            y_start + pad,
+            &format!("{icon} {label}"),
+            label_size,
+            &accent,
+            true,
+            false,
+            false,
+            TextAlign::Left,
+            inner_w,
+        );
+        body_layout(self, y_start);
+        y_start + box_h
+    }
+
+    /// Fixed N-column grid of bordered cards (title + body), wrapping rows.
+    fn render_cards(&mut self, cards: &[Card], cols: u8, x: u32, y_start: u32, w: u32) -> u32 {
+        let n = (cols as usize).max(1);
+        let gap: u32 = 180000;
+        let pad: u32 = 140000;
+        let col_w = w.saturating_sub(gap * (n as u32 - 1)) / n as u32;
+        let inner_w = col_w.saturating_sub(pad * 2);
+        let title_color = self.theme.title_color.clone();
+        let body_color = self.theme.body_color.clone();
+        let border = self.theme.divider.clone();
+        let title_size = self.theme.body_size;
+        let body_size = self.theme.body_size.saturating_sub(100);
+        let title_h = Self::line_h_emu(title_size);
+
+        // Render one card's inner content at (cx, top); returns the bottom y.
+        let card_inner = |s: &mut Self, card: &Card, cx: u32, top: u32| -> u32 {
+            let ix = cx + pad;
+            let mut yy = top + pad;
+            let lines = s.text_line(
+                ix,
+                yy,
+                &card.title,
+                title_size,
+                &title_color,
+                true,
+                false,
+                false,
+                TextAlign::Left,
+                inner_w,
+            );
+            yy += lines as u32 * title_h + 40000;
+            yy = s.paragraph(&card.body, ix, yy, inner_w, body_size, &body_color, false, false);
+            yy + pad
+        };
+
+        let mut y = y_start;
+        for row in cards.chunks(n) {
+            // Measure the tallest card in this row so the boxes align.
+            let mut row_h = 0u32;
+            for (i, card) in row.iter().enumerate() {
+                let cx = x + i as u32 * (col_w + gap);
+                let ops_mark = self.ops.len();
+                let links_mark = self.links.len();
+                let bottom = card_inner(self, card, cx, y);
+                self.ops.truncate(ops_mark);
+                self.links.truncate(links_mark);
+                row_h = row_h.max(bottom.saturating_sub(y));
+            }
+            // Draw boxes then content.
+            for (i, card) in row.iter().enumerate() {
+                let cx = x + i as u32 * (col_w + gap);
+                self.rect(cx, y, col_w, row_h, &border);
+                self.rect(cx + 8000, y + 8000, col_w - 16000, row_h - 16000, &self.theme.bg.clone());
+                card_inner(self, card, cx, y);
+            }
+            y += row_h + gap;
+        }
+        y.saturating_sub(gap)
     }
 
     fn render_code_block(
@@ -4626,6 +4828,40 @@ fn hex_to_rgb_f(hex: &str) -> (f32, f32, f32) {
     let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
     let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
     (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0)
+}
+
+/// Accent colour (no `#`) for a callout kind. Mirrors the SVG/HTML palette.
+fn callout_color(kind: &str) -> &'static str {
+    match kind {
+        "tip" => "22C55E",
+        "important" => "A855F7",
+        "warning" => "F59E0B",
+        "caution" => "EF4444",
+        _ => "3B82F6",
+    }
+}
+
+/// Icon + display label for a callout kind.
+fn callout_label(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "tip" => ("\u{1F4A1}", "Tip"),
+        "important" => ("\u{2757}", "Important"),
+        "warning" => ("\u{26A0}", "Warning"),
+        "caution" => ("\u{1F6D1}", "Caution"),
+        _ => ("\u{2139}", "Note"),
+    }
+}
+
+/// Light background tint for a callout: the accent mixed ~14% over white.
+fn light_tint(hex: &str) -> String {
+    let (r, g, b) = hex_to_rgb_f(hex);
+    let mix = |c: f32| 1.0 - (1.0 - c) * 0.14;
+    format!(
+        "{:02X}{:02X}{:02X}",
+        (mix(r) * 255.0) as u8,
+        (mix(g) * 255.0) as u8,
+        (mix(b) * 255.0) as u8,
+    )
 }
 
 fn fit_image(iw: u32, ih: u32, max_w: u32, max_h: u32) -> (u32, u32) {
