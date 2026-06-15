@@ -1745,7 +1745,7 @@ fn render_blocks(
                     "top",
                     "left",
                     &runs,
-                    theme.body_size - 100,
+                    tscaled(theme.body_size - 100),
                     &theme.body_color,
                     false,
                     true,
@@ -1759,7 +1759,7 @@ fn render_blocks(
                 let mut inner = para_xml(
                     reg,
                     &[Run::plain(format!("{icon} {label}"))],
-                    theme.body_size - 50,
+                    tscaled(theme.body_size - 50),
                     accent,
                     true,
                     false,
@@ -1770,7 +1770,7 @@ fn render_blocks(
                     inner.push_str(&para_xml(
                         reg,
                         prun,
-                        theme.body_size - 100,
+                        tscaled(theme.body_size - 100),
                         &theme.body_color,
                         false,
                         false,
@@ -1857,7 +1857,7 @@ fn render_blocks(
                         let mut inner = para_xml(
                             reg,
                             &[Run::plain(card.title.clone())],
-                            theme.body_size,
+                            tscaled(theme.body_size),
                             &theme.title_color,
                             true,
                             false,
@@ -1867,7 +1867,7 @@ fn render_blocks(
                         inner.push_str(&para_xml(
                             reg,
                             &card.body,
-                            theme.body_size - 100,
+                            tscaled(theme.body_size - 100),
                             &theme.body_color,
                             false,
                             false,

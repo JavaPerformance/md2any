@@ -3765,8 +3765,8 @@ impl<'a> SlideRenderer<'a> {
         let accent = callout_color(kind).to_string();
         let (icon, label) = callout_label(kind);
         let body_color = self.theme.body_color.clone();
-        let size = self.theme.body_size.saturating_sub(100);
-        let label_size = self.theme.body_size;
+        let size = (self.theme.body_size.saturating_sub(100) as f32 * self.cur_text_scale) as u32;
+        let label_size = (self.theme.body_size as f32 * self.cur_text_scale) as u32;
         let pad: u32 = 150000;
         let bar_w: u32 = 60000;
         let inner_x = x + bar_w + pad;
@@ -3822,8 +3822,9 @@ impl<'a> SlideRenderer<'a> {
         let title_color = self.theme.title_color.clone();
         let body_color = self.theme.body_color.clone();
         let border = self.theme.divider.clone();
-        let title_size = self.theme.body_size;
-        let body_size = self.theme.body_size.saturating_sub(100);
+        let title_size = (self.theme.body_size as f32 * self.cur_text_scale) as u32;
+        let body_size =
+            (self.theme.body_size.saturating_sub(100) as f32 * self.cur_text_scale) as u32;
         let title_h = Self::line_h_emu(title_size);
 
         // Render one card's inner content at (cx, top); returns the bottom y.

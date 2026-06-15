@@ -2290,7 +2290,7 @@ fn render_blocks(
                     quote_body.push_str(&render_runs_paragraph(
                         runs,
                         theme,
-                        theme.body_size - 100,
+                        tscaled(theme.body_size - 100),
                         &theme.body_color,
                         false,
                         "l",
@@ -2318,7 +2318,7 @@ fn render_blocks(
                 let mut inner = render_paragraph(
                     &[Run::plain(format!("{icon} {label}"))],
                     theme,
-                    theme.body_size - 50,
+                    tscaled(theme.body_size - 50),
                     accent,
                     true,
                     "l",
@@ -2329,7 +2329,7 @@ fn render_blocks(
                     inner.push_str(&render_paragraph(
                         runs,
                         theme,
-                        theme.body_size - 100,
+                        tscaled(theme.body_size - 100),
                         &theme.body_color,
                         false,
                         "l",
@@ -2419,7 +2419,7 @@ fn render_blocks(
                         let mut inner = render_paragraph(
                             &[Run::plain(card.title.clone())],
                             theme,
-                            theme.body_size,
+                            tscaled(theme.body_size),
                             &theme.title_color,
                             true,
                             "l",
@@ -2429,7 +2429,7 @@ fn render_blocks(
                         inner.push_str(&render_paragraph(
                             &card.body,
                             theme,
-                            theme.body_size - 100,
+                            tscaled(theme.body_size - 100),
                             &theme.body_color,
                             false,
                             "l",
