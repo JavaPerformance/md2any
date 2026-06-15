@@ -147,9 +147,15 @@ pub fn write_with_font_options(
         None
     };
 
+    // Composite transparent images onto the theme background so they blend
+    // into dark slides instead of getting a white box.
+    let bg_rgb = {
+        let (r, g, b) = hex_to_rgb_f(&theme.bg);
+        [(r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8]
+    };
     let mut decoded_images: Vec<DecodedImage> = Vec::new();
     for m in &metas {
-        decoded_images.push(decode_image(m)?);
+        decoded_images.push(decode_image(m, bg_rgb)?);
     }
 
     let mut pdf = PdfWriter::new(deck_title, author, theme.slide_w, theme.slide_h);
@@ -622,7 +628,7 @@ struct DecodedImage {
     bpc: u8,
 }
 
-fn decode_image(m: &ImageMeta) -> Result<DecodedImage> {
+fn decode_image(m: &ImageMeta, bg: [u8; 3]) -> Result<DecodedImage> {
     match m.ext {
         "jpeg" => Ok(DecodedImage {
             width: m.width,
@@ -632,12 +638,12 @@ fn decode_image(m: &ImageMeta) -> Result<DecodedImage> {
             colorspace: "DeviceRGB",
             bpc: 8,
         }),
-        "png" => decode_png(m).context("decode PNG for PDF embed"),
+        "png" => decode_png(m, bg).context("decode PNG for PDF embed"),
         _ => anyhow::bail!("unsupported image format for PDF: {}", m.ext),
     }
 }
 
-fn decode_png(m: &ImageMeta) -> Result<DecodedImage> {
+fn decode_png(m: &ImageMeta, bg: [u8; 3]) -> Result<DecodedImage> {
     let bytes = &m.bytes;
     if bytes.len() < 8 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" {
         anyhow::bail!("not a PNG");
@@ -739,20 +745,22 @@ fn decode_png(m: &ImageMeta) -> Result<DecodedImage> {
             unfiltered[dst_start + col] = value;
         }
     }
-    // Convert to RGB (drop alpha by compositing on white).
+    // Convert to RGB. PDF base images have no alpha, so composite onto the
+    // slide background colour (not white) — a transparent SVG/PNG on a dark
+    // theme then blends into the slide instead of showing a white box.
     let rgb = match color_type {
         2 => unfiltered, // already RGB
         6 => {
             let mut out = Vec::with_capacity((width * height * 3) as usize);
             for px in unfiltered.chunks_exact(4) {
                 let a = px[3] as u32;
-                let blend = |c: u8| -> u8 {
-                    let v = (c as u32) * a + 255 * (255 - a);
+                let blend = |c: u8, bgc: u8| -> u8 {
+                    let v = (c as u32) * a + (bgc as u32) * (255 - a);
                     (v / 255) as u8
                 };
-                out.push(blend(px[0]));
-                out.push(blend(px[1]));
-                out.push(blend(px[2]));
+                out.push(blend(px[0], bg[0]));
+                out.push(blend(px[1], bg[1]));
+                out.push(blend(px[2], bg[2]));
             }
             out
         }
@@ -770,13 +778,13 @@ fn decode_png(m: &ImageMeta) -> Result<DecodedImage> {
             for px in unfiltered.chunks_exact(2) {
                 let g = px[0];
                 let a = px[1] as u32;
-                let blend = |c: u8| -> u8 {
-                    let v = (c as u32) * a + 255 * (255 - a);
+                let blend = |c: u8, bgc: u8| -> u8 {
+                    let v = (c as u32) * a + (bgc as u32) * (255 - a);
                     (v / 255) as u8
                 };
-                out.push(blend(g));
-                out.push(blend(g));
-                out.push(blend(g));
+                out.push(blend(g, bg[0]));
+                out.push(blend(g, bg[1]));
+                out.push(blend(g, bg[2]));
             }
             out
         }
