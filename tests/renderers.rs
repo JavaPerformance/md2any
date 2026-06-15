@@ -3088,3 +3088,35 @@ fn section_slide_propagates_formatting_hints() {
         "ODP should register a per-slide drawing-page style for the bg tint"
     );
 }
+
+/// Regression: a `---` must never leave an empty phantom slide, and content
+/// placed under the title H1 (or after a break) must not be silently dropped.
+#[test]
+fn deferred_break_no_phantom_no_content_loss() {
+    let md = "# Title\n\nLead paragraph under the title.\n\n---\n\n# Section\n\n\
+              > [!TIP]\n> a tip\n\n> [!NOTE]\n> a note\n\n---\n\n# Last\n\nClosing words.\n";
+    let (front, body) = md2any::front_matter::extract(md);
+    let theme = md2any::theme::Theme::resolve("light", "16:9", None).unwrap();
+    let slides = md2any::paginate::paginate(md2any::parser::parse(&body, &front, "t"), &theme);
+
+    // No content slide may be block-empty — that's the phantom symptom.
+    for s in &slides {
+        if matches!(s.kind, md2any::ir::SlideKind::Content) {
+            assert!(
+                !s.blocks.is_empty(),
+                "phantom empty content slide with title {:?}",
+                s.title
+            );
+        }
+    }
+    // Content under the title H1 and after the final break survived.
+    let snap = md2any::slides_snapshot(&slides);
+    assert!(
+        snap.contains("Lead paragraph under the title"),
+        "content under the title H1 was dropped"
+    );
+    assert!(
+        snap.contains("Closing words"),
+        "trailing content was dropped"
+    );
+}

@@ -384,6 +384,12 @@ struct State<'a> {
     cur_source_line: u32,
     started_real_content: bool,
     first_h1_consumed: bool,
+    /// A `---` break has been seen but no slide opened yet. Deferring the open
+    /// lets a following heading absorb the break (no phantom empty slide) while
+    /// following content still triggers a fresh slide. See [`ensure_slide_open`].
+    pending_break: bool,
+    /// Title carried onto the slide a pending break will open.
+    pending_break_title: String,
 
     runs: Vec<Run>,
     bold: u32,
@@ -480,6 +486,8 @@ impl<'a> State<'a> {
             cur_source_line: 0,
             started_real_content: front.title.is_some(),
             first_h1_consumed: false,
+            pending_break: false,
+            pending_break_title: String::new(),
             runs: Vec::new(),
             bold: 0,
             italic: 0,
@@ -574,12 +582,16 @@ impl<'a> State<'a> {
         if self.in_blockquote > 0 {
             self.quote_paragraphs.push(runs);
         } else {
+            self.ensure_slide_open();
             self.current.blocks.push(Block::Paragraph(runs));
             self.started_real_content = true;
         }
     }
 
     fn open_slide(&mut self, kind: SlideKind, title: String) {
+        // Any explicit slide boundary (heading, or a resolved break) absorbs a
+        // pending `---`, so it never later materialises as an empty phantom.
+        self.pending_break = false;
         let needs_flush = !self.current.title.is_empty()
             || !self.current.blocks.is_empty()
             || self.started_real_content;
@@ -606,6 +618,27 @@ impl<'a> State<'a> {
         self.started_real_content = true;
     }
 
+    /// Resolve a deferred `---` break: open the content slide it implied. Called
+    /// at every point real content (a block) or a slide-level attribute is about
+    /// to attach to `current`, so the break materialises exactly when there is
+    /// something to put on the new slide — never as an empty phantom.
+    fn ensure_slide_open(&mut self) {
+        if self.pending_break {
+            self.pending_break = false;
+            let title = std::mem::take(&mut self.pending_break_title);
+            self.open_slide(SlideKind::Content, title);
+        } else if matches!(self.current.kind, SlideKind::Title { .. })
+            && self.current.blocks.is_empty()
+        {
+            // Body content arriving on the deck-title slide (which renders only
+            // title/subtitle/author) would be dropped — split it onto its own
+            // content slide carrying the same title. Only the first block
+            // triggers this; afterwards `current` is already a Content slide.
+            let title = self.current.title.clone();
+            self.open_slide(SlideKind::Content, title);
+        }
+    }
+
     /// Turn an accumulated inline `<svg>…</svg>` into a rasterisable image
     /// block (base64 SVG data URI), routed through the normal image pipeline.
     fn push_inline_svg(&mut self, svg: &str) {
@@ -618,6 +651,7 @@ impl<'a> State<'a> {
             .unwrap_or(svg.len());
         let markup = &svg[start..end];
         self.flush_paragraph();
+        self.ensure_slide_open();
         let uri = format!(
             "data:image/svg+xml;base64,{}",
             crate::math::base64(markup.as_bytes())
@@ -664,11 +698,13 @@ impl<'a> State<'a> {
                 let s = c.trim();
                 if s == "<!--md2any-col-->" {
                     self.flush_paragraph();
+                    self.ensure_slide_open();
                     self.current.blocks.push(Block::ColumnBreak);
                     self.started_real_content = true;
                 } else if let Some(val) = extract_bg(s) {
                     // A colour (`#hex` or a keyword) tints the slide; anything
                     // else is treated as a background-image path.
+                    self.ensure_slide_open();
                     if is_bg_color(&val) {
                         let opt = format!("bgcolor={val}");
                         self.current.layout_hint = Some(match self.current.layout_hint.take() {
@@ -680,6 +716,7 @@ impl<'a> State<'a> {
                     }
                     self.started_real_content = true;
                 } else if let Some(note) = extract_note(s) {
+                    self.ensure_slide_open();
                     let existing = self.current.notes.take().unwrap_or_default();
                     let combined = if existing.is_empty() {
                         note
@@ -688,23 +725,27 @@ impl<'a> State<'a> {
                     };
                     self.current.notes = Some(combined);
                 } else if let Some(name) = extract_layout(s) {
+                    self.ensure_slide_open();
                     self.current.layout_hint = Some(name);
                     self.started_real_content = true;
                 } else if let Some(align) = extract_align(s) {
                     // Fold `align=` into the layout-hint string (which also
                     // carries valign/width), creating it if absent.
+                    self.ensure_slide_open();
                     let opt = format!("align={align}");
                     self.current.layout_hint = Some(match self.current.layout_hint.take() {
                         Some(h) => format!("{h} {opt}"),
                         None => opt,
                     });
                 } else if let Some(valign) = extract_valign(s) {
+                    self.ensure_slide_open();
                     let opt = format!("valign={valign}");
                     self.current.layout_hint = Some(match self.current.layout_hint.take() {
                         Some(h) => format!("{h} {opt}"),
                         None => opt,
                     });
                 } else if let Some(cols) = extract_cards(s) {
+                    self.ensure_slide_open();
                     let opt = format!("cards={cols}");
                     self.current.layout_hint = Some(match self.current.layout_hint.take() {
                         Some(h) => format!("{h} {opt}"),
@@ -756,13 +797,17 @@ impl<'a> State<'a> {
                 self.push_text(" ", false);
             }
             Event::Rule => {
+                // Defer: a `---` followed immediately by a heading must not leave
+                // an empty slide, and content after it opens its own slide. Record
+                // the carried title and wait (see `ensure_slide_open`).
                 self.flush_paragraph();
                 let title = if self.current.title.is_empty() {
                     self.fallback_title.to_string()
                 } else {
                     self.current.title.clone()
                 };
-                self.open_slide(SlideKind::Content, title);
+                self.pending_break = true;
+                self.pending_break_title = title;
             }
             Event::TaskListMarker(checked) => {
                 let mark = if checked { "☑ " } else { "☐ " };
@@ -903,6 +948,7 @@ impl<'a> State<'a> {
                 } else if lvl == 2 {
                     self.open_slide(SlideKind::Content, title);
                 } else {
+                    self.ensure_slide_open();
                     self.current
                         .blocks
                         .push(Block::Heading { level: lvl, runs });
@@ -917,6 +963,7 @@ impl<'a> State<'a> {
                 if self.in_blockquote == 0 {
                     let paras = std::mem::take(&mut self.quote_paragraphs);
                     if !paras.is_empty() {
+                        self.ensure_slide_open();
                         self.current.blocks.push(Block::Quote(paras));
                         self.started_real_content = true;
                     }
@@ -960,6 +1007,7 @@ impl<'a> State<'a> {
                     .map(expand_code_tabs)
                     .collect();
                 let line_numbers = lines.len() > 5;
+                self.ensure_slide_open();
                 self.current.blocks.push(Block::CodeBlock {
                     lang,
                     title,
@@ -978,6 +1026,7 @@ impl<'a> State<'a> {
                 let _ordered = self.list_stack.pop().unwrap_or(false);
                 if self.list_stack.is_empty() && !self.list_items.is_empty() {
                     let items = std::mem::take(&mut self.list_items);
+                    self.ensure_slide_open();
                     self.current.blocks.push(Block::List(items));
                     self.started_real_content = true;
                 }
@@ -1007,6 +1056,7 @@ impl<'a> State<'a> {
                     let alt = std::mem::take(&mut self.image_alt);
                     self.in_image = false;
                     if !src.is_empty() {
+                        self.ensure_slide_open();
                         self.current.blocks.push(Block::Image {
                             src,
                             alt,
@@ -1023,6 +1073,7 @@ impl<'a> State<'a> {
                 let headers = std::mem::take(&mut self.table_headers);
                 let rows = std::mem::take(&mut self.table_rows);
                 let aligns = std::mem::take(&mut self.table_aligns);
+                self.ensure_slide_open();
                 self.current.blocks.push(Block::Table {
                     headers,
                     rows,

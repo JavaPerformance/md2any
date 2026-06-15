@@ -90,6 +90,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A `---` before a heading left an empty phantom slide, and content under
+  the title slide was dropped.** Thematic breaks now *defer* opening a slide:
+  a following heading absorbs the break (no empty slide), while following
+  content opens its own slide. Body content placed under the deck-title H1 —
+  which renders only title/subtitle/author — is split onto its own content
+  slide instead of being silently lost. Affected every output format.
+
 - **Bare hex colours in front-matter were silently dropped.** YAML treats a
   leading `#` as a comment, so `accent: #22D3EE` parsed as empty and the style
   override vanished. Front-matter now auto-quotes values that are exactly a hex
