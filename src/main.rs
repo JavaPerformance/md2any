@@ -1051,6 +1051,31 @@ fn build_once(
         Format::Pptx
     };
 
+    // Warn when the deck contains glyphs the active fonts can't render (e.g.
+    // CJK or emoji with the default Latin-only fonts). PDF and PNG embed /
+    // rasterise text with md2any's own fonts, so missing glyphs render blank;
+    // HTML/SVG and the office formats defer to the viewer's fonts. Surfaces a
+    // silent failure that previously only `--font-audit` could find.
+    if matches!(format, Format::Pdf | Format::Png) {
+        if let Ok(audit) = build_font_audit(&slides, &pdf_font_paths) {
+            if !audit.missing.is_empty() {
+                let total: usize = audit.missing.iter().map(|m| m.count).sum();
+                let sample: String = audit
+                    .missing
+                    .iter()
+                    .take(6)
+                    .map(|m| m.ch.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                eprintln!(
+                    "md2any: warning: {total} character(s) have no glyph in the active fonts \
+                     (e.g. {sample}) and will render blank. Pass --cjk <font.ttf> (or --pdf-font) \
+                     to embed a wider font; run --font-audit for the full list."
+                );
+            }
+        }
+    }
+
     let output = cli
         .output
         .clone()
