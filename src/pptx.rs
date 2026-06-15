@@ -51,6 +51,10 @@ thread_local! {
 
     /// Per-slide left-column fraction from the `width=` hint (`None` = even).
     static SLIDE_COL_FRAC: std::cell::RefCell<Option<f32>> = const { std::cell::RefCell::new(None) };
+
+    /// Per-slide vertical alignment (`"top"`/`"center"`/`"bottom"`) from the
+    /// `valign=` hint, used to offset the content band when it underfills.
+    static SLIDE_VALIGN: std::cell::RefCell<&'static str> = const { std::cell::RefCell::new("top") };
 }
 
 fn slide_align() -> &'static str {
@@ -59,6 +63,10 @@ fn slide_align() -> &'static str {
 
 fn slide_col_frac() -> Option<f32> {
     SLIDE_COL_FRAC.with(|f| *f.borrow())
+}
+
+fn slide_valign() -> &'static str {
+    SLIDE_VALIGN.with(|v| *v.borrow())
 }
 
 fn take_link_buffer() -> Vec<String> {
@@ -871,6 +879,13 @@ fn slide_xml(
         }
     });
     SLIDE_COL_FRAC.with(|f| *f.borrow_mut() = slide.col_frac());
+    SLIDE_VALIGN.with(|v| {
+        *v.borrow_mut() = match slide.valign() {
+            "center" => "center",
+            "bottom" => "bottom",
+            _ => "top",
+        }
+    });
 
     let (shapes, bg_override) = match &slide.kind {
         SlideKind::Title {
@@ -2154,7 +2169,19 @@ fn render_blocks(
         1.0
     };
 
+    // Vertical alignment: when the content underfills the band (scale == 1.0),
+    // push it down by the slack so it sits centred / bottom-aligned. Only the
+    // top-level content call (h_total == the full band) should do this, so we
+    // gate on scale to avoid shifting nested column content.
     let mut y = y_start;
+    if scale >= 1.0 {
+        let slack = h_total.saturating_sub(estimated);
+        y += match slide_valign() {
+            "center" => slack / 2,
+            "bottom" => slack,
+            _ => 0,
+        };
+    }
     for block in blocks {
         let raw_h = block_height_emu(block, w, theme, imgs);
         let h = ((raw_h as f32) * scale) as u32;
@@ -2242,7 +2269,7 @@ fn render_blocks(
                     id,
                 ));
             }
-            Block::Quote(paras) | Block::Callout { body: paras, .. } => {
+            Block::Quote(paras) => {
                 shapes.push_str(&filled_rect(*id, "QuoteBar", x, y, 60000, h, &theme.accent));
                 *id += 1;
                 let mut quote_body = String::new();
@@ -2270,6 +2297,46 @@ fn render_blocks(
                     w.saturating_sub(180000),
                     h,
                     &quote_body,
+                    "t",
+                ));
+                *id += 1;
+            }
+            Block::Callout { kind, body } => {
+                let accent = callout_color(kind);
+                let tint = light_tint(accent);
+                let (icon, label) = callout_label(kind);
+                let mut inner = render_paragraph(
+                    &[Run::plain(format!("{icon} {label}"))],
+                    theme,
+                    theme.body_size - 50,
+                    accent,
+                    true,
+                    "l",
+                    false,
+                    &theme.body_font,
+                );
+                for runs in body {
+                    inner.push_str(&render_paragraph(
+                        runs,
+                        theme,
+                        theme.body_size - 100,
+                        &theme.body_color,
+                        false,
+                        "l",
+                        false,
+                        &theme.body_font,
+                    ));
+                }
+                shapes.push_str(&filled_box(
+                    *id,
+                    "Callout",
+                    x,
+                    y,
+                    w,
+                    h,
+                    &inner,
+                    &tint,
+                    Some(accent),
                     "t",
                 ));
                 *id += 1;
@@ -2328,10 +2395,52 @@ fn render_blocks(
             Block::Footnotes(items) => {
                 shapes.push_str(&render_footnotes_block(items, theme, x, y, w, h, id));
             }
-            Block::Cards { cards, .. } => {
-                let (s, _) =
-                    render_blocks(&cards_as_blocks(cards), theme, x, y, w, h, id, imgs, rels);
-                shapes.push_str(&s);
+            Block::Cards { cards, cols } => {
+                let n = (*cols as usize).max(1);
+                let gap: u32 = 180000;
+                let col_w = w.saturating_sub(gap * (n as u32 - 1)) / n as u32;
+                let card_border = theme.divider.clone();
+                let nrows = cards.len().div_ceil(n) as u32;
+                let row_h = h.saturating_sub((nrows.saturating_sub(1)) * gap) / nrows.max(1);
+                for (r, row) in cards.chunks(n).enumerate() {
+                    let ry = y + r as u32 * (row_h + gap);
+                    for (i, card) in row.iter().enumerate() {
+                        let cx = x + i as u32 * (col_w + gap);
+                        let mut inner = render_paragraph(
+                            &[Run::plain(card.title.clone())],
+                            theme,
+                            theme.body_size,
+                            &theme.title_color,
+                            true,
+                            "l",
+                            false,
+                            &theme.title_font,
+                        );
+                        inner.push_str(&render_paragraph(
+                            &card.body,
+                            theme,
+                            theme.body_size - 100,
+                            &theme.body_color,
+                            false,
+                            "l",
+                            false,
+                            &theme.body_font,
+                        ));
+                        shapes.push_str(&filled_box(
+                            *id,
+                            "Card",
+                            cx,
+                            ry,
+                            col_w,
+                            row_h,
+                            &inner,
+                            &theme.bg,
+                            Some(&card_border),
+                            "t",
+                        ));
+                        *id += 1;
+                    }
+                }
             }
         }
         y += h + 80000;
@@ -2419,7 +2528,7 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
             };
             (lines.len() as u32).max(1) * 280000 + 320000 + title_h
         }
-        Block::Quote(paras) | Block::Callout { body: paras, .. } => {
+        Block::Quote(paras) => {
             paras
                 .iter()
                 .map(|runs| {
@@ -2429,6 +2538,18 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
                 })
                 .sum::<u32>()
                 + 120000
+        }
+        Block::Callout { body, .. } => {
+            // Quote-style body height plus a label line and the box padding.
+            body.iter()
+                .map(|runs| {
+                    let chars = total_chars(runs) as u32;
+                    let lines = (chars / cpl.saturating_sub(4).max(12)).max(1) + 1;
+                    lines * 280000
+                })
+                .sum::<u32>()
+                + 280000 // label line
+                + 320000 // top+bottom padding
         }
         Block::Table { headers, rows, .. } => table_height_emu(headers, rows, w, theme),
         Block::Columns { left, right } => {
@@ -2480,10 +2601,24 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
                 .sum::<u32>();
             total + 120000
         }
-        Block::Cards { cards, .. } => cards_as_blocks(cards)
-            .iter()
-            .map(|b| block_height_emu(b, w, theme, imgs))
-            .sum(),
+        Block::Cards { cards, cols } => {
+            // Grid: rows × tallest card. Each card is title + body in a box.
+            let n = (*cols as usize).max(1);
+            let gap: u32 = 180000;
+            let col_w = w.saturating_sub(gap * (n as u32 - 1)) / n as u32;
+            let ccpl = chars_per_line(col_w).max(8);
+            let tallest = cards
+                .iter()
+                .map(|c| {
+                    let title_lines = (c.title.chars().count() as u32 / ccpl).max(1);
+                    let body_lines = (total_chars(&c.body) as u32 / ccpl).max(1) + 1;
+                    title_lines * 300000 + body_lines * 260000 + 280000
+                })
+                .max()
+                .unwrap_or(0);
+            let rows = cards.len().div_ceil(n) as u32;
+            rows * tallest + (rows.saturating_sub(1)) * gap
+        }
     }
 }
 
@@ -3408,6 +3543,82 @@ fn progress_width(width: u32, num: usize, total: usize) -> u32 {
 
 /// Resolve a per-slide `bg:` token (a `#hex` or palette keyword) into a bare
 /// 6-digit hex string for a PPTX `<a:srgbClr>`. Mirrors the PDF/SVG resolver.
+/// Accent colour (bare hex) for a callout kind. Mirrors PDF/SVG/HTML.
+fn callout_color(kind: &str) -> &'static str {
+    match kind {
+        "tip" => "22C55E",
+        "important" => "A855F7",
+        "warning" => "F59E0B",
+        "caution" => "EF4444",
+        _ => "3B82F6",
+    }
+}
+
+/// Icon + display label for a callout kind.
+fn callout_label(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "tip" => ("\u{1F4A1}", "Tip"),
+        "important" => ("\u{2757}", "Important"),
+        "warning" => ("\u{26A0}", "Warning"),
+        "caution" => ("\u{1F6D1}", "Caution"),
+        _ => ("\u{2139}", "Note"),
+    }
+}
+
+/// Light background tint for a callout: accent mixed ~14% over white.
+fn light_tint(hex: &str) -> String {
+    let parse = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0) as f32;
+    if hex.len() != 6 {
+        return "EEF2FF".to_string();
+    }
+    let mix = |c: f32| (255.0 - (255.0 - c) * 0.14) as u8;
+    format!(
+        "{:02X}{:02X}{:02X}",
+        mix(parse(0)),
+        mix(parse(2)),
+        mix(parse(4))
+    )
+}
+
+/// A filled, rounded shape containing pre-rendered paragraphs. `border` (bare
+/// hex) draws a 1pt outline; `fill` is the bare-hex background.
+#[allow(clippy::too_many_arguments)]
+fn filled_box(
+    id: u32,
+    name: &str,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    body: &str,
+    fill: &str,
+    border: Option<&str>,
+    anchor: &str,
+) -> String {
+    let ln = match border {
+        Some(c) => {
+            format!(r#"<a:ln w="12700"><a:solidFill><a:srgbClr val="{c}"/></a:solidFill></a:ln>"#)
+        }
+        None => String::new(),
+    };
+    format!(
+        r#"<p:sp>
+<p:nvSpPr><p:cNvPr id="{id}" name="{name}{id}"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr>
+<p:spPr>
+<a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{w}" cy="{h}"/></a:xfrm>
+<a:prstGeom prst="roundRect"><a:avLst><a:gd name="adj" fmla="val 6000"/></a:avLst></a:prstGeom>
+<a:solidFill><a:srgbClr val="{fill}"/></a:solidFill>
+{ln}
+</p:spPr>
+<p:txBody>
+<a:bodyPr wrap="square" lIns="120000" tIns="80000" rIns="120000" bIns="80000" anchor="{anchor}"><a:normAutofit/></a:bodyPr>
+<a:lstStyle/>
+{body}
+</p:txBody>
+</p:sp>"#
+    )
+}
+
 fn resolve_bg_color(token: &str, theme: &Theme) -> String {
     if let Some(hex) = token.strip_prefix('#') {
         return hex.to_string();

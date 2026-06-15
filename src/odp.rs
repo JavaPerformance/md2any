@@ -27,6 +27,8 @@ thread_local! {
     static SLIDE_ALIGN: std::cell::RefCell<&'static str> = const { std::cell::RefCell::new("left") };
     /// Per-slide left-column fraction from `width=` (`None` = even split).
     static SLIDE_COL_FRAC: std::cell::RefCell<Option<f32>> = const { std::cell::RefCell::new(None) };
+    /// Per-slide vertical alignment (`"top"`/`"center"`/`"bottom"`).
+    static SLIDE_VALIGN: std::cell::RefCell<&'static str> = const { std::cell::RefCell::new("top") };
 }
 
 fn slide_align() -> &'static str {
@@ -35,6 +37,100 @@ fn slide_align() -> &'static str {
 
 fn slide_col_frac() -> Option<f32> {
     SLIDE_COL_FRAC.with(|f| *f.borrow())
+}
+
+fn slide_valign() -> &'static str {
+    SLIDE_VALIGN.with(|v| *v.borrow())
+}
+
+/// Accent colour (bare hex) for a callout kind. Mirrors PDF/SVG/HTML/PPTX.
+fn callout_color(kind: &str) -> &'static str {
+    match kind {
+        "tip" => "22C55E",
+        "important" => "A855F7",
+        "warning" => "F59E0B",
+        "caution" => "EF4444",
+        _ => "3B82F6",
+    }
+}
+
+/// Icon + display label for a callout kind.
+fn callout_label(kind: &str) -> (&'static str, &'static str) {
+    match kind {
+        "tip" => ("\u{1F4A1}", "Tip"),
+        "important" => ("\u{2757}", "Important"),
+        "warning" => ("\u{26A0}", "Warning"),
+        "caution" => ("\u{1F6D1}", "Caution"),
+        _ => ("\u{2139}", "Note"),
+    }
+}
+
+/// Light background tint for a callout: accent mixed ~14% over white.
+fn light_tint(hex: &str) -> String {
+    if hex.len() != 6 {
+        return "EEF2FF".to_string();
+    }
+    let parse = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0) as f32;
+    let mix = |c: f32| (255.0 - (255.0 - c) * 0.14) as u8;
+    format!(
+        "{:02X}{:02X}{:02X}",
+        mix(parse(0)),
+        mix(parse(2)),
+        mix(parse(4))
+    )
+}
+
+/// One `<text:p>` of runs with a given alignment, for composing multi-paragraph
+/// frames (callouts, cards).
+#[allow(clippy::too_many_arguments)]
+fn para_xml(
+    reg: &mut Registry,
+    runs: &[Run],
+    size: u32,
+    color: &str,
+    bold: bool,
+    italic: bool,
+    font: &str,
+    align: &'static str,
+) -> String {
+    let para = reg.para_name(ParaStyleKey {
+        align,
+        line_spacing_pct: 120,
+    });
+    let spans = runs_to_spans(reg, runs, size, color, bold, italic, font);
+    format!(r#"<text:p text:style-name="{para}">{spans}</text:p>"#)
+}
+
+/// A filled, rounded `draw:frame` holding pre-built paragraphs. `fill`/`stroke`
+/// are bare hex; `anchor` is the vertical text alignment.
+#[allow(clippy::too_many_arguments)]
+fn filled_frame(
+    reg: &mut Registry,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+    fill: &str,
+    stroke: Option<&str>,
+    corner_emu: u32,
+    anchor: &'static str,
+    inner: &str,
+) -> String {
+    let g = reg.graphic_name(GraphicStyleKey {
+        fill: Some(fill.to_string()),
+        no_fill: false,
+        stroke: stroke.map(|c| (c.to_string(), 12700)),
+        corner_radius_emu: corner_emu,
+        text_anchor: anchor,
+        text_align: "left",
+    });
+    format!(
+        r#"<draw:frame draw:style-name="{g}" svg:x="{x}" svg:y="{y}" svg:width="{w}" svg:height="{h}"><draw:text-box>{inner}</draw:text-box></draw:frame>"#,
+        x = cm(x),
+        y = cm(y),
+        w = cm(w),
+        h = cm(h),
+    )
 }
 
 /// Resolve a per-slide `bg:` token into a bare 6-digit hex. Mirrors PDF/PPTX.
@@ -578,6 +674,13 @@ fn build_content(
             }
         });
         SLIDE_COL_FRAC.with(|f| *f.borrow_mut() = slide.col_frac());
+        SLIDE_VALIGN.with(|v| {
+            *v.borrow_mut() = match slide.valign() {
+                "center" => "center",
+                "bottom" => "bottom",
+                _ => "top",
+            }
+        });
         let xml = match &slide.kind {
             SlideKind::Title {
                 subtitle,
@@ -1527,7 +1630,17 @@ fn render_blocks(
         1.0
     };
 
+    // Vertical alignment: when content underfills the band, push it down by the
+    // slack. Gated on scale so nested column content isn't double-shifted.
     let mut y = y_start;
+    if scale >= 1.0 {
+        let slack = h_total.saturating_sub(estimated);
+        y += match slide_valign() {
+            "center" => slack / 2,
+            "bottom" => slack,
+            _ => 0,
+        };
+    }
     for block in blocks {
         let raw_h = block_height_emu(block, w, theme, imgs);
         let h = (((raw_h as f32) * scale) as u32).max(200000);
@@ -1605,7 +1718,7 @@ fn render_blocks(
                     theme,
                 ));
             }
-            Block::Quote(paras) | Block::Callout { body: paras, .. } => {
+            Block::Quote(paras) => {
                 out.push_str(&rect(reg, x, y, 60000, h, &theme.accent));
                 let mut runs: Vec<Run> = Vec::new();
                 for (i, prun) in paras.iter().enumerate() {
@@ -1628,6 +1741,45 @@ fn render_blocks(
                     false,
                     true,
                     &theme.body_font,
+                ));
+            }
+            Block::Callout { kind, body } => {
+                let accent = callout_color(kind);
+                let tint = light_tint(accent);
+                let (icon, label) = callout_label(kind);
+                let mut inner = para_xml(
+                    reg,
+                    &[Run::plain(format!("{icon} {label}"))],
+                    theme.body_size - 50,
+                    accent,
+                    true,
+                    false,
+                    &theme.body_font,
+                    "left",
+                );
+                for prun in body {
+                    inner.push_str(&para_xml(
+                        reg,
+                        prun,
+                        theme.body_size - 100,
+                        &theme.body_color,
+                        false,
+                        false,
+                        &theme.body_font,
+                        "left",
+                    ));
+                }
+                out.push_str(&filled_frame(
+                    reg,
+                    x,
+                    y,
+                    w,
+                    h,
+                    &tint,
+                    Some(accent),
+                    90000,
+                    "top",
+                    &inner,
                 ));
             }
             Block::Table { headers, rows, .. } => {
@@ -1682,8 +1834,51 @@ fn render_blocks(
                 // Render footnotes as a small-text list block, in muted color.
                 out.push_str(&render_footnotes_block(reg, x, y, w, h, items, theme));
             }
-            Block::Cards { cards, .. } => {
-                render_blocks(out, &cards_as_blocks(cards), theme, x, y, w, h, imgs, reg);
+            Block::Cards { cards, cols } => {
+                let n = (*cols as usize).max(1);
+                let gap: u32 = 180000;
+                let col_w = w.saturating_sub(gap * (n as u32 - 1)) / n as u32;
+                let nrows = cards.len().div_ceil(n) as u32;
+                let row_h = h.saturating_sub((nrows.saturating_sub(1)) * gap) / nrows.max(1);
+                let border = theme.divider.clone();
+                for (r, row) in cards.chunks(n).enumerate() {
+                    let ry = y + r as u32 * (row_h + gap);
+                    for (i, card) in row.iter().enumerate() {
+                        let cx = x + i as u32 * (col_w + gap);
+                        let mut inner = para_xml(
+                            reg,
+                            &[Run::plain(card.title.clone())],
+                            theme.body_size,
+                            &theme.title_color,
+                            true,
+                            false,
+                            &theme.title_font,
+                            "left",
+                        );
+                        inner.push_str(&para_xml(
+                            reg,
+                            &card.body,
+                            theme.body_size - 100,
+                            &theme.body_color,
+                            false,
+                            false,
+                            &theme.body_font,
+                            "left",
+                        ));
+                        out.push_str(&filled_frame(
+                            reg,
+                            cx,
+                            ry,
+                            col_w,
+                            row_h,
+                            &theme.bg,
+                            Some(&border),
+                            60000,
+                            "top",
+                            &inner,
+                        ));
+                    }
+                }
             }
         }
         y += h + 80000;
@@ -1770,7 +1965,7 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
             };
             (lines.len() as u32).max(1) * 280000 + 320000 + title_h
         }
-        Block::Quote(paras) | Block::Callout { body: paras, .. } => {
+        Block::Quote(paras) => {
             paras
                 .iter()
                 .map(|runs| {
@@ -1780,6 +1975,17 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
                 })
                 .sum::<u32>()
                 + 120000
+        }
+        Block::Callout { body, .. } => {
+            body.iter()
+                .map(|runs| {
+                    let chars = total_chars(runs) as u32;
+                    let lines = (chars / cpl.saturating_sub(4).max(12)).max(1) + 1;
+                    lines * 280000
+                })
+                .sum::<u32>()
+                + 280000 // label line
+                + 320000 // box padding
         }
         Block::Table { headers, rows, .. } => table_height_emu(headers, rows, w, theme),
         Block::Columns { left, right } => {
@@ -1828,10 +2034,23 @@ fn block_height_emu(b: &Block, w: u32, theme: &Theme, imgs: &Imgs) -> u32 {
                 .sum::<u32>();
             total + 120000
         }
-        Block::Cards { cards, .. } => cards_as_blocks(cards)
-            .iter()
-            .map(|b| block_height_emu(b, w, theme, imgs))
-            .sum(),
+        Block::Cards { cards, cols } => {
+            let n = (*cols as usize).max(1);
+            let gap: u32 = 180000;
+            let col_w = w.saturating_sub(gap * (n as u32 - 1)) / n as u32;
+            let ccpl = chars_per_line(col_w).max(8);
+            let tallest = cards
+                .iter()
+                .map(|c| {
+                    let title_lines = (c.title.chars().count() as u32 / ccpl).max(1);
+                    let body_lines = (total_chars(&c.body) as u32 / ccpl).max(1) + 1;
+                    title_lines * 300000 + body_lines * 260000 + 280000
+                })
+                .max()
+                .unwrap_or(0);
+            let rows = cards.len().div_ceil(n) as u32;
+            rows * tallest + rows.saturating_sub(1) * gap
+        }
     }
 }
 
