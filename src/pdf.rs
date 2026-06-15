@@ -3870,17 +3870,14 @@ impl<'a> SlideRenderer<'a> {
                 self.links.truncate(links_mark);
                 row_h = row_h.max(bottom.saturating_sub(y));
             }
-            // Draw boxes then content.
+            // Draw boxes then content. A soft accent-tinted fill (matching the
+            // HTML/SVG renderers) reads as a card on both light and dark themes;
+            // theme.bg blended into the slide on dark themes.
+            let fill = self.theme.accent_soft.clone();
             for (i, card) in row.iter().enumerate() {
                 let cx = x + i as u32 * (col_w + gap);
                 self.rect(cx, y, col_w, row_h, &border);
-                self.rect(
-                    cx + 8000,
-                    y + 8000,
-                    col_w - 16000,
-                    row_h - 16000,
-                    &self.theme.bg.clone(),
-                );
+                self.rect(cx + 8000, y + 8000, col_w - 16000, row_h - 16000, &fill);
                 card_inner(self, card, cx, y);
             }
             y += row_h + gap;
