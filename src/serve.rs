@@ -803,6 +803,14 @@ const EDITOR_HTML: &str = r##"<!DOCTYPE html>
   #activeChip button { margin-left: auto; background: none; border: 0; color: #93c5fd; cursor: pointer; font-size: 13px; }
   #airow { display: flex; gap: 8px; padding: 9px 12px; border-top: 1px solid #1f2937; flex: 0 0 auto; }
   #aiInput { flex: 1 1 auto; resize: none; background: #0b1220; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 6px; padding: 8px 10px; font: 13px/1.4 system-ui, sans-serif; }
+  #imgsearch { padding: 6px 12px; background: #0b1220; border-top: 1px solid #1f2937; }
+  #imgrow { display: flex; gap: 8px; }
+  #imgq { flex: 1 1 auto; background: #0b1220; color: #e5e7eb; border: 1px solid #1f2937; border-radius: 6px; padding: 6px 9px; font: 13px system-ui, sans-serif; }
+  #imgresults { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; max-height: 220px; overflow: auto; }
+  #imgresults .hit { width: 120px; cursor: pointer; border: 1px solid #1f2937; border-radius: 6px; overflow: hidden; background: #111827; }
+  #imgresults .hit img { width: 120px; height: 80px; object-fit: cover; display: block; }
+  #imgresults .hit .cap { font-size: 10px; color: #9ca3af; padding: 3px 5px; line-height: 1.25; }
+  #imgresults .hit:hover { border-color: #2563eb; }
   #aiInput:focus { outline: none; border-color: #2563eb; }
 </style>
 </head>
@@ -834,6 +842,14 @@ const EDITOR_HTML: &str = r##"<!DOCTYPE html>
     <button class="chip">Add a summary slide at the end</button>
     <button class="chip">Add speaker notes to each slide</button>
     <button class="chip">Suggest a better title</button>
+    <button class="chip" id="imgFindChip">🖼 Find an image…</button>
+  </div>
+  <div id="imgsearch" hidden>
+    <div id="imgrow">
+      <input id="imgq" type="text" placeholder="search photos — e.g. “Zilog Z80 chip”" />
+      <button class="tool" id="imggo">Search</button>
+    </div>
+    <div id="imgresults"></div>
   </div>
   <div id="activeChip"><span>✏️ Editing</span> <b id="activeChipLabel"></b><button id="activeChipX" title="Clear selection">✕</button></div>
   <div id="airow">
@@ -1429,9 +1445,58 @@ async function sendChat() {
 aiSend.addEventListener('click', sendChat);
 aiInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); } });
 document.querySelectorAll('#aichips .chip').forEach(c =>
-  c.addEventListener('click', () => { if (chatBusy) return; aiInput.value = c.textContent; sendChat(); }));
+  c.addEventListener('click', () => {
+    if (c.id === 'imgFindChip') return; // handled below — opens the image panel
+    if (chatBusy) return; aiInput.value = c.textContent; sendChat();
+  }));
 aiInput.addEventListener('input', () => { aiInput.style.height = 'auto'; aiInput.style.height = Math.min(aiInput.scrollHeight, 120) + 'px'; });
 document.getElementById('activeChipX').addEventListener('click', clearActive);
+
+// Manual image search + insert (uses the same /image-search backend as the AI).
+const imgPanel = document.getElementById('imgsearch');
+const imgQ = document.getElementById('imgq');
+const imgResults = document.getElementById('imgresults');
+document.getElementById('imgFindChip').addEventListener('click', () => {
+  imgPanel.hidden = !imgPanel.hidden;
+  if (!imgPanel.hidden) imgQ.focus();
+});
+async function runImageSearch() {
+  const q = imgQ.value.trim();
+  if (!q) return;
+  imgResults.textContent = 'searching…';
+  try {
+    const r = await fetch('/image-search?q=' + encodeURIComponent(q));
+    const hits = await r.json();
+    imgResults.textContent = '';
+    if (!hits.length) { imgResults.textContent = 'no results'; return; }
+    for (const h of hits) {
+      const card = document.createElement('div');
+      card.className = 'hit';
+      card.title = h.title + ' — ' + h.source + ' (' + h.license + ')';
+      const im = document.createElement('img');
+      im.src = h.thumb_url || h.image_url; im.loading = 'lazy';
+      const cap = document.createElement('div');
+      cap.className = 'cap';
+      cap.textContent = (h.author || h.source) + ' · ' + h.license;
+      card.appendChild(im); card.appendChild(cap);
+      card.addEventListener('click', () => insertImage(h));
+      imgResults.appendChild(card);
+    }
+  } catch (e) { imgResults.textContent = 'search failed'; }
+}
+document.getElementById('imggo').addEventListener('click', runImageSearch);
+imgQ.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); runImageSearch(); } });
+function insertImage(h) {
+  const alt = (h.title || 'image').replace(/[\[\]]/g, '');
+  const credit = (h.author || h.source) ? ('\n*Photo: ' + (h.author || h.source) + (h.license ? ' / ' + h.license : '') + '*') : '';
+  const md = '\n![' + alt + '](' + h.image_url + ')' + credit + '\n';
+  const at = ta.selectionStart || ta.value.length;
+  ta.value = ta.value.slice(0, at) + md + ta.value.slice(at);
+  ta.selectionStart = ta.selectionEnd = at + md.length;
+  setStatus('inserting image…'); scheduleSave(); readStyle(); syncControls(); focusCaret(true);
+  imgPanel.hidden = true; imgResults.textContent = ''; imgQ.value = '';
+  localizeRemoteImages(); // download into assets/ + rewrite
+}
 
 fetch('/source', { cache: 'no-store' }).then(r => r.text()).then(t => { ta.value = t; focusCaret(true); }).catch(() => {});
 setInterval(tick, 500);
