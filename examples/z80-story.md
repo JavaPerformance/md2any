@@ -105,7 +105,7 @@ From the moment the TRS-80 Model I appeared in 1977, the Z80 became the heartbea
 Released in 1985, the Master System ran its Z80 at 3.58 MHz alongside a superb sound chip. Titles like Phantasy Star proved the little processor could still deliver rich worlds long after its desktop rivals had moved on.
 
 ## Nintendo Game Boy
-<!-- layout: image-left -->
+<!-- layout: image-left valign=center -->
 ![Game Boy](assets/z80-story/gameboy.jpg)
 
 The original Game Boy (1989) used Sharp's LR35902, a Z80-derived CPU running at ~4.19 MHz with a reduced instruction set. Its efficient design, combined with clever graphics hardware, launched the portable gaming era and sold more than 118 million units worldwide.
@@ -113,13 +113,20 @@ The original Game Boy (1989) used Sharp's LR35902, a Z80-derived CPU running at 
 ## Game Boy's Sharp LR35902
 Nintendo's 1989 handheld used a custom Z80 variant stripped for efficiency yet still unmistakably Z80 at heart. Paired with clever graphics hardware, it launched the portable-gaming revolution and sold more than 118 million units.
 
+Sharp designed the LR35902 in 1989 under contract from Nintendo. It inherits the Z80’s core architecture and instruction set but removes alternate register banks, IX/IY index registers, and most block-transfer instructions to reduce silicon area and power. The chip runs at 4.194304 MHz, uses a unified 8-bit data bus, and adds a handful of new opcodes for direct bit manipulation and faster LCD access. DRAM-refresh circuitry was omitted because the Game Boy employs only static RAM.
+
 # Industrial Longevity
 
 ## The Chip That Wouldn't Die
 While flashier processors came and went, the Z80 remained in production for over forty-five years. Its rock-solid reliability made it the default choice for traffic lights, medical instruments, printers, and factory controllers—quietly running the modern world long after its glory days in home computers.
 
 ## Modern Legacy
+<!-- layout: image-left -->
+![Modern Z80 (Z84C00)](https://upload.wikimedia.org/wikipedia/commons/4/40/Z84C0010FEC_LQFP.png)
+
 Open-source cores such as T80 keep the Z80 alive inside FPGAs. Retro enthusiasts and chiptune artists still celebrate its elegant instruction set. More than a processor, it became a symbol of practical, enduring engineering—the rebel chip that refused to fade away.
+
+*Photo: HenkeB / Public domain*
 
 ## Z80 Today
 Zilog still ships new Z80 parts in 2024. You’ll find them in smart electricity meters, guitar effects pedals, industrial controllers, and retro-computing kits. Open-source cores (T80, Z80SoftCore) keep the architecture alive inside FPGAs, while hobbyists continue writing new software for classic machines.
