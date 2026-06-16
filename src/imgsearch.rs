@@ -397,3 +397,51 @@ fn pexels(agent: &ureq::Agent, query: &str, n: usize, key: &str) -> Option<Vec<I
             .collect(),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_strips_filler_and_caps() {
+        assert_eq!(
+            normalize_query("real photo of a Zilog Z80 chip"),
+            "Zilog Z80 chip"
+        );
+        assert_eq!(
+            normalize_query("please add a high res image of the Game Boy"),
+            "Game Boy"
+        );
+        // already tight queries pass through
+        assert_eq!(
+            normalize_query("Zilog Z80 microprocessor"),
+            "Zilog Z80 microprocessor"
+        );
+        // capped at 6 significant words
+        assert_eq!(
+            normalize_query("one two three four five six seven eight")
+                .split_whitespace()
+                .count(),
+            6
+        );
+        // all-filler falls back to the trimmed original
+        assert_eq!(normalize_query("a photo of the"), "a photo of the");
+    }
+
+    #[test]
+    fn supported_matches_embeddable_formats() {
+        for ok in [
+            "x.jpg",
+            "x.JPEG",
+            "a/b.png",
+            "d.svg",
+            "e.webp",
+            "f.png?w=100",
+        ] {
+            assert!(supported(ok), "{ok} should be supported");
+        }
+        for no in ["x.gif", "y.tiff", "z.pdf", "n.mp4"] {
+            assert!(!supported(no), "{no} should not be supported");
+        }
+    }
+}

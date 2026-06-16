@@ -1537,6 +1537,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn url_decode_handles_plus_and_percent() {
+        assert_eq!(url_decode("a+b"), "a b");
+        assert_eq!(url_decode("a%20b"), "a b");
+        assert_eq!(url_decode("Zilog+Z80+chip"), "Zilog Z80 chip");
+        assert_eq!(url_decode("100%25"), "100%");
+        assert_eq!(url_decode("no-encoding"), "no-encoding");
+    }
+
+    #[test]
+    fn query_param_decodes_value() {
+        assert_eq!(
+            query_param("/image-search?q=game+boy", "q").as_deref(),
+            Some("game boy")
+        );
+    }
+
+    #[test]
     fn manifest_reports_image_sequence_details() {
         let state = State {
             artifact: ServedArtifact::Images {

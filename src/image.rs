@@ -1086,6 +1086,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ext_from_magic_detects_formats() {
+        assert_eq!(
+            image_ext_from_magic(b"\x89PNG\r\n\x1a\n\x00\x00"),
+            Some("png")
+        );
+        assert_eq!(image_ext_from_magic(&[0xFF, 0xD8, 0xFF, 0xE0]), Some("jpg"));
+        let webp = [
+            b'R', b'I', b'F', b'F', 0, 0, 0, 0, b'W', b'E', b'B', b'P', 0,
+        ];
+        assert_eq!(image_ext_from_magic(&webp), Some("webp"));
+        assert_eq!(image_ext_from_magic(b"GIF89a...."), None); // not embeddable
+    }
+
+    #[cfg(feature = "webp")]
+    #[test]
+    fn webp_decodes_to_png() {
+        // 3x2 lossless WebP generated with PIL.
+        let bytes: &[u8] = &[
+            82, 73, 70, 70, 30, 0, 0, 0, 87, 69, 66, 80, 86, 80, 56, 76, 17, 0, 0, 0, 47, 2, 64, 0,
+            0, 7, 80, 148, 34, 23, 165, 255, 129, 136, 232, 127, 0, 0,
+        ];
+        let meta = decode_webp(bytes, "test.webp").expect("decode webp");
+        assert_eq!(meta.ext, "png");
+        assert_eq!((meta.width, meta.height), (3, 2));
+        assert_eq!(&meta.bytes[..8], b"\x89PNG\r\n\x1a\n"); // re-encoded as PNG
+    }
+
+    #[test]
+    fn localize_leaves_local_and_data_refs_alone() {
+        let dir = std::env::temp_dir().join(format!("md2any-loc-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let doc = "# t\n![a](assets/local.png)\n![b](data:image/png;base64,AAAA)\nplain text\n";
+        let (out, count) = localize_doc(doc, &dir).expect("localize");
+        assert_eq!(count, 0, "no remote images to download");
+        assert_eq!(out, doc, "local/data refs untouched");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn fnv1a64_known_vectors() {
         // FNV-1a 64-bit reference values from the canonical spec.
         assert_eq!(fnv1a64(b""), 0xcbf29ce484222325);
