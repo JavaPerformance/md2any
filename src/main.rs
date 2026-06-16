@@ -485,6 +485,12 @@ struct Cli {
     #[arg(long)]
     outline: bool,
 
+    /// Download every remote (`http(s)`) image in the deck into an `assets/`
+    /// folder next to the source, rewrite the links to the local paths, and
+    /// save the file in place. Makes the deck self-contained / offline-safe.
+    #[arg(long)]
+    localize: bool,
+
     /// Write the post-parse/post-pagination slide IR as JSON.
     #[arg(long, value_name = "PATH")]
     emit_ir: Option<PathBuf>,
@@ -946,6 +952,19 @@ fn build_once(
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| std::path::PathBuf::from("."));
+
+    if cli.localize {
+        let (new_doc, count) = image::localize_doc(input, &base_dir)?;
+        if count > 0 {
+            std::fs::write(input_path, &new_doc)
+                .with_context(|| format!("write {}", input_path.display()))?;
+        }
+        eprintln!(
+            "md2any: localized {count} remote image(s) into {}/assets/",
+            base_dir.display()
+        );
+        return Ok(());
+    }
 
     let mut parsed = parser::parse_with_options(
         &body,

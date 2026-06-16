@@ -366,6 +366,43 @@ fn handle(mut stream: TcpStream, state: Arc<Mutex<State>>) -> std::io::Result<()
                 )?,
             }
         }
+        // Editor: download remote images in the posted doc into assets/ next to
+        // the source file and rewrite the links, returning {doc, count}. Makes
+        // the deck self-contained; the dock calls this after the AI inserts a
+        // remote image URL.
+        ("POST", "/localize") => {
+            let doc = String::from_utf8_lossy(&body).into_owned();
+            let src = state.lock().unwrap().edit_source.clone();
+            match src.as_deref().and_then(|p| p.parent()) {
+                Some(base) => match crate::image::localize_doc(&doc, base) {
+                    Ok((new_doc, count)) => {
+                        let resp =
+                            serde_json::json!({ "doc": new_doc, "count": count }).to_string();
+                        write_response(
+                            &mut stream,
+                            200,
+                            "OK",
+                            "application/json",
+                            resp.as_bytes(),
+                        )?;
+                    }
+                    Err(e) => write_response(
+                        &mut stream,
+                        500,
+                        "Error",
+                        "text/plain",
+                        e.to_string().as_bytes(),
+                    )?,
+                },
+                None => write_response(
+                    &mut stream,
+                    403,
+                    "Forbidden",
+                    "text/plain",
+                    b"editing disabled",
+                )?,
+            }
+        }
         // Editor: write edited markdown back to the source file. The watcher
         // picks up the mtime change and rebuilds, bumping /version.
         ("POST", "/source") => {
@@ -1258,7 +1295,29 @@ function applyOps(ops) {
   ta.value = lines.join('\n').replace(/\n{3,}/g, '\n\n');
   ta.selectionStart = ta.selectionEnd = 0;
   setStatus('applying…'); scheduleSave(); readStyle(); syncControls(); focusCaret(true);
+  // If the AI inserted remote image URLs, download them into assets/ so the
+  // deck is self-contained (and the preview doesn't re-fetch every rebuild).
+  if (ops.some(o => o.content && /\]\(https?:\/\//.test(o.content))) localizeRemoteImages();
   return true;
+}
+// Download remote (http) markdown images into assets/ and rewrite the links,
+// so the deck is self-contained. Posts the current doc to /localize and swaps
+// in the rewritten version. Safe no-op if there are no remote images.
+async function localizeRemoteImages() {
+  if (!/\]\(https?:\/\//.test(ta.value)) return;
+  setStatus('downloading images…');
+  try {
+    const r = await fetch('/localize', { method: 'POST', body: ta.value });
+    if (!r.ok) { setStatus('image download failed'); return; }
+    const { doc, count } = await r.json();
+    if (count > 0 && doc && doc !== ta.value) {
+      ta.value = doc;
+      scheduleSave(); readStyle(); syncControls();
+      setStatus('downloaded ' + count + ' image' + (count > 1 ? 's' : '') + ' to assets/');
+    } else {
+      setStatus('ready');
+    }
+  } catch (e) { setStatus('image download failed'); }
 }
 let chatHistory = [];   // [{role:'user'|'assistant', content}]
 let chatBusy = false;

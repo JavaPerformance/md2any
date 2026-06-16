@@ -226,6 +226,106 @@ pub fn load_any_or_placeholder(base_dir: &Path, src: &str) -> ImageMeta {
     }
 }
 
+/// Download every remote (`http(s)`) markdown image into `<base_dir>/assets/`
+/// and rewrite each link to the saved relative path, so the deck becomes
+/// self-contained (no re-fetch on every render, works offline). Data-URIs and
+/// already-local refs are left alone; a URL that fails to download is kept
+/// as-is. Returns the rewritten document and the number of images saved.
+/// Each distinct URL is downloaded once. WebP is saved as decoded PNG.
+pub fn localize_doc(doc: &str, base_dir: &Path) -> Result<(String, usize)> {
+    use std::collections::{HashMap, HashSet};
+    let mut out = String::with_capacity(doc.len());
+    let mut url_map: HashMap<String, String> = HashMap::new();
+    let mut used: HashSet<String> = HashSet::new();
+    let mut downloaded = 0usize;
+    let mut i = 0;
+    while i < doc.len() {
+        let rest = &doc[i..];
+        if rest.starts_with("![") {
+            if let Some(rel) = rest.find("](") {
+                let url_start = i + rel + 2;
+                let tail = &doc[url_start..];
+                let url_len = tail
+                    .find(|c: char| c == ')' || c.is_whitespace())
+                    .unwrap_or(tail.len());
+                let url = &doc[url_start..url_start + url_len];
+                if url.starts_with("http://") || url.starts_with("https://") {
+                    let relpath = if let Some(p) = url_map.get(url) {
+                        p.clone()
+                    } else {
+                        match download_to_assets(url, base_dir, &mut used) {
+                            Ok(p) => {
+                                downloaded += 1;
+                                url_map.insert(url.to_string(), p.clone());
+                                p
+                            }
+                            Err(e) => {
+                                eprintln!("md2any: localize: keeping remote {url} ({e:#})");
+                                url.to_string()
+                            }
+                        }
+                    };
+                    out.push_str(&doc[i..url_start]);
+                    out.push_str(&relpath);
+                    i = url_start + url_len;
+                    continue;
+                }
+            }
+        }
+        let ch = rest.chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    Ok((out, downloaded))
+}
+
+/// Fetch one remote image, save it under `<base_dir>/assets/` with a unique,
+/// sanitised filename, and return the `assets/<name>` relative path.
+fn download_to_assets(
+    url: &str,
+    base_dir: &Path,
+    used: &mut std::collections::HashSet<String>,
+) -> Result<String> {
+    let meta = load_any(base_dir, url)?;
+    let dir = base_dir.join("assets");
+    std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+    let stem_src = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .rsplit('/')
+        .next()
+        .unwrap_or("image");
+    let stem = stem_src
+        .rsplit_once('.')
+        .map(|(s, _)| s)
+        .unwrap_or(stem_src);
+    let stem: String = stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let stem = if stem.trim_matches('-').is_empty() {
+        "image".to_string()
+    } else {
+        stem
+    };
+    let mut name = format!("{stem}.{}", meta.ext);
+    let mut n = 1;
+    while used.contains(&name) {
+        name = format!("{stem}-{n}.{}", meta.ext);
+        n += 1;
+    }
+    std::fs::write(dir.join(&name), &meta.bytes).with_context(|| format!("write assets/{name}"))?;
+    used.insert(name.clone());
+    Ok(format!("assets/{name}"))
+}
+
 /// Build a visible "image failed to load" placeholder. Tries the SVG
 /// pipeline first (so the URL and error appear inside the image); falls
 /// back to a tiny solid-colour PNG if the `svg` feature is off, so the

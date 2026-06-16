@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **AI dock can find and insert real photos.** The `--serve --edit` dock gives
+  the model a `search_images` tool backed by a multi-source image search
+  (`imgsearch`): Wikimedia Commons + Openverse (keyless, always on) and
+  Unsplash + Pexels (when `unsplash-api.key` / `pexels-api.key` are present).
+  Ask for a photo and the model searches, picks a license-cleared result,
+  inserts it, and adds a credit line. Also exposed as `GET /image-search?q=…`.
+- **WebP support.** A pure-Rust decoder (`image-webp`, `webp` feature, default
+  on) decodes WebP and re-encodes to PNG, so `.webp` images embed in every
+  output, not just HTML.
+- **Self-contained decks (`--localize`).** Download every remote `http(s)`
+  image into an `assets/` folder next to the deck and rewrite the links to the
+  local paths. Available as a CLI flag, a `POST /localize` server endpoint, and
+  automatically in the dock right after the AI inserts a remote image.
+
 - **Formatting controls** (HTML + SVG/PNG fully; native renderers below):
   - Two-column tuning on `image-left`/`image-right`: `valign=center|bottom`
     (align the text column) and `width=NN%` (image column width).
