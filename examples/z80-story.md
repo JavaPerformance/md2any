@@ -54,6 +54,12 @@ Hidden inside the silicon was circuitry that refreshed dynamic RAM without any e
 ## CP/M and the Software Boom
 Gary Kildall's CP/M found its perfect partner in the Z80. The extra registers let the operating system run faster and smoother than on the 8080, and a flood of business tools, languages, and utilities followed. For the first time, ordinary people could buy software instead of writing every line themselves.
 
+## CP/M in Action
+<!-- layout: image-left valign=center -->
+![CP/M running on a ZX Spectrum](assets/Zx-cpm.jpg)
+
+*Screenshot: Wikimedia Commons (CC BY-SA 3.0)*
+
 ## Z80 Assembly Example
 ```asm
 delay: LD   B, 0FFh   ; outer loop count
@@ -122,7 +128,7 @@ While flashier processors came and went, the Z80 remained in production for over
 
 ## Modern Legacy
 <!-- layout: image-left -->
-![Modern Z80 (Z84C00)](https://upload.wikimedia.org/wikipedia/commons/4/40/Z84C0010FEC_LQFP.png)
+![Modern Z80 (Z84C00)](assets/Z84C0010FEC_LQFP.png)
 
 Open-source cores such as T80 keep the Z80 alive inside FPGAs. Retro enthusiasts and chiptune artists still celebrate its elegant instruction set. More than a processor, it became a symbol of practical, enduring engineering—the rebel chip that refused to fade away.
 
