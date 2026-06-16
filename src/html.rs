@@ -946,7 +946,8 @@ body.edit { background: #1a1a1a; }
 body.edit .deck { display: block; min-height: 0; padding: 18px 14px; }
 body.edit .slide { display: block !important; margin: 0 auto 20px; scroll-margin: 14px; }
 body.edit .controls { display: none !important; }
-body.edit .slide.caret { outline: 4px solid var(--accent); outline-offset: 4px; }
+body.edit .slide { border-radius: 8px; transition: box-shadow .22s ease; }
+body.edit .slide.caret { box-shadow: 0 0 0 2px var(--accent), 0 0 0 9px color-mix(in srgb, var(--accent) 18%, transparent), 0 14px 40px rgba(0,0,0,.45); }
 "#;
 
 const SCRIPT: &str = r#"(function () {
