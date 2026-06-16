@@ -1117,12 +1117,69 @@ fn subset_font(
 /// `BT … Tj … ET` block per tuple, advancing the x cursor by `advance_pt`
 /// between them. When no CJK fallback is loaded (or every character has a
 /// glyph in the primary face) the result is a single-element vector.
+/// True if the text contains a script that needs contextual shaping / bidi
+/// (Arabic, Hebrew, Indic, Thai). The plain char-by-char path is wrong for
+/// these (no joining, no reordering); they go through rustybuzz instead.
+#[cfg(feature = "shaping")]
+fn needs_shaping(text: &str) -> bool {
+    text.chars().any(|c| {
+        let u = c as u32;
+        (0x0590..=0x05FF).contains(&u)      // Hebrew
+            || (0x0600..=0x06FF).contains(&u) // Arabic
+            || (0x0700..=0x074F).contains(&u) // Syriac
+            || (0x0750..=0x077F).contains(&u) // Arabic Supplement
+            || (0x08A0..=0x08FF).contains(&u) // Arabic Extended-A
+            || (0x0900..=0x0DFF).contains(&u) // Indic blocks
+            || (0x0E00..=0x0E7F).contains(&u) // Thai
+            || (0xFB1D..=0xFDFF).contains(&u) // Hebrew/Arabic presentation forms
+    })
+}
+
+/// Shape a complex-script run with rustybuzz against the primary face: returns
+/// glyphs in visual order (RTL reversed, contextual joining + ligatures
+/// applied) as a single `(face, <GIDs>, advance)` run. Falls back to `None`
+/// if the face can't be parsed, so the caller uses the plain path.
+#[cfg(feature = "shaping")]
+fn shape_complex_run(
+    fonts: &PdfFonts,
+    text: &str,
+    primary: usize,
+    size_pt: f32,
+) -> Option<(usize, String, f32)> {
+    let face = rustybuzz::Face::from_slice(&fonts.bytes[primary], 0)?;
+    let mut buffer = rustybuzz::UnicodeBuffer::new();
+    buffer.push_str(text);
+    buffer.guess_segment_properties(); // detects script + RTL direction
+    let glyphs = rustybuzz::shape(&face, &[], buffer);
+    let upem = fonts.metrics[primary].units_per_em as f32;
+    if upem <= 0.0 {
+        return None;
+    }
+    let mut hex = String::new();
+    let mut advance = 0.0_f32;
+    for (info, pos) in glyphs
+        .glyph_infos()
+        .iter()
+        .zip(glyphs.glyph_positions().iter())
+    {
+        hex.push_str(&format!("{:04X}", info.glyph_id as u16));
+        advance += pos.x_advance as f32 / upem * size_pt;
+    }
+    Some((primary, format!("<{hex}>"), advance))
+}
+
 fn glyph_hex_runs(
     fonts: &PdfFonts,
     text: &str,
     primary: usize,
     size_pt: f32,
 ) -> Vec<(usize, String, f32)> {
+    #[cfg(feature = "shaping")]
+    if needs_shaping(text) {
+        if let Some(run) = shape_complex_run(fonts, text, primary, size_pt) {
+            return vec![run];
+        }
+    }
     let mut runs: Vec<(usize, String, f32)> = Vec::new();
     for c in text.chars() {
         let (face_idx, gid) = pick_face(fonts, primary, c);
@@ -5040,6 +5097,17 @@ fn author_date(author: Option<&str>, date: Option<&str>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "shaping")]
+    #[test]
+    fn needs_shaping_detects_complex_scripts() {
+        assert!(needs_shaping("العنوان")); // Arabic
+        assert!(needs_shaping("שלום")); // Hebrew
+        assert!(needs_shaping("नमस्ते")); // Devanagari
+        assert!(!needs_shaping("Hello, world!")); // Latin
+        assert!(!needs_shaping("café Zürich")); // Latin + accents
+        assert!(!needs_shaping("日本語")); // CJK takes the plain path
+    }
 
     #[test]
     fn cff_outline_detection_picks_the_right_font_program() {

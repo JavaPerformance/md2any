@@ -67,9 +67,13 @@ tiny-skia = { version = "0.11", default-features = false, features = ["std", "pn
 # (or AI-searched) `.webp` image is decoded here and re-encoded to PNG via
 # tiny-skia for embedding. Optional — disable for a smaller binary.
 image-webp = { version = "0.2", optional = true }
+# HarfBuzz-style text shaping (pure Rust) for the PDF renderer, so Arabic /
+# Hebrew / Indic scripts join + reorder correctly. Latin/CJK take an unshaped
+# fast path. Optional — disable for a smaller binary if you only target LTR.
+rustybuzz = { version = "0.14", optional = true }
 
 [features]
-default = ["remote-images", "svg", "ai", "webp"]
+default = ["remote-images", "svg", "ai", "webp", "shaping"]
 # AI deck generation (`--generate`). Speaks the OpenAI-style chat-completions
 # API over the same `ureq` client used for remote images; endpoint/model/key
 # are all configurable. On by default; drop it for a network-call-free binary.
@@ -84,6 +88,8 @@ svg = ["resvg", "usvg", "tiny-skia"]
 # Decode WebP images (re-encoded to PNG via tiny-skia) so md2any can embed
 # `.webp` files in every output, not just HTML.
 webp = ["dep:image-webp", "tiny-skia"]
+# Complex-script shaping (Arabic/Hebrew/Indic) in the PDF text layout.
+shaping = ["dep:rustybuzz"]
 
 [dev-dependencies]
 # Renderer tests open the produced PPTX/ODP/DOCX/ODT archives to assert

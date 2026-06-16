@@ -547,6 +547,7 @@ dependencies = [
  "image-webp",
  "pulldown-cmark",
  "resvg",
+ "rustybuzz",
  "serde",
  "serde_json",
  "serde_yaml",
