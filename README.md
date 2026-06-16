@@ -181,11 +181,11 @@ md2any --generate "a 5-slide intro to Rust ownership" -o intro.pptx  # AI draft 
 | **Transitions** | `fade`, `push`, `wipe`, `cover`, `split` (PPTX/ODP/PDF) |
 | **RTL / CJK** | `direction: rtl` right-aligns Arabic/Hebrew (no full bidi reordering of mixed runs yet); CJK & emoji need `--cjk <font>` for PDF |
 | **Workflow** | `--watch` for rebuild-on-save, `--serve` for live preview with hot reload, `--check` for lint mode |
-| **In-browser editor** | `--serve --edit`: true live-DOM editing (each rebuild morphs into the preview, preserving scroll), caret↔slide sync both ways, a 🎨 style panel (theme/colour/size controls written to front-matter), a Generate ▾ menu to export any format, and a 🤖 AI dock that reads the deck and applies edits with one click. No external runtime — all served from the single binary |
+| **In-browser editor** | `--serve --edit`: true live-DOM editing (each rebuild morphs into the preview, preserving scroll), caret↔slide sync both ways, a 🎨 style panel (theme/colour/size controls written to front-matter), a Generate ▾ menu to export any format, and a 🤖 AI dock that reads the deck and applies edits with one click — including a `search_images` tool so it can **find and insert real, license-cleared photos** (downloaded into `assets/` automatically). No external runtime — all served from the single binary |
 | **AI drafting** | `--generate "prompt"` drafts a deck via an OpenAI-compatible chat API and renders it natively. Endpoint/model/key all configurable (`--ai-endpoint`, `--ai-model`, `$MD2ANY_API_KEY` or a gitignored key file); `--save-md` keeps the markdown. Optional — drop the default `ai` feature for a network-free binary |
 | **Handouts** | `--handout 2|4|6` for N-up A4 printable PDF |
 | **Multi-file** | Concat multiple `.md` files; `-` reads stdin |
-| **Images** | Local PNG/JPEG/SVG plus cached remote `http(s)` image URLs |
+| **Images** | Local PNG/JPEG/SVG/**WebP** plus cached remote `http(s)` image URLs. `--localize` (or `POST /localize` in the editor) downloads remote images into `assets/` and rewrites the links for a **self-contained, offline deck**. Multi-source image search (Wikimedia Commons + Openverse keyless; Unsplash/Pexels with a key) via the AI dock or `GET /image-search?q=…` |
 | **Logo** | `--logo brand.png` renders in every slide footer |
 
 Full reference: `md2any --help-md` writes the embedded user manual to stdout, or
@@ -223,6 +223,9 @@ md2any new <PATH>                           Write a starter deck
                            Cache directory for remote image downloads
       --no-remote-image-cache
                            Fetch remote images every time
+      --localize           Download remote images into assets/ and rewrite
+                           links (self-contained deck)
+      --cjk <FONT>         Add a CJK/emoji fallback font for PDF/PNG output
       --handout <N>        2/4/6 slides per A4 portrait page (PDF only)
       --with-notes         Presenter notes PDF, one page per slide
       --notes-page-size <SIZE>
