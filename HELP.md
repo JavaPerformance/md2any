@@ -39,9 +39,10 @@ md2any is built for the boring part of technical publishing: one source file, ma
 | Tables | Auto table fitting, column-group splitting, key-column repeat, portrait transposition |
 | Code | Dark-by-default code blocks, independent code palette, 40+ syntax tags, filename captions, file/range includes, automatic line numbers, landscape two-up code flow |
 | Math | Native Unicode math, generated display SVG math, and full-page markup math with selectable PDF text |
-| Images | Local, remote, SVG rasterisation, remote cache/retry, full-page image slides, background images, width hints |
-| Fonts | Bundled DejaVu PDF fonts, custom PDF fonts, fallback fonts, CJK opt-in, glyph audit |
-| Workflow | `--watch`, live `--serve` preview in PDF/HTML/SVG/PNG, linting, outline, IR JSON, render-plan JSON |
+| Images | Local (PNG/JPEG/SVG/WebP), remote, SVG rasterisation, remote cache/retry, full-page image slides, background images, width hints, `--localize` for self-contained decks, multi-source image search |
+| Fonts | Bundled DejaVu PDF fonts, custom PDF fonts, fallback fonts, CJK opt-in, glyph audit, Arabic/Hebrew/Indic/Thai shaping |
+| Editor | `--serve --edit`: in-browser live-DOM editor, caret↔slide sync, style panel, AI dock with one-click edits and image search |
+| Workflow | `--watch`, live `--serve` preview in PDF/HTML/SVG/PNG, `--generate` AI drafting, linting, outline, IR JSON, render-plan JSON |
 
 The design goal is not to be Pandoc, Quarto, TeX, or a presentation GUI. It is a deterministic artifact generator that keeps the common deck/document job small enough to ship as one binary.
 
@@ -573,7 +574,7 @@ Standard markdown image syntax works in every output format:
 
 Three sources, one syntax:
 
-- **Local PNG / JPEG** — resolved relative to the markdown file, embedded as-is.
+- **Local PNG / JPEG / WebP** — resolved relative to the markdown file, embedded as-is. WebP is decoded natively (no external tools).
 - **Remote URL** (`http://` or `https://`) — fetched at build time with a 10 s timeout, capped at 20 MB per image, and cached after a successful download. The default cache location follows the host OS convention: `%LOCALAPPDATA%` on Windows, `~/Library/Caches` on macOS, and `$XDG_CACHE_HOME` / `~/.cache` on Linux and other Unix systems.
 - **SVG** — rasterised to PNG via the bundled resvg engine at 192 DPI (2× retina), then embedded the same way as a regular raster image. Text in SVGs uses md2any's bundled DejaVu Sans family so renders look identical regardless of what's installed on the build machine.
 
@@ -631,6 +632,16 @@ Remote fetches retry transient failures (HTTP 408 / 429 / 500 / 502 / 503 / 504,
 
 **Cache retention.** Remote images are fetched once and reused on every subsequent render — there's no expiry and no conditional `If-Modified-Since` / `ETag` round-trip. If a remote image gets updated upstream, you'll keep seeing the old version until you delete the cache file. The default cache directory follows the platform convention; `md2any doctor` prints the resolved path. Clearing is just `rm -rf <cache-dir>/remote-images/`. The cap is 20 MB per image; oversized payloads trip the placeholder substitution above instead of silently truncating.
 
+### Self-contained decks — `--localize`
+
+Caching speeds up rebuilds, but the markdown still points at remote URLs — share the file and the images break. `--localize` downloads every remote `http(s)` image into an `assets/` folder next to the deck, rewrites the links to the local paths, and saves the file in place:
+
+```bash
+md2any talk.md --localize
+```
+
+Originals are kept byte-for-byte for supported formats (a 2 MB JPEG stays a 2 MB JPEG; WebP stays WebP) rather than being re-encoded, and the extension is set from the file's magic bytes. The result is an offline, portable deck you can commit or hand off. The in-browser editor calls the same routine automatically whenever it inserts an image, and exposes it as `POST /localize`.
+
 ## Per-slide background
 
 An HTML comment with `bg:` sets a full-bleed background image for the current slide.
@@ -669,6 +680,31 @@ Pick with `--layout NAME` or set `layout:` in front matter.
 **frame** for long training and onboarding decks where a persistent reference panel helps the audience.
 
 **bold** for keynote-style events. Every section transition feels intentional. Maximum accent color.
+
+## Per-slide controls
+
+Beyond the layout *kind*, a handful of HTML-comment directives tune one slide at a time. Drop them anywhere on the slide; they apply to the slide they sit in and are ignored by formats that can't honour them (DOCX/ODT).
+
+| Directive | Effect |
+|---|---|
+| `<!-- valign: center \| bottom \| top -->` | Vertical alignment of the content (and of each column in a two-column layout). |
+| `<!-- align: left \| center \| right -->` | Horizontal alignment of the slide's text blocks. |
+| `<!-- text-scale: N -->` | Multiply this slide's body/heading/list sizes by `N` (0.5–2.5). Keywords also work: `small`, `large`, `larger`, `huge`. Aliases: `text-size:`, `font-scale:`. Big-text slides re-paginate so they don't overflow. |
+| `<!-- cards: N -->` | Group the slide's `### Title` blocks into an N-column card grid (1–6; bare `<!-- cards -->` auto-fits). |
+| `<!-- bg: #hex \| accent \| section -->` | Per-slide background **colour** (a hex value or a palette keyword). A `bg:` that names an image path sets a background **image** instead (see *Per-slide background*). |
+| `width=NN%` on a layout hint | Sizes the image column in `image-left` / `image-right`, e.g. `<!-- layout: image-left width=60% -->`. The text column takes the rest. |
+
+```markdown
+## Big statement
+
+<!-- valign: center -->
+<!-- align: center -->
+<!-- text-scale: large -->
+
+One line, centred, large.
+```
+
+These are exactly the controls the editor's 🎨 style panel and 🤖 AI dock write for you, so anything they produce is plain markdown you can hand-edit and commit. Hex colours in front matter must be quoted (`accent: "#818cf8"`); these inline `bg:` directives accept bare hex.
 
 # Themes
 
@@ -968,6 +1004,24 @@ The default preview format is `pdf`. `--serve-format html` previews the standalo
 
 No frontend dependencies. Pure std HTTP.
 
+## In-browser editor
+
+Add `--edit` to turn the preview server into a full editor:
+
+```bash
+md2any talk.md --serve --edit
+md2any talk.md --serve --edit --serve-format pdf   # preview the real PDF pipeline
+```
+
+Markdown on the left, a live preview on the right, and an AI assistant docked along the bottom — all served from the single binary, no Node or build step. Highlights:
+
+- **Live-DOM preview.** Each rebuild *morphs* into the existing preview rather than reloading it, so scroll position and already-loaded images are preserved. The slide under your caret gets a glow ring; click a slide to jump the caret to its source (two-way sync).
+- **🎨 Style panel.** Theme, colours, and sizes — written straight into the deck's front matter, and it round-trips with hand edits.
+- **🤖 AI dock.** Chats with the full document and applies **surgical, slide-addressed edits** with one click (a content-loss guard asks before dropping prose you didn't ask to remove). It speaks an OpenAI-compatible API: set `--ai-endpoint` / `--ai-model` and a key via `$MD2ANY_API_KEY` or a gitignored key file. Drop the `ai` build feature for a network-free binary.
+- **🖼 Find an image.** Both the AI's `search_images` tool and a manual picker query Wikimedia Commons and Openverse (keyless), plus Unsplash and Pexels when a key file is present. Results carry licence and author; the chosen image is downloaded into `assets/`, the link is localised, and a credit line is added.
+
+The server also exposes a small HTTP API (`/source`, `/export?format=…`, `/chat`, `/image-search?q=…`, `/localize`). See [docs/editor.md](docs/editor.md) for the full guide.
+
 ## Linting
 
 `--check` parses and paginates without writing output, then prints warnings about likely visual issues — long titles, narrow tables, code that won't fit, lists that pile too high, missing image alt text, duplicated titles, weak theme contrast, oversized tables, and uneven speaker-note coverage. Exits with code 2 if any warnings.
@@ -1055,6 +1109,14 @@ md2any licenses            Print the bundled-font licence notice
                            DOCX/ODT document profile (default: report)
       --title <STRING>     Override deck title
       --author <STRING>    Override deck author
+      --list-themes        Print the built-in theme names and exit
+      --generate <PROMPT>  Draft a deck from a prompt with an AI model, then
+                           render it. Key from $MD2ANY_API_KEY (or
+                           $OPENAI_API_KEY). No input file needed
+      --save-md <PATH>     With --generate, also write the drafted markdown here
+      --ai-endpoint <URL>  Chat-completions endpoint (OpenAI-compatible) used by
+                           --generate and the editor's AI dock
+      --ai-model <MODEL>   Model name for --generate / the AI dock
       --font <NAME>        Override body / title font (PPTX/ODP/DOCX/ODT)
       --logo <PATH>        Logo image rendered in slide footer
       --remote-image-cache <PATH>
@@ -1088,6 +1150,12 @@ md2any licenses            Print the bundled-font licence notice
       --serve              Start localhost HTTP preview with hot reload
       --serve-format <FMT> pdf | html | svg | png (default: pdf)
       --port <N>           Port for --serve (default 8421)
+      --edit               With --serve, open the in-browser editor (live
+                           preview + style panel + AI dock); edits save back
+                           to the input file
+      --localize           Download every remote http(s) image into an assets/
+                           folder next to the source, rewrite the links, and
+                           save the file in place (self-contained / offline)
       --check              Lint mode; exit code 2 if any warnings
       --outline            Print one-line-per-slide outline (page, kind, blocks,
                            title) and exit. No output file is written.
@@ -1237,10 +1305,10 @@ Pandoc is the general converter. Quarto is a publishing system. md2any is a one-
 
 ## What's not supported
 
-- GIF and WebP images (PNG, JPEG, and SVG are supported)
+- Animated GIF (PNG, JPEG, SVG, and WebP are supported — WebP is decoded natively)
 - Embedded HTML beyond the notes / bg / column-break / layout directives
 - Inline presenter-note pages inside DOCX / ODT. Use `--doc-style speaker-notes` for a notes appendix; PPTX / ODP attach notes natively and PDF gets notes pages via `--with-notes`.
-- Complex text shaping in PDF — custom PDF fonts and fallback glyphs are supported, but full script shaping/reordering still depends on viewer behaviour
+- Full bidirectional text in PDF — runs of Arabic, Hebrew, and Indic/Thai scripts are now shaped (contextual joining, ligatures, marks, RTL visual order) via the built-in `shaping` engine, but mixed LTR/RTL *within a single line* still uses simple per-run order, and RTL list bullets sit on the left
 - Citations / bibliographies / cross-references — no `[@cite]` parsing, no `\ref{}`, no auto-generated reference list
 - Diagram rendering requires the corresponding CLI on `$PATH` (`dot` / `mmdc` / `plantuml`). When absent, the fence stays as a regular code block — md2any never bundles diagram engines
 - DOCX / ODT are flowing documents, not slide carriers. Section breaks come from H1; everything else flows. Pagination is the consumer app's job
