@@ -707,7 +707,13 @@ fn parse_custom_aspect(s: &str) -> Result<(u32, u32, &'static str, bool)> {
 pub fn load_override(path: &Path) -> Result<ThemeOverride> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("read theme override {}", path.display()))?;
-    let ov: ThemeOverride = serde_yaml::from_str(&text)
-        .with_context(|| format!("parse theme override {}", path.display()))?;
+    load_override_str(&text).with_context(|| format!("parse theme override {}", path.display()))
+}
+
+/// Parse a theme-override overlay from a YAML string (the in-memory form of
+/// [`load_override`]). Exposed so generated overlays can be validated without
+/// a round-trip through the filesystem.
+pub fn load_override_str(text: &str) -> Result<ThemeOverride> {
+    let ov: ThemeOverride = serde_yaml::from_str(text)?;
     Ok(ov)
 }

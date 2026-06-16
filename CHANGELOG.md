@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Corporate templates → brand overlay.** `md2any theme extract corporate.potx
+  -o brand.yaml` reads a PowerPoint template's theme part (colour scheme + font
+  scheme) and emits a commented `--theme-file` overlay, bridging an existing
+  `.potx`/`.pptx` to md2any's declarative branding model — applied across every
+  output format. See `docs/branding.md`.
 - **AI dock can find and insert real photos.** The `--serve --edit` dock gives
   the model a `search_images` tool backed by a multi-source image search
   (`imgsearch`): Wikimedia Commons + Openverse (keyless, always on) and

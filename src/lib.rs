@@ -70,6 +70,7 @@
 //! ```
 
 pub mod ai;
+pub mod brandkit;
 pub mod diagram;
 pub mod document;
 pub mod docx;

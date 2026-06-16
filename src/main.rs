@@ -660,6 +660,25 @@ enum Cmd {
     /// embedded in the executable, this command is the canonical way to
     /// surface that notice for binary-only distributions.
     Licenses,
+    /// Brand-kit helpers: turn existing assets into an md2any theme overlay.
+    Theme {
+        #[command(subcommand)]
+        action: ThemeCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum ThemeCmd {
+    /// Extract a starter brand.yaml overlay from a PowerPoint .potx/.pptx
+    /// template (its colour scheme + font scheme). Use the result with
+    /// `--theme-file` to brand any deck, in every output format.
+    Extract {
+        /// Path to a .potx or .pptx file
+        input: PathBuf,
+        /// Write the YAML here (default: stdout)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
 }
 
 const HELP_MD: &str = include_str!("../HELP.md");
@@ -685,6 +704,28 @@ fn main() -> Result<()> {
 
     if matches!(cli.cmd, Some(Cmd::Doctor)) {
         run_doctor();
+        return Ok(());
+    }
+
+    if let Some(Cmd::Theme {
+        action: ThemeCmd::Extract { input, output },
+    }) = &cli.cmd
+    {
+        let yaml = md2any::brandkit::extract_overlay(input)?;
+        match output {
+            Some(p) => {
+                std::fs::write(p, &yaml).with_context(|| format!("write {}", p.display()))?;
+                eprintln!("md2any: wrote brand overlay → {}", p.display());
+                eprintln!(
+                    "md2any: try it →  md2any deck.md --theme-file {} -o deck.pptx",
+                    p.display()
+                );
+            }
+            None => {
+                use std::io::Write;
+                std::io::stdout().write_all(yaml.as_bytes())?;
+            }
+        }
         return Ok(());
     }
 

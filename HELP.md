@@ -836,6 +836,17 @@ syntax:
 
 Set only the keys you want to change — anything omitted inherits from the underlying `--theme`. Theme fonts are names for PPTX/ODP/DOCX/ODT; PDF font keys are file paths and are embedded/subset in the output PDF. Relative PDF font paths in a theme file resolve next to that theme file.
 
+## Corporate templates → brand overlay
+
+md2any is a generator, not a template host: it never pours content into an existing PowerPoint master, because a `.potx` would only brand one of the eight outputs. Instead a brand lives in one `--theme-file` overlay reused across every format. If you already have a PowerPoint template, extract a starter overlay from its colour and font scheme:
+
+```bash
+md2any theme extract corporate.potx -o brand.yaml   # or .pptx; omit -o to print
+md2any deck.md --theme light --theme-file brand.yaml --logo logo.png -o deck.pptx
+```
+
+The extractor maps `lt1`/`dk1`/`dk2` to background/body/title, `accent1`/`accent2` to the accent colours, `hlink` to links, and the major/minor fonts to `title_font`/`body_font`. Slide-master geometry, placeholders, the logo, and the mono font aren't in the theme part — set those with `--layout`, `--logo`, and `mono_font`. PPTX/ODP/DOCX/ODT honour named fonts when installed; for self-contained PDF, point `pdf_font`/`pdf_mono_font` at font files.
+
 # Aspect ratios
 
 ## Built-in presets
@@ -1080,6 +1091,9 @@ md2any <INPUT...> [OPTIONS]
 md2any new <PATH>          Write a starter markdown file with example structure
 md2any doctor              Probe optional CLIs, bundled fonts, build features
 md2any licenses            Print the bundled-font licence notice
+md2any theme extract <FILE.potx> [-o brand.yaml]
+                           Read a PowerPoint template's colour + font scheme
+                           and emit a --theme-file brand overlay
 
   -o, --output <PATH>      Output file, or directory for svg/png
                            (default: from -o extension, else input.pptx;

@@ -92,3 +92,6 @@ Front-matter can also carry a `theme_file:` path, and individual keys via the
 - PDF embeds DejaVu Sans/Mono by default; `pdf_font`/`pdf_mono_font` and
   `font_fallback` replace or extend those faces. HTML/Office formats use the
   `*_font` family names directly.
+- Working from a corporate PowerPoint template? `md2any theme extract
+  brand.potx -o brand.yaml` generates a starter overlay from its colour and
+  font scheme — see [docs/branding.md](branding.md).

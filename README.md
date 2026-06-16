@@ -73,6 +73,11 @@ palette over a light or dark base; any of them combine with any `--layout` and
 `--theme-file` overrides. See [docs/theming.md](docs/theming.md) for the full
 theme-file reference.
 
+**Corporate templates / brand kits.** Already have a PowerPoint `.potx`?
+`md2any theme extract corporate.potx -o brand.yaml` reads its colour and font
+scheme into a reusable overlay, applied across every output format with
+`--theme-file`. See [docs/branding.md](docs/branding.md).
+
 <p align="center">
   <img src="docs/img/themes.png" alt="The eight built-in themes: light, dark, corporate, sepia, contrast, midnight, terminal, pastel" width="100%">
 </p>
