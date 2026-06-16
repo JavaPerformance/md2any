@@ -286,7 +286,17 @@ fn download_to_assets(
     base_dir: &Path,
     used: &mut std::collections::HashSet<String>,
 ) -> Result<String> {
-    let meta = load_any(base_dir, url)?;
+    // Prefer saving the ORIGINAL bytes for any format md2any renders directly
+    // (JPEG/PNG/SVG/WebP) — keeps the file small and native (decoding a 600 KB
+    // WebP to PNG would balloon it to ~10 MB). Only fall back to load_any's
+    // converted bytes for formats we can't embed as-is.
+    let (bytes, ext): (Vec<u8>, &'static str) = match fetch_original_supported(url) {
+        Some((b, e)) => (b, e),
+        None => {
+            let meta = load_any(base_dir, url)?;
+            (meta.bytes, meta.ext)
+        }
+    };
     let dir = base_dir.join("assets");
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let stem_src = url
@@ -315,15 +325,54 @@ fn download_to_assets(
     } else {
         stem
     };
-    let mut name = format!("{stem}.{}", meta.ext);
+    let mut name = format!("{stem}.{ext}");
     let mut n = 1;
     while used.contains(&name) {
-        name = format!("{stem}-{n}.{}", meta.ext);
+        name = format!("{stem}-{n}.{ext}");
         n += 1;
     }
-    std::fs::write(dir.join(&name), &meta.bytes).with_context(|| format!("write assets/{name}"))?;
+    std::fs::write(dir.join(&name), &bytes).with_context(|| format!("write assets/{name}"))?;
     used.insert(name.clone());
     Ok(format!("assets/{name}"))
+}
+
+/// Detect an image format from magic bytes (no decode), returning the file
+/// extension if md2any can embed it directly.
+fn image_ext_from_magic(b: &[u8]) -> Option<&'static str> {
+    if b.len() >= 12 && &b[..4] == b"RIFF" && &b[8..12] == b"WEBP" {
+        Some("webp")
+    } else if b.len() >= 8 && &b[..8] == b"\x89PNG\r\n\x1a\n" {
+        Some("png")
+    } else if b.len() >= 3 && b[0] == 0xFF && b[1] == 0xD8 {
+        Some("jpg")
+    } else if looks_like_svg(b) {
+        Some("svg")
+    } else {
+        None
+    }
+}
+
+/// Fetch a remote image's *original* bytes and, if it's a format md2any embeds
+/// directly, return them with the right extension. `None` for unsupported
+/// formats (caller then converts via `load_any`) or when fetching is disabled.
+#[cfg(feature = "remote-images")]
+fn fetch_original_supported(url: &str) -> Option<(Vec<u8>, &'static str)> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return None;
+    }
+    let options = remote_image_options();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .user_agent(&remote_user_agent(&options))
+        .build();
+    let bytes = fetch_with_retries(&agent, url, 3).ok()?;
+    let ext = image_ext_from_magic(&bytes)?;
+    Some((bytes, ext))
+}
+
+#[cfg(not(feature = "remote-images"))]
+fn fetch_original_supported(_url: &str) -> Option<(Vec<u8>, &'static str)> {
+    None
 }
 
 /// Build a visible "image failed to load" placeholder. Tries the SVG
