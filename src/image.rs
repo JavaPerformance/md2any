@@ -754,8 +754,64 @@ fn sniff(bytes: &[u8], origin: &str) -> Result<ImageMeta> {
     if looks_like_svg(bytes) {
         return rasterize_svg(bytes, origin);
     }
+    // WebP: "RIFF"…"WEBP". Decode and re-encode to PNG so every output can
+    // embed it (browsers handle WebP, but PDF/OOXML/ODF and our raster path
+    // don't).
+    if bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        return decode_webp(bytes, origin);
+    }
     bail!(
-        "unsupported image format: {} (PNG, JPEG, and SVG supported)",
+        "unsupported image format: {} (PNG, JPEG, SVG, and WebP supported)",
+        origin
+    )
+}
+
+/// Decode a WebP image to RGBA and re-encode it as PNG (via tiny-skia), so the
+/// rest of the pipeline treats it like any other raster image.
+#[cfg(feature = "webp")]
+fn decode_webp(bytes: &[u8], origin: &str) -> Result<ImageMeta> {
+    let mut decoder = image_webp::WebPDecoder::new(std::io::Cursor::new(bytes))
+        .map_err(|e| anyhow::anyhow!("decode WebP {}: {}", origin, e))?;
+    let (w, h) = decoder.dimensions();
+    if w == 0 || h == 0 {
+        bail!("WebP {} has zero dimension", origin);
+    }
+    let has_alpha = decoder.has_alpha();
+    let bpp = if has_alpha { 4 } else { 3 };
+    let mut raw = vec![0u8; (w as usize) * (h as usize) * bpp];
+    decoder
+        .read_image(&mut raw)
+        .map_err(|e| anyhow::anyhow!("read WebP {}: {}", origin, e))?;
+
+    let mut pixmap = tiny_skia::Pixmap::new(w, h)
+        .ok_or_else(|| anyhow::anyhow!("alloc {}x{} pixmap for {}", w, h, origin))?;
+    let premul = |c: u8, a: u8| ((c as u16 * a as u16) / 255) as u8;
+    let pixels = pixmap.pixels_mut();
+    for (i, px) in pixels.iter_mut().enumerate() {
+        let (r, g, b, a) = if has_alpha {
+            (raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2], raw[i * 4 + 3])
+        } else {
+            (raw[i * 3], raw[i * 3 + 1], raw[i * 3 + 2], 255)
+        };
+        *px =
+            tiny_skia::PremultipliedColorU8::from_rgba(premul(r, a), premul(g, a), premul(b, a), a)
+                .unwrap_or_else(|| tiny_skia::PremultipliedColorU8::from_rgba(0, 0, 0, 0).unwrap());
+    }
+    let png = pixmap
+        .encode_png()
+        .map_err(|e| anyhow::anyhow!("encode PNG for {}: {}", origin, e))?;
+    Ok(ImageMeta {
+        bytes: png,
+        width: w,
+        height: h,
+        ext: "png",
+    })
+}
+
+#[cfg(not(feature = "webp"))]
+fn decode_webp(_bytes: &[u8], origin: &str) -> Result<ImageMeta> {
+    bail!(
+        "WebP image {} requires the `webp` feature (rebuild with it enabled)",
         origin
     )
 }

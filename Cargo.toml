@@ -63,9 +63,13 @@ ureq = { version = "2.10", default-features = false, features = ["tls"], optiona
 resvg = { version = "0.42", default-features = false, features = ["text", "raster-images"], optional = true }
 usvg = { version = "0.42", default-features = false, features = ["text"], optional = true }
 tiny-skia = { version = "0.11", default-features = false, features = ["std", "png-format"], optional = true }
+# Pure-Rust WebP decoder. md2any has no WebP support otherwise, so a referenced
+# (or AI-searched) `.webp` image is decoded here and re-encoded to PNG via
+# tiny-skia for embedding. Optional — disable for a smaller binary.
+image-webp = { version = "0.2", optional = true }
 
 [features]
-default = ["remote-images", "svg", "ai"]
+default = ["remote-images", "svg", "ai", "webp"]
 # AI deck generation (`--generate`). Speaks the OpenAI-style chat-completions
 # API over the same `ureq` client used for remote images; endpoint/model/key
 # are all configurable. On by default; drop it for a network-call-free binary.
@@ -77,6 +81,9 @@ remote-images = ["ureq"]
 # image files. They're rasterised to PNG at build time and embedded the
 # same way as a regular raster image.
 svg = ["resvg", "usvg", "tiny-skia"]
+# Decode WebP images (re-encoded to PNG via tiny-skia) so md2any can embed
+# `.webp` files in every output, not just HTML.
+webp = ["dep:image-webp", "tiny-skia"]
 
 [dev-dependencies]
 # Renderer tests open the produced PPTX/ODP/DOCX/ODT archives to assert

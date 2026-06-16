@@ -142,14 +142,15 @@ pub fn search(query: &str, per_source: usize) -> Vec<ImageHit> {
     hits
 }
 
-/// True if md2any can embed this image URL (by extension): JPEG/PNG/SVG.
+/// True if md2any can embed this image URL (by extension): JPEG/PNG/SVG/WebP
+/// (WebP is decoded + re-encoded when the `webp` feature is on, the default).
 fn supported(url: &str) -> bool {
     let u = url
         .split(['?', '#'])
         .next()
         .unwrap_or(url)
         .to_ascii_lowercase();
-    [".jpg", ".jpeg", ".png", ".svg"]
+    [".jpg", ".jpeg", ".png", ".svg", ".webp"]
         .iter()
         .any(|e| u.ends_with(e))
 }
