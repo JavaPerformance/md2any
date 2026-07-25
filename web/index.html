@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>md2any Studio — Markdown to PPTX, PDF, DOCX in your browser</title>
+    <meta
+      name="description"
+      content="Editable PowerPoint, native PDF, Word — from one markdown source. Runs fully in your browser. Same engine as the md2any CLI."
+    />
+    <meta name="theme-color" content="#0b0d12" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="./icons/icon-512.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="boot" id="boot">
+      <div class="boot-card">
+        <div class="spinner" aria-hidden="true"></div>
+        <h2>Loading md2any engine</h2>
+        <p>Compiling WebAssembly in your browser — nothing leaves this device.</p>
+      </div>
+    </div>
+
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">m2</div>
+        <div>
+          <h1>md<span>2</span>any Studio</h1>
+          <p>editable PowerPoint · offline · same IR as the CLI</p>
+        </div>
+      </div>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-controls">
+        <button type="button" class="badge math-badge" id="math-badge" title="Math mode">
+          math: unicode
+        </button>
+        <div class="field">
+          <label for="theme">Theme</label>
+          <select id="theme" aria-label="Theme"></select>
+        </div>
+        <div class="field">
+          <label for="layout">Layout</label>
+          <select id="layout" aria-label="Layout"></select>
+        </div>
+        <div class="field">
+          <label for="aspect">Aspect</label>
+          <select id="aspect" aria-label="Aspect ratio">
+            <option value="16:9">16:9</option>
+            <option value="4:3">4:3</option>
+            <option value="a4">A4</option>
+            <option value="letter">Letter</option>
+          </select>
+        </div>
+        <button type="button" id="btn-palette" title="Command palette (⌘K)">⌘K</button>
+        <button type="button" id="btn-sample" title="Load sample deck">Sample</button>
+        <button type="button" id="btn-open" title="Open .md file">Open</button>
+        <button type="button" id="btn-save" title="Save markdown (⌘S)">Save</button>
+        <button type="button" id="btn-folder" title="Open folder (File System Access)">Folder</button>
+        <button type="button" id="btn-brand" title="Import brand from .potx / .pptx">Brand</button>
+        <button type="button" id="btn-ghost" title="Toggle export ghost (HTML / SVG layout)">Ghost</button>
+        <button type="button" id="btn-notes" title="Speaker notes panel">Notes</button>
+        <button type="button" id="btn-fonts" title="Session fonts (OPFS)">Fonts</button>
+        <button type="button" id="btn-ai" title="AI assistant (BYO key)">AI</button>
+        <button type="button" id="btn-git" title="Git commit helper">Git</button>
+        <input type="file" id="font-input" accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2" multiple hidden />
+        <button type="button" id="btn-image" title="Insert image">Image</button>
+        <button type="button" id="btn-share" title="Copy share snapshot link">Share</button>
+        <input type="file" id="file-input" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden />
+        <input type="file" id="image-input" accept="image/*" multiple hidden />
+        <input
+          type="file"
+          id="brand-input"
+          accept=".potx,.pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.presentationml.template"
+          hidden
+        />
+        <button type="button" id="btn-theme-toggle" title="Toggle light/dark UI">◐</button>
+        <div class="menu" id="export-menu">
+          <button type="button" class="primary" id="btn-export">Download ▾</button>
+          <div class="menu-panel" role="menu">
+            <button type="button" data-fmt="pptx">PowerPoint <span class="hint">.pptx</span></button>
+            <button type="button" data-fmt="pdf">PDF <span class="hint">.pdf</span></button>
+            <button type="button" data-fmt="docx">Word <span class="hint">.docx</span></button>
+            <button type="button" data-fmt="odp">Impress <span class="hint">.odp</span></button>
+            <button type="button" data-fmt="odt">Writer <span class="hint">.odt</span></button>
+            <button type="button" data-fmt="html">HTML <span class="hint">.html</span></button>
+            <div class="menu-sep"></div>
+            <button type="button" data-recipe="board">Board pack <span class="hint">pdf+pptx</span></button>
+            <button type="button" data-recipe="all">All formats <span class="hint">6 files</span></button>
+          </div>
+        </div>
+        <span class="badge" id="status-badge">starting</span>
+      </div>
+    </header>
+
+    <div class="review-chips" id="review-chips" hidden></div>
+
+    <main class="main">
+      <aside class="rail" aria-label="Slides">
+        <h2>Slides <span class="rail-hint">drag to reorder</span></h2>
+        <div id="slide-list"></div>
+      </aside>
+      <section class="pane">
+        <div class="pane-head">
+          <span>Markdown</span>
+          <span id="caret-info"></span>
+        </div>
+        <div class="editor-shell">
+          <div class="editor-flash" id="editor-flash" aria-hidden="true"></div>
+          <textarea
+            id="editor"
+            spellcheck="false"
+            wrap="soft"
+            aria-label="Markdown source"
+            placeholder="Write markdown… or pick a template"
+          ></textarea>
+          <div class="empty-gallery" id="empty-gallery" hidden>
+            <h3>Start from a template</h3>
+            <p>Same engine as the CLI. Nothing uploads.</p>
+            <div class="gallery-grid"></div>
+          </div>
+        </div>
+      </section>
+      <section class="pane preview-pane">
+        <div class="pane-head">
+          <span>Live preview</span>
+          <span id="preview-meta"></span>
+        </div>
+        <div class="preview-split">
+          <div class="preview-wrap">
+            <iframe id="preview" title="Deck preview" sandbox="allow-same-origin"></iframe>
+            <div class="preview-overlay" id="preview-overlay">Rendering…</div>
+          </div>
+          <div class="ghost-pane" id="ghost-pane" hidden>
+            <div class="ghost-head">
+              <span>Export ghost</span>
+              <div class="ghost-modes">
+                <button type="button" class="ghost-mode active" data-ghost-mode="html" title="Full HTML export">HTML</button>
+                <button type="button" class="ghost-mode" data-ghost-mode="svg" title="CLI SVG layout (PPTX-like geometry)">SVG</button>
+              </div>
+              <span id="ghost-meta"></span>
+            </div>
+            <iframe id="ghost-frame" title="Export ghost" sandbox="allow-same-origin"></iframe>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="filmstrip" id="filmstrip" aria-label="Slide filmstrip">
+      <div class="filmstrip-track" id="filmstrip-track"></div>
+    </div>
+
+    <footer class="statusbar">
+      <span
+        ><strong id="stat-slides">0</strong> slides ·
+        <strong id="stat-words">0</strong> words ·
+        <span id="stat-engine">engine …</span> ·
+        <span id="file-label">unsaved</span> ·
+        <span id="export-stamp">not exported yet</span></span
+      >
+      <span>Private · runs fully in your browser · no upload · <kbd>⌘K</kbd> commands</span>
+    </footer>
+
+    <!-- Command palette -->
+    <div class="palette" id="palette" hidden>
+      <div class="palette-card">
+        <input
+          id="palette-input"
+          type="search"
+          placeholder="Export, theme, template, lint…"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <div id="palette-list" class="palette-list"></div>
+      </div>
+    </div>
+
+    <!-- Side drawer -->
+    <aside class="drawer" id="drawer" hidden>
+      <div class="drawer-head">
+        <h3 id="drawer-title">Panel</h3>
+        <button type="button" id="btn-drawer-close" aria-label="Close">×</button>
+      </div>
+      <div class="drawer-body" id="drawer-body"></div>
+    </aside>
+
+    <!-- Talk mode -->
+    <div class="talk-mode" id="talk-mode" hidden>
+      <div class="talk-frame"></div>
+      <button type="button" class="talk-exit" id="btn-talk-exit">Exit talk mode (Esc)</button>
+    </div>
+
+    <div class="toast" id="toast" role="status"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
