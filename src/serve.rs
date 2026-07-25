@@ -1627,6 +1627,432 @@ fn error_pdf(message: &str) -> Vec<u8> {
     buf
 }
 
+// ---------------------------------------------------------------------------
+// WASM Studio static host (`md2any --studio`)
+// ---------------------------------------------------------------------------
+
+/// Options for the browser Studio static server.
+pub struct StudioServeOpts {
+    pub port: u16,
+    pub bind: String,
+    /// Directory containing `index.html` + `pkg/` (usually `web/dist`).
+    pub root: PathBuf,
+    /// Optional markdown to expose at `/__studio_seed.md` for one-shot load.
+    pub seed_markdown: Option<String>,
+    /// Optional absolute path of the seed file (enables git helper + rewrite).
+    pub seed_path: Option<PathBuf>,
+}
+
+/// Serve the built WASM studio from `opts.root` on localhost.
+/// Blocks until the process is interrupted.
+pub fn serve_studio(opts: StudioServeOpts) -> std::io::Result<()> {
+    let addr = format!("{}:{}", opts.bind, opts.port);
+    let listener = TcpListener::bind(&addr)?;
+    let root = opts.root.canonicalize().unwrap_or(opts.root);
+    let seed = opts.seed_markdown.map(|s| s.into_bytes());
+    let seed_path = opts.seed_path.and_then(|p| p.canonicalize().ok());
+    eprintln!("md2any studio: serving {} at http://{addr}/", root.display());
+    eprintln!("md2any studio: privacy-first WASM UI — nothing leaves this machine");
+    if seed.is_some() {
+        eprintln!("md2any studio: seed markdown available at /__studio_seed.md");
+    }
+    if seed_path.is_some() {
+        eprintln!("md2any studio: git helper + chat proxy enabled for seed path");
+    }
+    eprintln!("md2any studio: Ctrl-C to stop");
+
+    let root = Arc::new(root);
+    let seed = Arc::new(seed);
+    let seed_path = Arc::new(seed_path);
+
+    for stream in listener.incoming() {
+        let Ok(stream) = stream else { continue };
+        let root = Arc::clone(&root);
+        let seed = Arc::clone(&seed);
+        let seed_path = Arc::clone(&seed_path);
+        std::thread::spawn(move || {
+            let _ = handle_studio(
+                stream,
+                &root,
+                seed.as_ref().as_ref(),
+                seed_path.as_ref().as_ref(),
+            );
+        });
+    }
+    Ok(())
+}
+
+fn handle_studio(
+    mut stream: TcpStream,
+    root: &std::path::Path,
+    seed: Option<&Vec<u8>>,
+    seed_path: Option<&PathBuf>,
+) -> std::io::Result<()> {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    let (method, raw_path, body) = match read_request(&mut stream) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+    let path = raw_path.split('?').next().unwrap_or("/");
+
+    // --- Studio API (localhost-only helpers) --------------------------------
+    if method == "POST" && path == "/__studio_chat" {
+        return studio_chat_proxy(&mut stream, &body);
+    }
+    if method == "GET" && path == "/__studio_git_status" {
+        return studio_git_status(&mut stream, seed_path);
+    }
+    if method == "POST" && path == "/__studio_git_commit" {
+        return studio_git_commit(&mut stream, seed_path, &body);
+    }
+    if method == "POST" && path == "/__studio_seed_write" {
+        return studio_seed_write(&mut stream, seed_path, &body);
+    }
+
+    if method != "GET" && method != "HEAD" {
+        write_response(
+            &mut stream,
+            405,
+            "Method Not Allowed",
+            "text/plain",
+            b"method not allowed",
+        )?;
+        return Ok(());
+    }
+
+    if path == "/__studio_seed.md" {
+        match seed {
+            Some(bytes) => {
+                write_response(
+                    &mut stream,
+                    200,
+                    "OK",
+                    "text/markdown; charset=utf-8",
+                    bytes,
+                )?;
+            }
+            None => {
+                write_response(&mut stream, 404, "Not Found", "text/plain", b"no seed")?;
+            }
+        }
+        return Ok(());
+    }
+
+    let rel = if path == "/" || path.is_empty() {
+        "index.html"
+    } else {
+        path.trim_start_matches('/')
+    };
+    // Block path traversal.
+    if rel.contains("..") || rel.starts_with('/') {
+        write_response(&mut stream, 400, "Bad Request", "text/plain", b"bad path")?;
+        return Ok(());
+    }
+    let file_path = root.join(rel);
+    // Ensure resolved path stays under root.
+    let Ok(canon) = file_path.canonicalize() else {
+        write_response(&mut stream, 404, "Not Found", "text/plain", b"not found")?;
+        return Ok(());
+    };
+    if !canon.starts_with(root) {
+        write_response(&mut stream, 403, "Forbidden", "text/plain", b"forbidden")?;
+        return Ok(());
+    }
+    let bytes = match std::fs::read(&canon) {
+        Ok(b) => b,
+        Err(_) => {
+            write_response(&mut stream, 404, "Not Found", "text/plain", b"not found")?;
+            return Ok(());
+        }
+    };
+    let ct = studio_content_type(rel);
+    if method == "HEAD" {
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        );
+        stream.write_all(header.as_bytes())?;
+    } else {
+        write_studio_response(&mut stream, ct, &bytes)?;
+    }
+    Ok(())
+}
+
+/// Forward an OpenAI-compatible chat request (BYO key in body — never stored).
+fn studio_chat_proxy(stream: &mut TcpStream, body: &[u8]) -> std::io::Result<()> {
+    #[cfg(not(feature = "ureq"))]
+    {
+        let _ = body;
+        let msg = serde_json::json!({
+            "error": "this md2any build has no network (rebuild with default features)"
+        })
+        .to_string();
+        return write_response(stream, 501, "Not Implemented", "application/json", msg.as_bytes());
+    }
+    #[cfg(feature = "ureq")]
+    {
+        let v: serde_json::Value = match serde_json::from_slice(body) {
+            Ok(v) => v,
+            Err(e) => {
+                let msg = serde_json::json!({ "error": format!("bad JSON: {e}") }).to_string();
+                return write_response(stream, 400, "Bad Request", "application/json", msg.as_bytes());
+            }
+        };
+        let endpoint = v
+            .get("endpoint")
+            .and_then(|x| x.as_str())
+            .unwrap_or("https://api.openai.com/v1/chat/completions");
+        let model = v
+            .get("model")
+            .and_then(|x| x.as_str())
+            .unwrap_or("gpt-4o-mini");
+        let api_key = v.get("apiKey").and_then(|x| x.as_str()).unwrap_or("");
+        let messages = v.get("messages").cloned().unwrap_or(serde_json::json!([]));
+        if api_key.is_empty() {
+            let msg = serde_json::json!({ "error": "apiKey required" }).to_string();
+            return write_response(stream, 400, "Bad Request", "application/json", msg.as_bytes());
+        }
+        let req_body = serde_json::json!({
+            "model": model,
+            "temperature": 0.5,
+            "messages": messages,
+        })
+        .to_string();
+        let resp = ureq::post(endpoint)
+            .set("Authorization", &format!("Bearer {api_key}"))
+            .set("Content-Type", "application/json")
+            .timeout(std::time::Duration::from_secs(90))
+            .send_string(&req_body);
+        match resp {
+            Ok(r) => {
+                let text = r.into_string().unwrap_or_default();
+                match crate::ai::parse_chat_response(&text) {
+                    Ok(content) => {
+                        let out = serde_json::json!({ "content": content }).to_string();
+                        write_response(stream, 200, "OK", "application/json", out.as_bytes())
+                    }
+                    Err(e) => {
+                        let out = serde_json::json!({ "error": e }).to_string();
+                        write_response(stream, 502, "Bad Gateway", "application/json", out.as_bytes())
+                    }
+                }
+            }
+            Err(ureq::Error::Status(code, r)) => {
+                let detail = r.into_string().unwrap_or_default();
+                let out = serde_json::json!({
+                    "error": format!("upstream HTTP {code}: {}", detail.chars().take(400).collect::<String>())
+                })
+                .to_string();
+                write_response(stream, 502, "Bad Gateway", "application/json", out.as_bytes())
+            }
+            Err(e) => {
+                let out = serde_json::json!({ "error": format!("request failed: {e}") }).to_string();
+                write_response(stream, 502, "Bad Gateway", "application/json", out.as_bytes())
+            }
+        }
+    }
+}
+
+fn studio_git_status(
+    stream: &mut TcpStream,
+    seed_path: Option<&PathBuf>,
+) -> std::io::Result<()> {
+    let Some(path) = seed_path else {
+        let out = serde_json::json!({
+            "can_commit": false,
+            "summary": "No seed file path (open with: md2any deck.md --studio)"
+        })
+        .to_string();
+        return write_response(stream, 200, "OK", "application/json", out.as_bytes());
+    };
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let status = std::process::Command::new("git")
+        .args(["status", "--short", "--", path.file_name().and_then(|s| s.to_str()).unwrap_or(".")])
+        .current_dir(dir)
+        .output();
+    let branch = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "?".into());
+    match status {
+        Ok(o) if o.status.success() => {
+            let st = String::from_utf8_lossy(&o.stdout).trim().to_string();
+            let summary = if st.is_empty() {
+                format!("branch {branch}\n{} — clean", path.display())
+            } else {
+                format!("branch {branch}\n{st}")
+            };
+            let out = serde_json::json!({
+                "can_commit": true,
+                "branch": branch,
+                "path": path.display().to_string(),
+                "summary": summary,
+            })
+            .to_string();
+            write_response(stream, 200, "OK", "application/json", out.as_bytes())
+        }
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            let out = serde_json::json!({
+                "can_commit": false,
+                "summary": format!("git status failed: {err}")
+            })
+            .to_string();
+            write_response(stream, 200, "OK", "application/json", out.as_bytes())
+        }
+        Err(e) => {
+            let out = serde_json::json!({
+                "can_commit": false,
+                "summary": format!("git not available: {e}")
+            })
+            .to_string();
+            write_response(stream, 200, "OK", "application/json", out.as_bytes())
+        }
+    }
+}
+
+fn studio_git_commit(
+    stream: &mut TcpStream,
+    seed_path: Option<&PathBuf>,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let Some(path) = seed_path else {
+        let out = serde_json::json!({ "error": "no seed path" }).to_string();
+        return write_response(stream, 400, "Bad Request", "application/json", out.as_bytes());
+    };
+    let v: serde_json::Value = serde_json::from_slice(body).unwrap_or(serde_json::json!({}));
+    let message = v
+        .get("message")
+        .and_then(|m| m.as_str())
+        .unwrap_or("docs: update deck")
+        .trim();
+    if message.is_empty() {
+        let out = serde_json::json!({ "error": "empty message" }).to_string();
+        return write_response(stream, 400, "Bad Request", "application/json", out.as_bytes());
+    }
+    let dir = path.parent().unwrap_or(std::path::Path::new("."));
+    let rel = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(".");
+    let add = std::process::Command::new("git")
+        .args(["add", "--", rel])
+        .current_dir(dir)
+        .output();
+    if let Err(e) = add {
+        let out = serde_json::json!({ "error": format!("git add: {e}") }).to_string();
+        return write_response(stream, 500, "Error", "application/json", out.as_bytes());
+    }
+    if let Ok(o) = &add {
+        if !o.status.success() {
+            let err = String::from_utf8_lossy(&o.stderr);
+            let out = serde_json::json!({ "error": format!("git add failed: {err}") }).to_string();
+            return write_response(stream, 500, "Error", "application/json", out.as_bytes());
+        }
+    }
+    let commit = std::process::Command::new("git")
+        .args(["commit", "-m", message, "--", rel])
+        .current_dir(dir)
+        .output();
+    match commit {
+        Ok(o) if o.status.success() => {
+            let out = serde_json::json!({
+                "ok": format!("committed {}", path.display()),
+                "log": String::from_utf8_lossy(&o.stdout).trim(),
+            })
+            .to_string();
+            write_response(stream, 200, "OK", "application/json", out.as_bytes())
+        }
+        Ok(o) => {
+            let err = String::from_utf8_lossy(&o.stderr);
+            let out = serde_json::json!({ "error": format!("git commit failed: {err}") }).to_string();
+            write_response(stream, 500, "Error", "application/json", out.as_bytes())
+        }
+        Err(e) => {
+            let out = serde_json::json!({ "error": format!("git commit: {e}") }).to_string();
+            write_response(stream, 500, "Error", "application/json", out.as_bytes())
+        }
+    }
+}
+
+fn studio_seed_write(
+    stream: &mut TcpStream,
+    seed_path: Option<&PathBuf>,
+    body: &[u8],
+) -> std::io::Result<()> {
+    let Some(path) = seed_path else {
+        let out = serde_json::json!({ "error": "no seed path" }).to_string();
+        return write_response(stream, 400, "Bad Request", "application/json", out.as_bytes());
+    };
+    match std::fs::write(path, body) {
+        Ok(()) => {
+            let out = serde_json::json!({ "ok": true, "path": path.display().to_string() }).to_string();
+            write_response(stream, 200, "OK", "application/json", out.as_bytes())
+        }
+        Err(e) => {
+            let out = serde_json::json!({ "error": format!("write failed: {e}") }).to_string();
+            write_response(stream, 500, "Error", "application/json", out.as_bytes())
+        }
+    }
+}
+
+fn write_studio_response(
+    stream: &mut TcpStream,
+    content_type: &str,
+    body: &[u8],
+) -> std::io::Result<()> {
+    // Allow long-lived cache for wasm/static; HTML stays no-cache so deploys pick up.
+    let cache = if content_type.contains("wasm") || content_type.starts_with("image/") {
+        "public, max-age=86400"
+    } else if content_type.starts_with("text/html") {
+        "no-cache"
+    } else {
+        "public, max-age=3600"
+    };
+    let header = format!(
+        "HTTP/1.1 200 OK\r\n\
+         Content-Type: {content_type}\r\n\
+         Content-Length: {len}\r\n\
+         Cache-Control: {cache}\r\n\
+         Connection: close\r\n\r\n",
+        len = body.len(),
+    );
+    stream.write_all(header.as_bytes())?;
+    stream.write_all(body)?;
+    Ok(())
+}
+
+fn studio_content_type(path: &str) -> &'static str {
+    let lower = path.to_ascii_lowercase();
+    if lower.ends_with(".html") {
+        "text/html; charset=utf-8"
+    } else if lower.ends_with(".js") || lower.ends_with(".mjs") {
+        "text/javascript; charset=utf-8"
+    } else if lower.ends_with(".css") {
+        "text/css; charset=utf-8"
+    } else if lower.ends_with(".wasm") {
+        "application/wasm"
+    } else if lower.ends_with(".json") || lower.ends_with(".webmanifest") {
+        "application/manifest+json"
+    } else if lower.ends_with(".png") {
+        "image/png"
+    } else if lower.ends_with(".svg") {
+        "image/svg+xml"
+    } else if lower.ends_with(".woff2") {
+        "font/woff2"
+    } else if lower.ends_with(".md") {
+        "text/markdown; charset=utf-8"
+    } else if lower.ends_with(".map") {
+        "application/json"
+    } else {
+        "application/octet-stream"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

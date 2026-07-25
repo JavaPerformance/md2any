@@ -324,6 +324,8 @@ impl From<ServeFormatArg> for serve::ServeFormat {
                   md2any talk.md --serve                      → live PDF preview server\n  \
                   md2any talk.md --serve --serve-format html  → live HTML preview\n  \
                   md2any talk.md --serve --serve-format png   → live PNG slide preview\n  \
+                  md2any --studio                             → offline WASM Studio (build web/dist first)\n  \
+                  md2any talk.md --studio                     → Studio + seed markdown from file\n  \
                   md2any --help-pdf --theme dark              → user manual as dark PDF\n  \
                   md2any --help-md > HELP.md                  → dump the manual source\n  \
                   md2any doctor                               → probe optional CLIs + fonts\n  \
@@ -580,6 +582,17 @@ struct Cli {
     #[arg(long)]
     edit: bool,
 
+    /// Serve the offline WASM Studio (static `web/dist`) on localhost.
+    /// Build first with `./scripts/build-web.sh`. Optional INPUT is exposed as
+    /// a one-shot seed document for the browser UI.
+    #[arg(long, help_heading = "Studio")]
+    studio: bool,
+
+    /// Directory for `--studio` (default: `web/dist`, `MD2ANY_STUDIO_DIR`, or
+    /// next to the binary).
+    #[arg(long, value_name = "DIR", help_heading = "Studio")]
+    studio_dir: Option<PathBuf>,
+
     /// Print the built-in theme names and exit.
     #[arg(long)]
     list_themes: bool,
@@ -777,6 +790,10 @@ fn main() -> Result<()> {
             println!("{name}");
         }
         return Ok(());
+    }
+
+    if cli.studio {
+        return run_studio(&cli);
     }
 
     if cli.generate.is_some() && (cli.serve || cli.watch) {
@@ -1382,12 +1399,18 @@ fn resolve_pdf_font_paths_from_parts(
     theme: &theme::Theme,
     theme_file_dir: Option<&Path>,
 ) -> Result<PdfFontPaths> {
-    let pdf_font = cli_pdf_font.cloned().or_else(|| {
-        theme
-            .pdf_font
-            .as_deref()
-            .map(|p| resolve_theme_asset_path(p, theme_file_dir))
-    });
+    let pdf_font = cli_pdf_font
+        .cloned()
+        .or_else(|| {
+            theme
+                .pdf_font
+                .as_deref()
+                .map(|p| resolve_theme_asset_path(p, theme_file_dir))
+        })
+        // Full-page ```math``` (e.g. Standard Model Lagrangian) needs a real
+        // math face for script packing. Prefer STIX when the user didn't set a
+        // brand font — override anytime with --pdf-font.
+        .or_else(md2any::font::find_system_math_font);
     let pdf_mono_font = cli_pdf_mono_font.cloned().or_else(|| {
         theme
             .pdf_mono_font
@@ -2214,6 +2237,131 @@ fn run_watch(cli: &Cli, input_path: &Path) -> Result<()> {
                 Err(e) => eprintln!("md2any: error: {e:#}"),
             }
         }
+    }
+}
+
+/// Locate `web/dist` (or `--studio-dir` / `$MD2ANY_STUDIO_DIR`) and serve the
+/// offline WASM Studio. Optional first INPUT is exposed as a seed document.
+fn run_studio(cli: &Cli) -> Result<()> {
+    if cli.serve || cli.watch || cli.check || cli.font_audit {
+        anyhow::bail!("--studio is incompatible with --serve / --watch / --check / --font-audit");
+    }
+
+    let root = resolve_studio_dir(cli.studio_dir.as_deref())?;
+    if !root.join("index.html").is_file() {
+        anyhow::bail!(
+            "studio directory {} has no index.html\n  \
+             Build it first:  ./scripts/build-web.sh\n  \
+             Or pass:         md2any --studio --studio-dir /path/to/web/dist",
+            root.display()
+        );
+    }
+    if !root.join("pkg").is_dir() {
+        eprintln!(
+            "md2any: warning: {}/pkg missing — WASM may not load (re-run ./scripts/build-web.sh)",
+            root.display()
+        );
+    }
+
+    let mut seed_path = None;
+    let seed_markdown = if let Some(path) = cli.inputs.first() {
+        if path.as_os_str() == "-" {
+            use std::io::Read;
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .context("read stdin for --studio seed")?;
+            Some(buf)
+        } else {
+            seed_path = Some(path.clone());
+            Some(
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("read seed {}", path.display()))?,
+            )
+        }
+    } else {
+        None
+    };
+
+    let port = cli.port;
+    // Prefer 8787 when the user left the default --serve port (8421).
+    let port = if port == 8421 { 8787 } else { port };
+
+    let has_seed = seed_markdown.is_some();
+    let opts = serve::StudioServeOpts {
+        port,
+        bind: "127.0.0.1".into(),
+        root: root.clone(),
+        seed_markdown,
+        seed_path,
+    };
+
+    // Best-effort browser open (non-fatal).
+    let url = if has_seed {
+        format!("http://127.0.0.1:{port}/?seed=1")
+    } else {
+        format!("http://127.0.0.1:{port}/")
+    };
+    eprintln!("md2any: open {url}");
+    let _ = open_browser(&url);
+
+    serve::serve_studio(opts).context("studio server")?;
+    Ok(())
+}
+
+fn resolve_studio_dir(explicit: Option<&Path>) -> Result<PathBuf> {
+    if let Some(p) = explicit {
+        return Ok(p.to_path_buf());
+    }
+    if let Ok(env) = std::env::var("MD2ANY_STUDIO_DIR") {
+        if !env.is_empty() {
+            return Ok(PathBuf::from(env));
+        }
+    }
+    // Cwd-relative (dev checkout).
+    let candidates = [
+        PathBuf::from("web/dist"),
+        PathBuf::from("dist"),
+        // Next to the executable (installed layout: bin/md2any + share/md2any-studio).
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.join("../share/md2any-studio")))
+            .unwrap_or_else(|| PathBuf::from(".")),
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|p| p.join("web/dist")))
+            .unwrap_or_else(|| PathBuf::from(".")),
+    ];
+    for c in &candidates {
+        if c.join("index.html").is_file() {
+            return Ok(c.clone());
+        }
+    }
+    // Fall back to web/dist so the error message points at the usual path.
+    Ok(PathBuf::from("web/dist"))
+}
+
+fn open_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(url).spawn()?;
+        return Ok(());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()?;
+        return Ok(());
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        for bin in ["xdg-open", "gio", "www-browser"] {
+            if std::process::Command::new(bin).arg(url).spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        Ok(())
     }
 }
 
