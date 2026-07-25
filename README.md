@@ -60,7 +60,10 @@ not images, and without a TeX or JavaScript stack. Bring any math font with
 </p>
 
 It scales all the way up to the full **Standard Model Lagrangian** on a single
-A4 page ([source](examples/standard-model-lagrangian-a4.md)):
+A4 page ([source](examples/standard-model-lagrangian-a4.md)). When STIX Two Math
+(or another system math font) is installed, md2any picks it up automatically for
+script packing; override with `--pdf-font` or `MD2ANY_MATH_FONT`. HTML/studio
+use the same box layout via SVG:
 
 <p align="center">
   <img src="docs/img/lagrangian.png" alt="The Standard Model Lagrangian rendered on one A4 page" width="62%">
@@ -170,6 +173,22 @@ md2any hello.md --serve --edit  # in-browser editor + live preview (see docs/edi
 md2any --generate "a 5-slide intro to Rust ownership" -o intro.pptx  # AI draft → render
 ```
 
+### Browser studio (WebAssembly)
+
+The same conversion engine runs fully offline in the browser — no upload, no
+server process. Build static assets for Cloudflare Pages (or any static host):
+
+```bash
+./scripts/build-web.sh          # → web/dist/  (~3 MB gzipped WASM)
+python3 -m http.server -d web/dist 8787
+# or:  md2any --studio
+#      md2any talk.md --studio   # seed the editor from a file
+```
+
+See [web/README.md](web/README.md) and [docs/studio.md](docs/studio.md). The
+studio exports real PPTX / PDF / DOCX / ODP / ODT / HTML from a live Markdown
+editor (command palette, templates, rail reorder, share snapshot, PWA offline).
+
 ## Features
 
 | Category | Highlights |
@@ -185,7 +204,7 @@ md2any --generate "a 5-slide intro to Rust ownership" -o intro.pptx  # AI draft 
 | **Speaker notes** | `<!-- notes: -->` HTML comments |
 | **Transitions** | `fade`, `push`, `wipe`, `cover`, `split` (PPTX/ODP/PDF) |
 | **RTL / CJK** | `direction: rtl` right-aligns Arabic/Hebrew; PDF shapes complex scripts (Arabic/Hebrew/Indic join + reorder) via rustybuzz (per-run; full mixed-direction bidi still simplistic). CJK & emoji need `--cjk <font>` for PDF/PNG |
-| **Workflow** | `--watch` for rebuild-on-save, `--serve` for live preview with hot reload, `--check` for lint mode |
+| **Workflow** | `--watch` for rebuild-on-save, `--serve` for live preview with hot reload, `--check` for lint mode, `--studio` for the offline WASM Studio |
 | **In-browser editor** | `--serve --edit`: true live-DOM editing (each rebuild morphs into the preview, preserving scroll), caret↔slide sync both ways, a 🎨 style panel (theme/colour/size controls written to front-matter), a Generate ▾ menu to export any format, and a 🤖 AI dock that reads the deck and applies edits with one click — including a `search_images` tool so it can **find and insert real, license-cleared photos** (downloaded into `assets/` automatically). No external runtime — all served from the single binary. Full guide: [docs/editor.md](docs/editor.md) |
 | **AI drafting** | `--generate "prompt"` drafts a deck via an OpenAI-compatible chat API and renders it natively. Endpoint/model/key all configurable (`--ai-endpoint`, `--ai-model`, `$MD2ANY_API_KEY` or a gitignored key file); `--save-md` keeps the markdown. Optional — drop the default `ai` feature for a network-free binary |
 | **Handouts** | `--handout 2|4|6` for N-up A4 printable PDF |

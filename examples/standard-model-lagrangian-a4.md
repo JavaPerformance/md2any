@@ -5,6 +5,21 @@ aspect: a4
 break_mode: off
 ---
 
+<!--
+  Full-page Standard Model Lagrangian showcase.
+
+  Best results use a real math font for metrics + glyphs:
+    md2any examples/standard-model-lagrangian-a4.md \
+      --pdf-font /usr/share/fonts/stix-fonts/STIXTwoMath-Regular.otf \
+      -o sm.pdf
+
+  If STIX Two Math (or DejaVu Math / Cambria Math) is installed, md2any
+  auto-selects it when --pdf-font is omitted. Override with MD2ANY_MATH_FONT.
+
+  HTML / studio / PNG use the same box-layout engine (SVG), and pick up
+  system math fonts for measurement when available.
+-->
+
 <!-- layout: text-full -->
 
 ```math

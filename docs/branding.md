@@ -34,6 +34,11 @@ md2any theme extract corporate.potx -o brand.yaml     # also accepts .pptx
 md2any theme extract corporate.potx                   # print to stdout
 ```
 
+In the **browser studio**, use **Brand** (or the command palette → “Import brand”):
+pick a `.potx`/`.pptx` — the same extractor runs in WASM, shows swatches, and can
+**Apply to document** (writes a front-matter `style:` block) or download `brand.yaml`.
+Nothing is uploaded.
+
 The output is a commented overlay you can use immediately and tweak later:
 
 ```yaml
