@@ -19,6 +19,10 @@
   --topbar-h: 56px;
   --statusbar-h: 32px;
   --filmstrip-h: 76px;
+  /* Native <select>/<option> popup colours (KDE/Qt dark often paints light grey on white). */
+  --control-bg: #1a1f2b;
+  --control-fg: #e8ecf4;
+  --control-muted: #9aa3b5;
 }
 
 [data-theme="light"] {
@@ -33,6 +37,9 @@
   --accent-soft: rgba(59, 110, 245, 0.12);
   --accent-glow: rgba(59, 110, 245, 0.25);
   --shadow: 0 12px 32px rgba(18, 21, 28, 0.08);
+  --control-bg: #ffffff;
+  --control-fg: #12151c;
+  --control-muted: #5c667a;
 }
 
 *,
@@ -51,6 +58,14 @@ body {
   font-size: 14px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+  /* Hint UA form widgets (select popups, scrollbars) to follow Studio chrome.
+     Literal values — custom properties for color-scheme are flaky in some engines. */
+  color-scheme: dark;
+}
+
+html[data-theme="light"],
+html[data-theme="light"] body {
+  color-scheme: light;
 }
 
 body {
@@ -65,15 +80,61 @@ body {
 
 button,
 select,
-input {
+input,
+textarea {
   font: inherit;
-  color: inherit;
+  color: var(--control-fg);
+  background-color: var(--control-bg);
+}
+
+/* Closed control + open popup both need solid colours — transparent + inherit
+   is unreadable on KDE (Breeze dark) where the option list stays light. */
+select {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.5rem;
+  outline: none;
+  cursor: pointer;
+  /* Prefer the dark/light palette we set, not the OS widget skin alone. */
+  appearance: auto;
+}
+
+select:focus,
+select:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+select option,
+select optgroup {
+  background-color: var(--control-bg);
+  color: var(--control-fg);
+}
+
+/* Some engines paint disabled options with muted system grey on white — force contrast. */
+select option:disabled {
+  color: var(--control-muted);
+}
+
+input,
+textarea {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.4rem 0.55rem;
+  outline: none;
+}
+
+input:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 button {
   cursor: pointer;
   border: 1px solid var(--border);
   background: var(--bg-elevated);
+  color: var(--text);
   border-radius: var(--radius-sm);
   padding: 0.45rem 0.75rem;
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s, transform 0.1s;
@@ -190,10 +251,18 @@ button.primary:hover:not(:disabled) {
 
 .field select {
   border: 0;
-  background: transparent;
-  padding: 0.25rem 0.15rem;
+  /* Keep a solid fill so the closed control and popup stay readable on dark KDE. */
+  background-color: var(--control-bg);
+  color: var(--control-fg);
+  padding: 0.25rem 0.35rem;
   outline: none;
   max-width: 9rem;
+  border-radius: 6px;
+}
+
+.field select:focus,
+.field select:focus-visible {
+  box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .badge {
