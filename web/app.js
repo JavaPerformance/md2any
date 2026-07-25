@@ -143,7 +143,12 @@ fn main() {
 4. Prefer a CLI? \`cargo install md2any\`
 `;
 
-const $ = (id) => document.getElementById(id);
+/** DOM by id. Accepts `foo` or `#foo` (extras/pro historically mixed both). */
+const $ = (id) => {
+  if (id == null || id === "") return null;
+  const key = String(id);
+  return document.getElementById(key.startsWith("#") ? key.slice(1) : key);
+};
 
 const state = {
   ready: false,
