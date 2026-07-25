@@ -71,6 +71,7 @@
 
 pub mod ai;
 pub mod brandkit;
+pub mod convert;
 pub mod diagram;
 pub mod document;
 pub mod docx;
@@ -90,6 +91,7 @@ pub mod parser;
 pub mod pdf;
 pub mod pptx;
 pub mod render_plan;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod serve;
 pub mod svg;
 pub mod syntax;

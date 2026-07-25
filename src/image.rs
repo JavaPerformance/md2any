@@ -26,9 +26,64 @@
 #[cfg(feature = "remote-images")]
 use anyhow::anyhow;
 use anyhow::{bail, Context, Result};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 #[cfg(feature = "remote-images")]
 use std::sync::OnceLock;
+
+// ---------------------------------------------------------------------------
+// Virtual (in-memory) asset store — used by the convert API and WASM studio.
+// Keys match markdown image refs (`photo.png`, `assets/x.jpg`, etc.).
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static VIRTUAL_ASSETS: RefCell<HashMap<String, Vec<u8>>> = RefCell::new(HashMap::new());
+}
+
+/// Run `f` with `assets` registered as the virtual image store. Nested calls
+/// replace the map for the duration of the inner call. Always clears on exit.
+pub fn with_virtual_assets<F, R>(assets: &HashMap<String, Vec<u8>>, f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    VIRTUAL_ASSETS.with(|cell| {
+        {
+            let mut map = cell.borrow_mut();
+            map.clear();
+            for (k, v) in assets {
+                map.insert(k.clone(), v.clone());
+            }
+        }
+        let result = f();
+        cell.borrow_mut().clear();
+        result
+    })
+}
+
+fn lookup_virtual(src: &str) -> Option<Vec<u8>> {
+    VIRTUAL_ASSETS.with(|cell| {
+        let map = cell.borrow();
+        if let Some(b) = map.get(src) {
+            return Some(b.clone());
+        }
+        // Match by file name if the key was registered without a path prefix.
+        if let Some(name) = Path::new(src).file_name().and_then(|n| n.to_str()) {
+            if name != src {
+                if let Some(b) = map.get(name) {
+                    return Some(b.clone());
+                }
+            }
+        }
+        // Match keys that end with the same path suffix.
+        for (k, v) in map.iter() {
+            if k.ends_with(src) || src.ends_with(k.as_str()) {
+                return Some(v.clone());
+            }
+        }
+        None
+    })
+}
 
 /// Metadata + raw bytes of a loaded image. `ext` is `"png"` or `"jpeg"`.
 #[derive(Debug, Clone)]
@@ -96,15 +151,37 @@ pub fn load_any(base_dir: &Path, src: &str) -> Result<ImageMeta> {
     if src.starts_with("data:") {
         return load_data_uri(src);
     }
+    if let Some(bytes) = lookup_virtual(src) {
+        return sniff(&bytes, src);
+    }
     if src.starts_with("http://") || src.starts_with("https://") {
-        return fetch_remote(src);
+        #[cfg(all(feature = "remote-images", not(target_arch = "wasm32")))]
+        {
+            return fetch_remote(src);
+        }
+        #[cfg(not(all(feature = "remote-images", not(target_arch = "wasm32"))))]
+        {
+            bail!("remote images unavailable in this build: {src}");
+        }
     }
     let path = if Path::new(src).is_absolute() {
         std::path::PathBuf::from(src)
     } else {
         base_dir.join(src)
     };
-    load(&path)
+    if let Some(s) = path.to_str() {
+        if let Some(bytes) = lookup_virtual(s) {
+            return sniff(&bytes, s);
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        bail!("image not in virtual assets: {src}");
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        load(&path)
+    }
 }
 
 fn load_data_uri(src: &str) -> Result<ImageMeta> {
@@ -1025,8 +1102,26 @@ fn rasterize_svg(_bytes: &[u8], origin: &str) -> Result<ImageMeta> {
 /// container to learn its pixel dimensions. PNG and JPEG embed directly;
 /// SVG is rasterised to PNG via the `svg` feature.
 pub fn load(path: &Path) -> Result<ImageMeta> {
-    let bytes = std::fs::read(path).with_context(|| format!("read image {}", path.display()))?;
-    sniff(&bytes, &path.display().to_string())
+    if let Some(s) = path.to_str() {
+        if let Some(bytes) = lookup_virtual(s) {
+            return sniff(&bytes, s);
+        }
+    }
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        if let Some(bytes) = lookup_virtual(name) {
+            return sniff(&bytes, name);
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        bail!("image not in virtual assets: {}", path.display());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let bytes =
+            std::fs::read(path).with_context(|| format!("read image {}", path.display()))?;
+        sniff(&bytes, &path.display().to_string())
+    }
 }
 
 fn parse_png_dims(b: &[u8]) -> Result<(u32, u32)> {

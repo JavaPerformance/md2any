@@ -1,0 +1,25 @@
+[package]
+name = "md2any-wasm"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.74"
+description = "WebAssembly bindings for the md2any conversion engine"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[dependencies]
+md2any = { path = "../..", default-features = false, features = ["wasm-core"] }
+# Keep in lockstep with the installed `wasm-bindgen-cli` major.minor.patch.
+wasm-bindgen = "=0.2.126"
+js-sys = "0.3"
+console_error_panic_hook = { version = "0.1", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+serde_json = "1"
+
+[features]
+default = ["console_error_panic_hook"]

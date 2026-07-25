@@ -29,6 +29,68 @@ pub fn write(
     )
 }
 
+/// CSS for the editor / studio preview shell (`body.edit` stacking rules + theme).
+pub fn editor_preview_css(theme: &Theme, layout: &Layout, rtl: bool) -> String {
+    let mut out = css(theme, layout, rtl);
+    out.push_str(EDITOR_CSS);
+    // Virtualised studio preview: only a window of slides is mounted.
+    out.push_str(
+        r#"
+body.edit .deck.virtual { display: block; min-height: 0; padding: 0; }
+body.edit .deck.virtual .slide { margin-left: auto; margin-right: auto; }
+body.edit .v-spacer { width: 100%; pointer-events: none; flex-shrink: 0; }
+body.edit .slide { cursor: pointer; }
+body.edit .slide:hover { outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); outline-offset: 2px; }
+/* Themed scrollbars inside the preview iframe */
+html, body {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--accent) 45%, var(--divider)) transparent;
+}
+html::-webkit-scrollbar, body::-webkit-scrollbar { width: 10px; height: 10px; }
+html::-webkit-scrollbar-track, body::-webkit-scrollbar-track { background: transparent; }
+html::-webkit-scrollbar-thumb, body::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 40%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+html::-webkit-scrollbar-thumb:hover, body::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 55%, var(--muted));
+  background-clip: content-box;
+}
+"#,
+    );
+    out
+}
+
+/// Render a single slide as an HTML `<section class="slide">…</section>` fragment.
+#[allow(clippy::too_many_arguments)]
+pub fn render_slide_fragment(
+    slide: &Slide,
+    idx: usize,
+    total: usize,
+    theme: &Theme,
+    layout: &Layout,
+    deck_title: &str,
+    base_dir: &Path,
+    logo: Option<&Path>,
+) -> Result<String> {
+    let logo_uri = logo.map(|path| image_data_uri(base_dir, path.to_string_lossy().as_ref()));
+    let mut out = String::new();
+    render_slide(
+        &mut out,
+        slide,
+        idx,
+        total,
+        theme,
+        layout,
+        deck_title,
+        base_dir,
+        logo_uri.as_deref(),
+    )?;
+    Ok(out)
+}
+
 /// As [`write`], but `editor: true` emits the deck in a continuous-scroll
 /// layout (all slides stacked and visible, presenter navigation disabled) for
 /// the `--serve --edit` live-DOM preview. The `--serve --edit` client morphs
@@ -185,15 +247,18 @@ fn render_slide(
     }
     if let Some((lines, lang)) = full_page_code {
         let math_markup = crate::math::is_markup_text_language(lang);
-        let class = if math_markup {
-            "full-page-text math"
+        if math_markup {
+            // Same box-layout pipeline as PDF/SVG (not Unicode-in-<pre>).
+            let svg = crate::svg::full_page_math_markup_svg(lines, theme)?;
+            out.push_str("<div class=\"full-page-math\">");
+            out.push_str(&svg);
+            out.push_str("</div>\n");
         } else {
-            "full-page-text"
-        };
-        let rendered_lines = crate::math::translate_markup_lines(lines, lang);
-        write!(out, "<pre class=\"{}\">", class)?;
-        out.push_str(&escape_html(&rendered_lines.join("\n")));
-        out.push_str("</pre>\n");
+            let rendered_lines = crate::math::translate_markup_lines(lines, lang);
+            out.push_str("<pre class=\"full-page-text\">");
+            out.push_str(&escape_html(&rendered_lines.join("\n")));
+            out.push_str("</pre>\n");
+        }
         if let Some(notes) = &slide.notes {
             write!(
                 out,
@@ -788,7 +853,8 @@ body {{ font-family: var(--body-font); overflow: hidden; overflow-wrap: anywhere
 .full-page-image {{ position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }}
 .slide.text-full {{ padding: 0; background: #fff; }}
 .full-page-text {{ position: absolute; inset: 3.2%; margin: 0; overflow: hidden; color: var(--title); background: transparent; font: clamp(5px, .72vw, 8.5px)/1.18 var(--mono-font); white-space: pre; }}
-.full-page-text.math {{ inset: 2.7%; text-align: center; font-family: var(--body-font); font-style: italic; font-size: clamp(5px, .66vw, 8.5px); line-height: 1.1; }}
+.full-page-math {{ position: absolute; inset: 0; margin: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; }}
+.full-page-math > svg {{ width: 100%; height: 100%; display: block; }}
 .blocks {{ font-size: calc(clamp(15px, 1.45vw, var(--body-size)) * var(--text-scale, 1)); line-height: 1.34; }}
 p {{ margin: .5em 0 .85em; }}
 h3, h4, h5, h6 {{ margin: .9em 0 .32em; color: var(--title); font-family: var(--title-font); line-height: 1.15; }}
@@ -946,7 +1012,9 @@ body.edit { background: #1a1a1a; }
 body.edit .deck { display: block; min-height: 0; padding: 18px 14px; }
 body.edit .slide { display: block !important; margin: 0 auto 20px; scroll-margin: 14px; }
 body.edit .controls { display: none !important; }
-body.edit .slide { border-radius: 8px; transition: box-shadow .22s ease; }
+body.edit .slide { border-radius: 8px; }
+/* No box-shadow transition: the studio replaces the active slide DOM on each
+   edit; animating .caret on would make the halo flash every keystroke. */
 body.edit .slide.caret { box-shadow: 0 0 0 2px var(--accent), 0 0 0 9px color-mix(in srgb, var(--accent) 18%, transparent), 0 14px 40px rgba(0,0,0,.45); }
 "#;
 

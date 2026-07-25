@@ -22,6 +22,8 @@ desktop.ini
 
 # md2any build outputs
 /dist/
+/web/dist/
+/web/pkg/
 
 # Snapshot test failure artefacts
 /tests/snapshots/*.actual.snap

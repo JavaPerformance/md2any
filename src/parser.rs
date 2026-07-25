@@ -246,28 +246,38 @@ fn resolve_math_options(front: &FrontMatter, options: &ParseOptions) -> MathOpti
 }
 
 /// Preprocess the body and return `(transformed, line_map)`, where
-/// `line_map[i]` is the source body line that produced output line `i`. The
-/// map lets the parser stamp each slide with its original source line even
-/// though the `:::` rewrite (1 line → 3) shifts line numbers. Math translation
-/// is line-preserving except in `math: svg` display blocks, where the map is a
-/// best-effort approximation.
+/// `line_map[i]` is the **original** source body line (0-based) that produced
+/// output line `i`.
+///
+/// Display math expands one source line into several output lines (blank
+/// padding around the rendered equation). The map keeps every expanded line
+/// pointing at the same source index so caret↔slide sync (studio / `--serve
+/// --edit`) stays aligned with the markdown the user is editing.
+///
+/// The `:::` column rewrite (1 line → 3) is handled the same way.
 fn preprocess(input: &str, math_options: &MathOptions) -> (String, Vec<u32>) {
-    // First pass: math preprocessing (skips fenced code blocks itself).
-    let math_translated = crate::math::translate_with_options(input, math_options);
+    // Math first, with an accurate original-line map.
+    let (math_translated, math_map) =
+        crate::math::translate_with_line_map(input, math_options);
+
     let mut out = String::with_capacity(math_translated.len());
     let mut map: Vec<u32> = Vec::new();
     let mut in_code = false;
-    // Each completed output line (terminated by '\n') maps to `src` — push one
+
+    // Each completed output line (terminated by `\n`) maps to `src` — push one
     // entry per newline appended in this iteration.
-    let push = |out: &mut String, text: &str, map: &mut Vec<u32>, src: usize| {
+    let push = |out: &mut String, text: &str, map: &mut Vec<u32>, src: u32| {
         let before = out.len();
         out.push_str(text);
         let added = out[before..].bytes().filter(|&b| b == b'\n').count();
         for _ in 0..added {
-            map.push(src as u32);
+            map.push(src);
         }
     };
-    for (src, line) in math_translated.lines().enumerate() {
+
+    for (prep_i, line) in math_translated.lines().enumerate() {
+        // Fall back to prep_i if the math map is short (shouldn't happen).
+        let src = math_map.get(prep_i).copied().unwrap_or(prep_i as u32);
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_code = !in_code;

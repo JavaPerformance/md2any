@@ -1261,6 +1261,29 @@ fn render_full_page_code(
     Ok(())
 }
 
+/// Standalone SVG for a full-page ` ```math ` slide (used by HTML/studio).
+///
+/// Uses the same box layout + line packing as PDF/SVG export. When a system
+/// math font (STIX Two Math, …) is available it is used for metrics and the
+/// SVG `font-family` hint so glyphs match the showcase PDF.
+pub fn full_page_math_markup_svg(lines: &[String], theme: &Theme) -> Result<String> {
+    let w = emu_to_px(theme.slide_w);
+    let h = emu_to_px(theme.slide_h);
+    let mut out = String::with_capacity(64 * 1024);
+    write!(
+        out,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w:.2} {h:.2}" width="100%" height="100%" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Mathematics">"#
+    )?;
+    write!(
+        out,
+        r##"<rect width="100%" height="100%" fill="#{}"/>"##,
+        theme.bg
+    )?;
+    render_full_page_math_markup(&mut out, lines, theme, w, h)?;
+    out.push_str("</svg>");
+    Ok(out)
+}
+
 fn render_full_page_math_markup(
     out: &mut String,
     lines: &[String],
@@ -1274,8 +1297,25 @@ fn render_full_page_math_markup(
     let max_h = (h - margin_y * 2.0).max(1.0);
     let base_size = 28.0_f32;
     let gap = base_size * 0.24;
-    let raw_layouts = svg_math_line_layouts(lines);
-    let layouts = fit_svg_math_line_layouts(lines, raw_layouts, base_size, gap, max_w / max_h);
+
+    let file_metrics = crate::math::system_math_glyph_metrics();
+    let metrics: &dyn crate::math::GlyphMetrics = match file_metrics.as_ref() {
+        Some(m) => m,
+        None => &crate::math::DejaVuMetrics,
+    };
+    let font = if file_metrics.is_some() {
+        if let Some(path) = crate::font::find_system_math_font() {
+            escape_attr(crate::math::FileGlyphMetrics::css_family_hint(&path))
+        } else {
+            escape_attr(svg_font_family(&theme.body_font))
+        }
+    } else {
+        escape_attr(svg_font_family(&theme.body_font))
+    };
+
+    let raw_layouts = svg_math_line_layouts(lines, metrics);
+    let layouts =
+        fit_svg_math_line_layouts(lines, raw_layouts, base_size, gap, max_w / max_h, metrics);
     let (max_line_w, total_h) = svg_math_metrics(&layouts, base_size, gap);
     let scale = (max_w / max_line_w)
         .min(max_h / total_h.max(1.0))
@@ -1283,7 +1323,6 @@ fn render_full_page_math_markup(
         .max(0.045);
     let rendered_h = total_h * scale;
     let mut top_y = margin_y + (max_h - rendered_h).max(0.0) / 2.0;
-    let font = escape_attr(svg_font_family(&theme.body_font));
 
     for layout in &layouts {
         if let Some(layout) = layout {
@@ -1389,14 +1428,17 @@ fn draw_svg_math_layout(
     Ok(())
 }
 
-fn svg_math_line_layouts(lines: &[String]) -> Vec<Option<crate::math::MathTextLayout>> {
+fn svg_math_line_layouts(
+    lines: &[String],
+    metrics: &dyn crate::math::GlyphMetrics,
+) -> Vec<Option<crate::math::MathTextLayout>> {
     lines
         .iter()
         .map(|line| {
             if line.trim().is_empty() {
                 None
             } else {
-                Some(crate::math::layout_markup_text(line, 100))
+                Some(crate::math::layout_markup_text_with(line, 100, metrics))
             }
         })
         .collect()
@@ -1405,6 +1447,7 @@ fn svg_math_line_layouts(lines: &[String]) -> Vec<Option<crate::math::MathTextLa
 fn pack_svg_math_line_layouts(
     lines: &[String],
     target_width: f32,
+    metrics: &dyn crate::math::GlyphMetrics,
 ) -> Vec<Option<crate::math::MathTextLayout>> {
     let mut out = Vec::new();
     let mut current = String::new();
@@ -1422,12 +1465,12 @@ fn pack_svg_math_line_layouts(
         }
         if current.is_empty() {
             current.push_str(trimmed);
-            current_layout = Some(crate::math::layout_markup_text(&current, 100));
+            current_layout = Some(crate::math::layout_markup_text_with(&current, 100, metrics));
             continue;
         }
 
         let candidate = format!("{current} {trimmed}");
-        let candidate_layout = crate::math::layout_markup_text(&candidate, 100);
+        let candidate_layout = crate::math::layout_markup_text_with(&candidate, 100, metrics);
         if candidate_layout.width <= target_width {
             current = candidate;
             current_layout = Some(candidate_layout);
@@ -1437,7 +1480,7 @@ fn pack_svg_math_line_layouts(
             }
             current.clear();
             current.push_str(trimmed);
-            current_layout = Some(crate::math::layout_markup_text(&current, 100));
+            current_layout = Some(crate::math::layout_markup_text_with(&current, 100, metrics));
         }
     }
 
@@ -1453,6 +1496,7 @@ fn fit_svg_math_line_layouts(
     base_size: f32,
     gap: f32,
     page_ratio: f32,
+    metrics: &dyn crate::math::GlyphMetrics,
 ) -> Vec<Option<crate::math::MathTextLayout>> {
     let (raw_max_line_w, raw_total_h) = svg_math_metrics(&raw_layouts, base_size, gap);
     let raw_ratio = raw_max_line_w / raw_total_h.max(1.0);
@@ -1468,7 +1512,7 @@ fn fit_svg_math_line_layouts(
 
     for _ in 0..9 {
         let target = (low + high) / 2.0;
-        let packed = pack_svg_math_line_layouts(lines, target);
+        let packed = pack_svg_math_line_layouts(lines, target, metrics);
         let (packed_w, packed_h) = svg_math_metrics(&packed, base_size, gap);
         let ratio = packed_w / packed_h.max(1.0);
         let err = (ratio - desired_ratio).abs();

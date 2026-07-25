@@ -191,6 +191,51 @@ fn read_font(path: &Path, label: &str) -> anyhow::Result<Vec<u8>> {
     std::fs::read(path).map_err(|e| anyhow::anyhow!("read {label} {}: {}", path.display(), e))
 }
 
+/// Locate a system math font for full-page markup math (SM Lagrangian, etc.).
+///
+/// Order: `$MD2ANY_MATH_FONT`, then well-known STIX / TeX Gyre / Cambria paths.
+/// Returns `None` on wasm or when nothing is installed — callers fall back to
+/// DejaVu metrics / the bundled sans face.
+pub fn find_system_math_font() -> Option<std::path::PathBuf> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        return None;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Ok(p) = std::env::var("MD2ANY_MATH_FONT") {
+            let path = std::path::PathBuf::from(p);
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        const CANDIDATES: &[&str] = &[
+            // Linux packages (stix-fonts, fonts-stix, texlive, …)
+            "/usr/share/fonts/stix-fonts/STIXTwoMath-Regular.otf",
+            "/usr/share/fonts/STIX/STIXTwoMath-Regular.otf",
+            "/usr/share/fonts/opentype/stix/STIXTwoMath-Regular.otf",
+            "/usr/share/fonts/opentype/stix-math/STIXTwoMath-Regular.otf",
+            "/usr/share/fonts/truetype/stix/STIXTwoMath-Regular.otf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuMathTeXGyre.ttf",
+            "/usr/share/fonts/opentype/tex-gyre-math/texgyredejavu-math.otf",
+            "/usr/share/fonts/opentype/texgyre/texgyredejavu-math.otf",
+            // macOS
+            "/Library/Fonts/STIXTwoMath-Regular.otf",
+            "/System/Library/Fonts/Supplemental/STIXTwoMath.otf",
+            // Windows
+            "C:\\Windows\\Fonts\\STIXTwoMath-Regular.otf",
+            "C:\\Windows\\Fonts\\cambria.ttc",
+        ];
+        for c in CANDIDATES {
+            let p = std::path::Path::new(c);
+            if p.is_file() {
+                return Some(p.to_path_buf());
+            }
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct FontAudit {
     pub slide_count: usize,

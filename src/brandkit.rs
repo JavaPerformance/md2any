@@ -16,26 +16,30 @@
 //! colour map. The emitted YAML is commented so it's easy to tweak.
 
 use anyhow::{Context, Result};
-use std::fs::File;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::Path;
 
-/// Read a `.potx`/`.pptx` and produce a commented `brand.yaml` overlay string.
+/// Read a `.potx`/`.pptx` from disk and produce a commented `brand.yaml` overlay.
 pub fn extract_overlay(path: &Path) -> Result<String> {
-    let xml = read_theme_xml(path)
-        .with_context(|| format!("read theme from {}", path.display()))?;
-    Ok(build_overlay(&xml, &path.display().to_string()))
+    let bytes = std::fs::read(path).with_context(|| format!("open {}", path.display()))?;
+    extract_overlay_bytes(&bytes, &path.display().to_string())
 }
 
-/// Open the package and return the first theme part's XML (prefers
-/// `theme1.xml`, the part the primary slide master references).
-fn read_theme_xml(path: &Path) -> Result<String> {
-    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut zip = zip::ZipArchive::new(file).with_context(|| {
-        format!(
-            "{} is not a valid PowerPoint package (.potx/.pptx are ZIP archives)",
-            path.display()
-        )
+/// In-memory form of [`extract_overlay`] — used by the WASM studio and tests.
+///
+/// `source` is only used in the generated YAML header comment.
+pub fn extract_overlay_bytes(bytes: &[u8], source: &str) -> Result<String> {
+    let xml = read_theme_xml_bytes(bytes)
+        .with_context(|| format!("read theme from {source}"))?;
+    Ok(build_overlay(&xml, source))
+}
+
+/// Open a PowerPoint package (bytes) and return the first theme part's XML
+/// (prefers `theme1.xml`, the part the primary slide master references).
+fn read_theme_xml_bytes(bytes: &[u8]) -> Result<String> {
+    let cursor = Cursor::new(bytes);
+    let mut zip = zip::ZipArchive::new(cursor).with_context(|| {
+        "not a valid PowerPoint package (.potx/.pptx are ZIP archives)".to_string()
     })?;
 
     let name = pick_theme_name(&mut zip)?;
@@ -48,7 +52,7 @@ fn read_theme_xml(path: &Path) -> Result<String> {
     Ok(xml)
 }
 
-fn pick_theme_name(zip: &mut zip::ZipArchive<File>) -> Result<String> {
+fn pick_theme_name<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>) -> Result<String> {
     if zip.by_name("ppt/theme/theme1.xml").is_ok() {
         return Ok("ppt/theme/theme1.xml".to_string());
     }
@@ -285,5 +289,24 @@ mod tests {
         assert_eq!(ov.bg.as_deref(), Some("#FFFFFF"));
         assert_eq!(ov.title_font.as_deref(), Some("Georgia"));
         assert_eq!(ov.body_font.as_deref(), Some("Verdana"));
+    }
+
+    #[test]
+    fn extract_overlay_bytes_reads_theme_part() {
+        // Minimal OOXML package with a theme part — enough for the studio WASM path.
+        let mut buf = Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::FileOptions::default();
+            zip.start_file("ppt/theme/theme1.xml", opts).unwrap();
+            use std::io::Write;
+            zip.write_all(FIXTURE.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let bytes = buf.into_inner();
+        let yaml = extract_overlay_bytes(&bytes, "fixture.potx").expect("extract");
+        let ov = crate::theme::load_override_str(&yaml).expect("parse");
+        assert_eq!(ov.accent.as_deref(), Some("#4472C4"));
+        assert_eq!(ov.title_font.as_deref(), Some("Georgia"));
     }
 }

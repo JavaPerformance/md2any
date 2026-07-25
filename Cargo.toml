@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "crates/md2any-wasm"]
+resolver = "2"
+
 [package]
 name = "md2any"
 version = "0.3.0"
@@ -27,18 +31,21 @@ exclude = [
     "/docs/manual",
     # Large pre-rendered sample images not referenced by any shipped example.
     "/examples/assets/*.png",
+    "/web",
+    "/crates",
 ]
 
 [[bin]]
 name = "md2any"
 path = "src/main.rs"
+required-features = ["cli"]
 
 [lib]
 name = "md2any"
 path = "src/lib.rs"
 
 [dependencies]
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"], optional = true }
 pulldown-cmark = "0.10"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 flate2 = "1"
@@ -73,7 +80,9 @@ image-webp = { version = "0.2", optional = true }
 rustybuzz = { version = "0.14", optional = true }
 
 [features]
-default = ["remote-images", "svg", "ai", "webp", "shaping"]
+default = ["cli", "remote-images", "svg", "ai", "webp", "shaping"]
+# CLI binary (`clap`). The library and WASM studio do not need this.
+cli = ["dep:clap"]
 # AI deck generation (`--generate`). Speaks the OpenAI-style chat-completions
 # API over the same `ureq` client used for remote images; endpoint/model/key
 # are all configurable. On by default; drop it for a network-call-free binary.
@@ -90,6 +99,8 @@ svg = ["resvg", "usvg", "tiny-skia"]
 webp = ["dep:image-webp", "tiny-skia"]
 # Complex-script shaping (Arabic/Hebrew/Indic) in the PDF text layout.
 shaping = ["dep:rustybuzz"]
+# Lean feature set for the browser WASM build (no network, no CLI).
+wasm-core = ["svg", "webp"]
 
 [dev-dependencies]
 # Renderer tests open the produced PPTX/ODP/DOCX/ODT archives to assert
@@ -100,6 +111,15 @@ zip = { version = "0.6", default-features = false, features = ["deflate"] }
 [profile.release]
 opt-level = 3
 lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+# Smaller / faster WASM package.
+[profile.release-wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
 codegen-units = 1
 strip = true
 panic = "abort"

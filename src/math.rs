@@ -133,28 +133,69 @@ pub fn translate_with_mode(input: &str, mode: MathMode) -> String {
 }
 
 pub fn translate_with_options(input: &str, options: &MathOptions) -> String {
+    translate_with_line_map(input, options).0
+}
+
+/// Like [`translate_with_options`], but also returns a per-output-line map:
+/// `line_map[i]` is the **original** 0-based source line that produced output
+/// line `i`. Display math can expand one source line into several output
+/// lines (blank lines around the rendered equation); every expanded line
+/// still maps back to the same source index so caret↔slide sync stays honest.
+pub fn translate_with_line_map(input: &str, options: &MathOptions) -> (String, Vec<u32>) {
     if matches!(options.mode, MathMode::Source) {
-        return input.to_string();
+        return identity_line_map(input);
     }
     if matches!(options.mode, MathMode::Svg) {
-        return translate_svg_mode(input, options);
+        return translate_svg_mode_with_map(input, options);
     }
     let mut out = String::with_capacity(input.len());
+    let mut map: Vec<u32> = Vec::new();
     let mut in_code = false;
-    for line in input.split_inclusive('\n') {
+    // Prefer `lines()` + explicit `\n` so a final line without a trailing
+    // newline still gets a stable source index.
+    for (src, line) in input.lines().enumerate() {
+        let src = src as u32;
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_code = !in_code;
-            out.push_str(line);
+            push_mapped(&mut out, &mut map, &format!("{line}\n"), src);
             continue;
         }
         if in_code {
-            out.push_str(line);
+            push_mapped(&mut out, &mut map, &format!("{line}\n"), src);
             continue;
         }
+        let before = out.len();
+        // Feed the line without its terminator; re-add `\n` after so expansions
+        // that already include trailing newlines don't double up incorrectly.
         translate_line(line, &mut out, &options.macros);
+        if out.len() == before || !out.ends_with('\n') {
+            out.push('\n');
+        }
+        let added = out[before..].bytes().filter(|&b| b == b'\n').count();
+        for _ in 0..added {
+            map.push(src);
+        }
     }
-    out
+    (out, map)
+}
+
+fn identity_line_map(input: &str) -> (String, Vec<u32>) {
+    let mut out = String::with_capacity(input.len());
+    let mut map = Vec::new();
+    for (src, line) in input.lines().enumerate() {
+        push_mapped(&mut out, &mut map, &format!("{line}\n"), src as u32);
+    }
+    (out, map)
+}
+
+fn push_mapped(out: &mut String, map: &mut Vec<u32>, text: &str, src: u32) {
+    let before = out.len();
+    out.push_str(text);
+    let added = out[before..].bytes().filter(|&b| b == b'\n').count();
+    for _ in 0..added {
+        map.push(src);
+    }
 }
 
 pub fn is_generated_math_image(src: &str, alt: &str) -> bool {
@@ -295,22 +336,46 @@ pub fn decode_generated_math_svg(src: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-fn translate_svg_mode(input: &str, options: &MathOptions) -> String {
+fn translate_svg_mode_with_map(input: &str, options: &MathOptions) -> (String, Vec<u32>) {
     let mut out = String::with_capacity(input.len());
+    let mut map: Vec<u32> = Vec::new();
     let mut in_code = false;
     let mut in_display = false;
     let mut display = String::new();
+    // Source line where the open `$$` began — expanded image maps back here.
+    let mut display_src: u32 = 0;
 
-    for line in input.split_inclusive('\n') {
+    let flush_added = |out: &mut String, map: &mut Vec<u32>, before: usize, src: u32| {
+        let added = out[before..].bytes().filter(|&b| b == b'\n').count();
+        for _ in 0..added {
+            map.push(src);
+        }
+    };
+
+    for (src, line) in input.lines().enumerate() {
+        let src = src as u32;
+        // Reconstruct the inclusive newline form used by the original scanner.
+        let line_inc = format!("{line}\n");
+
         if in_display {
-            if let Some(end) = find_display_close(line) {
-                display.push_str(&line[..end]);
+            if let Some(end) = find_display_close(&line_inc) {
+                display.push_str(&line_inc[..end]);
+                let before = out.len();
                 emit_math_svg_image(&display, &mut out, options);
+                flush_added(&mut out, &mut map, before, display_src);
                 display.clear();
                 in_display = false;
-                translate_line_svg(&line[end + 2..], &mut out, options);
+                let before = out.len();
+                translate_line_svg(&line_inc[end + 2..], &mut out, options);
+                if out.len() == before || !out.ends_with('\n') {
+                    // keep stream line-oriented
+                    if !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+                flush_added(&mut out, &mut map, before, src);
             } else {
-                display.push_str(line);
+                display.push_str(&line_inc);
             }
             continue;
         }
@@ -318,28 +383,43 @@ fn translate_svg_mode(input: &str, options: &MathOptions) -> String {
         let trimmed = line.trim_start();
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             in_code = !in_code;
-            out.push_str(line);
+            push_mapped(&mut out, &mut map, &line_inc, src);
             continue;
         }
         if in_code {
-            out.push_str(line);
+            push_mapped(&mut out, &mut map, &line_inc, src);
             continue;
         }
 
-        if let Some(open) = find_unclosed_display_open(line) {
-            translate_line_svg(&line[..open], &mut out, options);
-            display.push_str(&line[open + 2..]);
+        if let Some(open) = find_unclosed_display_open(&line_inc) {
+            let before = out.len();
+            translate_line_svg(&line_inc[..open], &mut out, options);
+            flush_added(&mut out, &mut map, before, src);
+            display.push_str(&line_inc[open + 2..]);
+            display_src = src;
             in_display = true;
         } else {
-            translate_line_svg(line, &mut out, options);
+            let before = out.len();
+            translate_line_svg(&line_inc, &mut out, options);
+            if out.len() == before || !out.ends_with('\n') {
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            flush_added(&mut out, &mut map, before, src);
         }
     }
 
     if in_display {
+        let before = out.len();
         out.push_str("$$");
         out.push_str(&display);
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        flush_added(&mut out, &mut map, before, display_src);
     }
-    out
+    (out, map)
 }
 
 /// Inspect math spans for constructs the Unicode translator cannot render
@@ -1238,6 +1318,61 @@ pub trait GlyphMetrics {
 /// fallback for any glyph a custom face cannot supply, since unmapped glyphs
 /// degrade to DejaVu (or a fallback font) at render time anyway.
 pub struct DejaVuMetrics;
+
+/// Glyph metrics measured from a real font file (e.g. STIX Two Math).
+/// Used so full-page markup math packs like the STIX showcase PDF.
+pub struct FileGlyphMetrics {
+    metrics: crate::font::FaceMetrics,
+    bytes: Vec<u8>,
+}
+
+impl FileGlyphMetrics {
+    pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| anyhow::anyhow!("read math font {}: {e}", path.display()))?;
+        let metrics = crate::font::FaceMetrics::parse(&bytes)?;
+        Ok(Self { metrics, bytes })
+    }
+
+    /// Preferred family name for SVG `font-family` when drawing measured text.
+    pub fn css_family_hint(path: &std::path::Path) -> &'static str {
+        let name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if name.contains("stix") {
+            "\"STIX Two Math\", \"STIX Two Text\", Cambria Math, serif"
+        } else if name.contains("dejavu") && name.contains("math") {
+            "\"DejaVu Math TeX Gyre\", \"TeX Gyre DejaVu Math\", serif"
+        } else if name.contains("cambria") {
+            "\"Cambria Math\", serif"
+        } else {
+            "serif"
+        }
+    }
+}
+
+impl GlyphMetrics for FileGlyphMetrics {
+    fn advance_em(&self, ch: char, bold: bool) -> f32 {
+        if let Some(gid) = self.metrics.glyph_for_char(&self.bytes, ch) {
+            let w = self.metrics.glyph_width(gid) as f32 / self.metrics.units_per_em.max(1) as f32;
+            if bold {
+                w * DEJAVU_BOLD_WIDTH_SCALE
+            } else {
+                w
+            }
+        } else {
+            DejaVuMetrics.advance_em(ch, bold)
+        }
+    }
+}
+
+/// Load system math-font metrics when available (STIX, etc.).
+pub fn system_math_glyph_metrics() -> Option<FileGlyphMetrics> {
+    let path = crate::font::find_system_math_font()?;
+    FileGlyphMetrics::load(&path).ok()
+}
 
 /// Mean advance ratio of DejaVu Sans **Bold** over Regular (measured across
 /// the math glyph set). Bold runs in the SVG/PNG paths — which always render
