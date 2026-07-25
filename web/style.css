@@ -436,7 +436,9 @@ button.primary:hover:not(:disabled) {
   resize: none;
   outline: none;
   padding: 1rem 1.1rem;
-  background: transparent;
+  /* Override global textarea control fill — editor sits on the pane chrome. */
+  background: transparent !important;
+  box-shadow: none !important;
   color: var(--text);
   font-family: var(--mono);
   font-size: 13px;
